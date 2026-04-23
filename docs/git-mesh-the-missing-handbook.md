@@ -111,7 +111,7 @@ For a team repository, install these hooks or their managed equivalents:
 ```bash
 # .git/hooks/pre-commit
 #!/bin/sh
-git mesh status --check
+git mesh pre-commit
 ```
 
 ```bash
@@ -120,10 +120,15 @@ git mesh status --check
 git mesh commit
 ```
 
-The pre-commit hook catches staged mesh ranges whose working-tree bytes
-changed after `git mesh add`. The post-commit hook lets you stage mesh
-updates before a source commit and anchor them to the commit that just
-landed.
+`git mesh pre-commit` runs the resolver in about-to-commit mode: HEAD
+plus index plus staged mesh ops, no worktree. It fails the commit when
+a tracked range's index-layer content diverges from its anchor without
+a matching staged re-anchor, or when a staged `add`/`remove` op has a
+sidecar whose bytes disagree with the blob it anchors. Worktree drift
+is not a pre-commit failure — only what's about to be committed.
+
+The post-commit hook lets you stage mesh updates before a source commit
+and anchor them to the commit that just landed.
 
 ## A first mesh
 
@@ -207,6 +212,60 @@ git mesh commit auth-token-contract
 Use `--at <commit-ish>` when you want the anchor to be a specific
 historical commit rather than the current post-commit hook moment.
 
+### Pinning whole files
+
+Drop the `#L...` suffix to pin an entire file. Whole-file pins are the
+right shape for content that isn't meaningfully line-structured:
+images, binaries, generated assets, minified output, diagrams, symlinks,
+and submodule roots.
+
+```bash
+git mesh add brand-refresh marketing/hero.png
+git mesh add api-contract-v2 vendor/openapi-spec
+git mesh add diagram-refs docs/architecture.drawio
+git mesh commit brand-refresh
+```
+
+A whole-file range reports `FRESH` when the blob OID matches at the
+deepest enabled layer and `CHANGED` when it differs. There is no slice
+diff and no per-line culprit; the "drift signal" is simply "the bytes
+of this file are not what they were when you pinned it."
+
+Typical uses:
+
+- Pin the hero image next to the copy that describes it, so an asset
+  swap surfaces the copy for review.
+- Pin a design diagram (PNG/SVG) alongside the code it documents.
+- Pin a submodule root (e.g., `vendor/some-lib`) so submodule bumps
+  surface for review of partner code. The resolver compares gitlink
+  SHAs without opening the submodule.
+- Pin a binary test fixture next to the test it feeds.
+
+Rejections at `git mesh add`:
+
+- Line-range pins on binary paths, symlinks, or paths inside a
+  submodule. The error points to the whole-file form.
+- Whole-file pins on paths *inside* a submodule. Only the submodule
+  root itself (the gitlink path) accepts a whole-file pin.
+
+### Pinning LFS-managed files
+
+Ranges on `filter=lfs` paths work the same way as non-LFS ranges as long
+as the LFS content is locally cached. `git mesh add` reads the real
+bytes through the LFS filter and takes its anchored slice from them.
+Line-range and whole-file forms both work.
+
+```bash
+git lfs fetch                               # if you haven't already
+git mesh add perf-notes benchmarks/results.tsv#L1-L200
+```
+
+If the content isn't cached, `git mesh add` fails with a message
+pointing at `git lfs fetch`. At stale time, a pinned LFS range whose
+content is no longer cached surfaces as `CONTENT_UNAVAILABLE` with
+reason `LfsNotFetched` — run `git lfs fetch` or pass
+`--ignore-unavailable` to proceed. The resolver never auto-fetches.
+
 ### Updating a mesh after drift
 
 Run stale:
@@ -220,17 +279,22 @@ decide whether the existing mesh still tells the truth. If the bytes
 changed, review the partner ranges and update code, tests, docs, or the
 mesh.
 
-To re-anchor a changed range:
+To re-anchor a changed range, stage a fresh `add` over the new location:
 
 ```bash
-git mesh rm frontend-backend-sync server/routes.ts#L13-L34
 git mesh add frontend-backend-sync server/routes.ts#L15-L36
 git mesh message frontend-backend-sync -m "Re-anchor route after session helper extraction"
 git mesh commit frontend-backend-sync
 ```
 
-Remove then add is the intended re-anchor workflow. The tool rejects two
-active ranges with the same `(path, start, end)` inside one mesh.
+`git mesh add` on an existing range's `(path, extent)` is a re-anchor:
+the later op supersedes any previous staged add for that location
+(last-write-wins). The staged add's sidecar captures the current bytes,
+which acknowledges the drift in `git mesh stale` output until the mesh
+is committed. No explicit `rm` is required for re-anchoring.
+
+Use `git mesh rm` only when you intend to remove a range from the mesh
+entirely, not as a prelude to re-adding it.
 
 ### Changing only the message
 
@@ -338,7 +402,17 @@ any queried line.
 ## Understanding stale output
 
 `git mesh stale` is the command that asks: "Do the anchored bytes still
-match the current tree?"
+match reality?" By default it compares against four layers of state, in
+shallowing order:
+
+1. **HEAD** — committed history.
+2. **Index** — what you've staged with `git add`.
+3. **Worktree** — unsaved/unstaged bytes on disk.
+4. **Staged mesh ops** — pending entries under `.git/mesh/staging/`.
+
+A finding is printed for every enabled layer. The `src` column shows
+which layer owns the drift: `H`, `I`, or `W`. Staged mesh ops render in
+their own trailing section.
 
 ```bash
 git mesh stale
@@ -348,7 +422,18 @@ git mesh stale frontend-backend-sync --stat
 git mesh stale frontend-backend-sync --patch
 ```
 
-Status values:
+Peel layers off with subtractive flags:
+
+```bash
+git mesh stale --no-worktree                     # ignore unsaved edits
+git mesh stale --no-worktree --no-index          # HEAD + staged mesh only
+git mesh stale --no-worktree --no-index --no-staged-mesh   # HEAD-only (CI)
+```
+
+HEAD is always on; it is the floor. There is no convenience alias for
+"all three off" — pass the flags explicitly so the intent is visible.
+
+### Status values
 
 | Status | Meaning | Typical response |
 |---|---|---|
@@ -356,15 +441,54 @@ Status values:
 | `MOVED` | Bytes are equal, but path or line numbers changed. | Inspect and usually keep or re-anchor. |
 | `CHANGED` | Current bytes differ, or the range was deleted. | Review the relationship and update code or mesh. |
 | `ORPHANED` | The anchor commit or range data is unreachable. | Fetch, investigate force-push/gc, or re-anchor. |
+| `MERGE_CONFLICT` | The path has no stage-0 index entry during a merge. | Finish the merge; run stale again. |
+| `SUBMODULE` | A legacy range points inside a submodule. | Remove and re-pin on the submodule root (whole-file) or on a parent-repo path. |
+| `CONTENT_UNAVAILABLE` | Content should exist but cannot be read locally without a network call. | Follow the reason hint (`git lfs fetch`, enable a sparse path, install LFS, etc.). |
 
-By default, any non-`FRESH` finding exits non-zero. That makes the
-command useful in CI:
+`CONTENT_UNAVAILABLE` findings carry a reason: `LfsNotFetched`,
+`LfsNotInstalled`, `PromisorMissing`, `SparseExcluded`, `FilterFailed`,
+or `IoError`. The resolver never auto-fetches.
 
-```bash
-git mesh stale --format=github-actions
-```
+### Acknowledging drift with a staged re-anchor
 
-Machine-readable formats:
+Drift findings ship with an `ack` marker when a staged mesh op already
+covers them. Staging `git mesh add <name> <range>` after seeing drift
+captures the current bytes as a sidecar; the resolver treats that as the
+developer's "I've seen this, the update is queued" signal and prints the
+finding without failing exit code. The moment live content drifts from
+the sidecar again, the acknowledgment is invalidated.
+
+Only mesh-layer actions acknowledge mesh drift. `git add` and `git
+commit` move file drift between layers; they do not silence findings.
+
+### Exit code
+
+Non-zero iff any of:
+
+- a finding has drift at HEAD / Index / Worktree with no matching staged
+  re-anchor, or
+- a finding has a terminal status (`ORPHANED`, `MERGE_CONFLICT`,
+  `SUBMODULE`, `CONTENT_UNAVAILABLE`) that isn't suppressed, or
+- a staged `add`/`remove` op has a sidecar whose bytes disagree with the
+  blob it anchors.
+
+`PendingFinding::Message` and `PendingFinding::ConfigChange` print but
+never drive exit code. Modifiers:
+
+- `--no-exit-code` forces exit 0 regardless of findings.
+- `--ignore-unavailable` downgrades `CONTENT_UNAVAILABLE` findings so
+  they print without failing; useful on fresh clones where LFS is not
+  yet fetched.
+
+### Whole-file pins
+
+Omit the `#L...` suffix at `git mesh add` to pin an entire file: an
+image, a binary asset, a symlink, a submodule root. Whole-file output
+shows `(whole)` in place of the line range, and `CHANGED` means "blob
+OID differs" rather than "lines drifted." See the "Pinning whole files"
+section.
+
+### Machine-readable formats
 
 ```bash
 git mesh stale --format=porcelain
@@ -373,6 +497,12 @@ git mesh stale --format=junit
 git mesh stale --format=github-actions
 ```
 
+The JSON format carries `{ "schema_version": 1, ... }` with the full
+finding / pending-finding shape, including the `src` layer and the
+`reason` under `CONTENT_UNAVAILABLE`. Scripts that previously parsed the
+culprit column as a SHA should read the `source` field instead —
+`(index)` / `(worktree)` / `(staged)` render there for non-HEAD drift.
+
 Scope a CI run to ranges anchored on the current branch:
 
 ```bash
@@ -380,7 +510,7 @@ base="$(git merge-base origin/main HEAD)"
 git mesh stale --since "$base" --format=github-actions
 ```
 
-Use `--no-exit-code` when you want reporting without gating:
+Report without gating:
 
 ```bash
 git mesh stale --no-exit-code --format=json > mesh-stale.json
@@ -495,17 +625,24 @@ git ls-remote origin 'refs/ranges/*'
 ```bash
 git mesh fetch origin
 base="$(git merge-base origin/main HEAD)"
-git mesh stale --since "$base" --format=github-actions
+git mesh stale --since "$base" \
+  --no-worktree --no-index --no-staged-mesh \
+  --format=github-actions
 ```
 
 This reports ranges anchored on the branch and emits annotations for
-GitHub Actions.
+GitHub Actions. The three `--no-*` flags put the resolver in HEAD-only
+mode — the stable CI invariant. Without them, CI would include the
+runner's checkout noise (line-ending churn, auto-generated files,
+smudge-time artifacts) in the drift finding set.
 
 ### Full repository audit
 
 ```bash
 git mesh fetch origin
-git mesh stale --format=junit
+git mesh stale \
+  --no-worktree --no-index --no-staged-mesh \
+  --format=junit
 ```
 
 Use this as a scheduled job if the repository has many relationships
@@ -514,11 +651,27 @@ that can drift without a nearby PR.
 ### Advisory report
 
 ```bash
-git mesh stale --no-exit-code --format=json > mesh-report.json
+git mesh stale \
+  --no-worktree --no-index --no-staged-mesh \
+  --no-exit-code --format=json > mesh-report.json
 ```
 
 Use this for dashboards or migration work where stale meshes are known
 and should be counted rather than blocked.
+
+### Fresh-clone tolerance
+
+On CI runners that haven't fetched LFS or partial-clone content:
+
+```bash
+git mesh stale \
+  --no-worktree --no-index --no-staged-mesh \
+  --ignore-unavailable \
+  --format=github-actions
+```
+
+`--ignore-unavailable` downgrades `CONTENT_UNAVAILABLE` findings so they
+print without failing the build. Drift findings still fail as usual.
 
 ### Setup audit
 
@@ -536,11 +689,12 @@ for repository health, not semantic drift.
 Run:
 
 ```bash
-git mesh status <name>
+git mesh stale <name>
 ```
 
-You may have committed source code without staging mesh operations, or
-you may have cleared staging with `git mesh restore`.
+Pending staged ops appear in the trailing section of stale output. If
+there are none, you may have committed source code without staging mesh
+operations, or you may have cleared staging with `git mesh restore`.
 
 ### First commit requires a message
 
@@ -551,32 +705,46 @@ git mesh message <name> -m "Explain the relationship"
 git mesh commit <name>
 ```
 
-### A staged range has working-tree drift
+### A staged range has drifted from the worktree
 
-The file changed after `git mesh add`. Re-stage the range:
+This is not an error; it's feedback. `git mesh stale` will report the
+staged `add` alongside a `drift` note when the sidecar bytes no longer
+match current content. The fix is to re-stage the range to refresh the
+sidecar:
 
 ```bash
-git mesh restore <name>
 git mesh add <name> path/to/file#L10-L20
-git mesh message <name> -m "..."
 ```
 
-If only one staged range drifted, you can remove and re-add the affected
-operation in your normal workflow. The conservative full restore is
-often faster and clearer.
+The later `add` supersedes the earlier one (last-write-wins). No
+`restore` or `rm` is required.
 
-### Duplicate range location
+### Re-anchoring a range
 
-One mesh cannot contain two active ranges with the same
-`(path, start, end)`. To re-anchor, remove the old range first:
+Use `git mesh add` on the new location; the later op supersedes the
+earlier staged add for the same `(path, extent)`:
 
 ```bash
-git mesh rm <name> file.ts#L10-L20
-git mesh add <name> file.ts#L10-L20
+git mesh add <name> file.ts#L12-L22
 git mesh commit <name>
 ```
 
-Overlapping ranges are allowed if their exact start/end pairs differ.
+Overlapping ranges (e.g. `#L1-L10` and `#L5-L15`) are allowed. Identical
+duplicates collapse to the latest staged op; there is no
+"duplicate-location" error.
+
+### Terminal statuses in stale output
+
+| Status | Cause | Fix |
+|---|---|---|
+| `ORPHANED` | Anchor commit unreachable (force-push, gc, partial clone). | `git fetch --all && git mesh fetch`, then re-anchor if the commit is truly gone. |
+| `MERGE_CONFLICT` | Path has no stage-0 index entry mid-merge. | Resolve the merge; run stale again. |
+| `SUBMODULE` | Legacy range points inside a submodule. | `git mesh rm` the range; re-pin on the submodule root (whole-file) or on a parent-repo path. |
+| `CONTENT_UNAVAILABLE(LfsNotFetched)` | LFS content not in local cache. | `git lfs fetch`, or pass `--ignore-unavailable` to proceed. |
+| `CONTENT_UNAVAILABLE(LfsNotInstalled)` | No `git-lfs` binary on PATH. | Install git-lfs, or `--ignore-unavailable`. |
+| `CONTENT_UNAVAILABLE(PromisorMissing)` | Partial clone; blob not fetched from promisor. | `git fetch` with unfiltered spec, or `--ignore-unavailable`. |
+| `CONTENT_UNAVAILABLE(SparseExcluded)` | Sparse-checkout excludes the path. | Adjust the sparse cone, or `--ignore-unavailable`. |
+| `CONTENT_UNAVAILABLE(FilterFailed)` | Custom smudge/clean filter returned non-zero. | Fix the filter driver; re-run. |
 
 ### Missing remote mesh data
 
@@ -588,23 +756,6 @@ git mesh fetch
 
 If the remote lacks refspecs, `git mesh fetch` or `git mesh push` will
 bootstrap them when the remote is configured.
-
-### Orphaned range
-
-An `ORPHANED` range means the anchor cannot be materialized locally.
-Common causes are missing fetches, force-pushes, aggressive garbage
-collection, or partial repository state.
-
-Try:
-
-```bash
-git fetch --all
-git mesh fetch
-git mesh stale <name>
-```
-
-If the anchor is truly gone, remove and re-anchor the range at a commit
-that exists.
 
 ### `git log --all` shows mesh commits
 
@@ -649,11 +800,20 @@ Staged mesh operations live under `.git/mesh/staging/`:
 ```text
 <name>       pending add/remove/config operations
 <name>.msg   staged message
-<name>.<N>   sidecar bytes for staged add N
+<name>.<N>   sidecar bytes for staged add N (with normalization stamp)
 ```
 
-The sidecar is what lets the tool detect that the working tree changed
-after you staged a range.
+The sidecar captures the bytes at the moment of `git mesh add`,
+normalized through the current `.gitattributes` + filter pipeline (line
+endings, smudge, LFS). Each sidecar records a small stamp covering the
+gitattributes hash and the filter driver list at capture time; at stale
+time, the resolver re-normalizes both sides of the comparison if the
+stamp indicates the filter rules have changed, so an acknowledgment
+captured under one EOL policy still matches under another.
+
+Identical staged adds for the same `(path, extent)` are collapsed
+last-write-wins ordered by the `.<N>` suffix descending. Overlapping
+(but not identical) ranges are allowed.
 
 ### File index
 
@@ -664,10 +824,38 @@ or corrupt.
 
 ### Resolver
 
-The resolver walks from the anchor commit to `HEAD`, follows file
-movement/copy signals according to the mesh config, compares anchored
-bytes with current bytes, and returns `FRESH`, `MOVED`, `CHANGED`, or
-`ORPHANED`.
+The resolver walks from the anchor commit to `HEAD` following
+movement/copy signals per the mesh config, then applies optional index
+and worktree layers on top before comparing anchored bytes with current
+bytes. Output is a `Finding` per range plus a `PendingFinding` per
+staged mesh op.
+
+Layered pipeline:
+
+1. Walk `anchor..HEAD` to produce a tracked location at the HEAD layer.
+2. If `--no-index` is not passed, apply index-vs-HEAD hunks to shift the
+   tracked location for staged content.
+3. If `--no-worktree` is not passed, apply worktree-vs-index hunks to
+   shift for unstaged content.
+4. Read the final bytes through the appropriate reader (gix worktree
+   machinery for core filters; a managed `git-lfs filter-process`
+   subprocess for LFS paths; a managed `git filter-process` subprocess
+   for custom drivers; direct reads for symlinks).
+5. Compare anchored slice against current slice (whole-file compares
+   blob OIDs at each layer; the fast path for LFS is pointer-OID
+   equality).
+6. Resolve drift source: the shallowest layer where content diverges.
+
+Terminal statuses (`ORPHANED`, `MERGE_CONFLICT`, `SUBMODULE`,
+`CONTENT_UNAVAILABLE`) short-circuit the pipeline with no slice math.
+
+Acknowledgments match by `range_id`, not by `(path, extent)` — the key
+survives `MOVED`. The sidecar is re-normalized on read against the
+current filter pipeline before comparison.
+
+Concurrency guard: the resolver reads the index file's SHA-1 trailer at
+the start and end of a run. If it changed (a racing `git add`), it
+prints a stderr warning suggesting a rerun. Exit code is unaffected.
 
 No status is stored. Staleness is always computed from the current local
 repository state.
@@ -694,7 +882,12 @@ git mesh <name> --at <commit-ish>
 git mesh <name> --log [--limit <n>]
 git mesh stale [<name>] [--format=human|porcelain|json|junit|github-actions]
 git mesh stale [<name>] [--oneline|--stat|--patch] [--since <commit-ish>]
+git mesh stale [<name>] [--no-worktree] [--no-index] [--no-staged-mesh]
+git mesh stale [<name>] [--ignore-unavailable] [--no-exit-code]
 ```
+
+`<range>` is either `<path>#L<start>-L<end>` (line-range) or `<path>`
+alone (whole-file).
 
 Staging and committing:
 
@@ -703,8 +896,6 @@ git mesh add <name> <range>... [--at <commit-ish>]
 git mesh rm <name> <range>...
 git mesh message <name> [-m <msg>|-F <file>|--edit]
 git mesh commit [<name>]
-git mesh status <name>
-git mesh status --check
 ```
 
 Configuration:
@@ -735,7 +926,7 @@ git mesh doctor
 
 Reserved mesh names are command names. Do not name a mesh `add`, `rm`,
 `commit`, `message`, `restore`, `revert`, `delete`, `mv`, `stale`,
-`fetch`, `push`, `doctor`, `log`, `config`, `status`, `ls`, or `help`.
+`fetch`, `push`, `doctor`, `log`, `config`, `ls`, or `help`.
 
 ## Best-practice checklist
 
@@ -743,12 +934,16 @@ Reserved mesh names are command names. Do not name a mesh `add`, `rm`,
 - Name the relationship, not the implementation detail.
 - Write messages with intent, owner, and review guidance.
 - Keep mesh changes in the same PR as source changes.
-- Run `git mesh status <name>` before committing staged mesh work.
+- Run `git mesh stale <name>` before committing staged mesh work to see
+  pending ops alongside any drift.
 - Install the pre-commit and post-commit hooks or equivalent automation.
-- Run `git mesh stale --since <merge-base>` in PR CI.
-- Run full `git mesh stale` periodically on important repositories.
+- Run `git mesh stale --since <merge-base> --no-worktree --no-index
+  --no-staged-mesh` in PR CI.
+- Run full HEAD-only `git mesh stale` periodically on important
+  repositories.
 - Fetch before reviewing shared mesh state.
 - Re-anchor intentionally; do not ignore `MOVED` or `CHANGED` findings.
+- Prefer whole-file pins for images, binaries, and submodule roots.
 - Use `ignore-whitespace` only when whitespace should not matter.
 - Prefer many focused meshes over one broad mesh.
 - Prefer `git mesh revert` when restoring prior truth.
