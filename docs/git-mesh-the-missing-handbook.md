@@ -279,11 +279,11 @@ decide whether the existing mesh still tells the truth. If the bytes
 changed, review the partner ranges and update code, tests, docs, or the
 mesh.
 
-To re-anchor a changed range, stage a fresh `add` over the new location:
+To re-anchor a changed range, stage a fresh `add` over the new location
+and commit:
 
 ```bash
 git mesh add frontend-backend-sync server/routes.ts#L15-L36
-git mesh message frontend-backend-sync -m "Re-anchor route after session helper extraction"
 git mesh commit frontend-backend-sync
 ```
 
@@ -292,6 +292,15 @@ the later op supersedes any previous staged add for that location
 (last-write-wins). The staged add's sidecar captures the current bytes,
 which acknowledges the drift in `git mesh stale` output until the mesh
 is committed. No explicit `rm` is required for re-anchoring.
+
+**The mesh message is the relationship, not a changelog.** Do not
+attach a new `git mesh message` to a routine re-anchor — the previous
+message is inherited automatically when you `git mesh commit` without
+staging a message. A re-anchor that merely follows a refactor leaves
+the relationship unchanged; the message should not be rewritten. Update
+the message only when the *relationship itself* changes (different
+partner ranges, different contract, different owner, different review
+trigger).
 
 Use `git mesh rm` only when you intend to remove a range from the mesh
 entirely, not as a prelude to re-adding it.
@@ -303,9 +312,13 @@ git mesh message frontend-backend-sync -m "ABC-123: Button charge request matche
 git mesh commit frontend-backend-sync
 ```
 
-Message-only commits are useful when the relationship is right but the
-explanation is weak. Write messages as if a reviewer will see them six
-months from now.
+Do this only when the relationship's *description* needs to change —
+the partner ranges still describe the same thing, but the explanation
+is weak, stale, or missing context a reviewer needs. Mesh messages are
+not commit-log entries for mechanical updates; they are the durable
+answer to "what relationship does this mesh represent?"
+
+Write messages as if a reviewer will see them six months from now.
 
 ### Changing resolver settings
 
@@ -544,7 +557,9 @@ different reasons to change together, create two meshes.
 
 ### Write useful mesh messages
 
-A good message answers:
+A mesh message describes the *relationship* — the durable reason these
+ranges belong together. It is not a commit-log entry for mechanical
+updates. A good message answers:
 
 - What relationship does this mesh represent?
 - Why should a future reviewer care?
@@ -563,8 +578,16 @@ response status shape changes.
 Owner: team-billing
 ```
 
-This mirrors strong commit-message practice from Git and Mercurial
-guides: future readers need intent, not just a restatement of the diff.
+Mesh commits inherit the previous mesh's message when none is staged, so
+routine re-anchors (range moved, file renamed, lines shifted) carry the
+relationship description forward without rewriting it. Update the
+message only when the relationship itself changes: different partner
+ranges, a different contract, a new owner, a new review trigger.
+
+This mirrors the "describe intent, not diff" rule from strong
+commit-message practice — but for git-mesh the rule is stricter: the
+diff has its own commit log; the mesh message is about the relationship
+alone.
 
 ### Keep branches short-lived
 
