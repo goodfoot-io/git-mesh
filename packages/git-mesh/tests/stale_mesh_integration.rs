@@ -111,7 +111,6 @@ fn add_submodule_gitlink(repo: &TestRepo, sub_rel: &str) -> Result<PathBuf> {
 
 /// Plan bullet: HEAD-only mode: byte-identical output on the existing fixture.
 #[test]
-#[ignore = "phase-1-pending: HEAD-only fast path needs LayerSet-aware engine"]
 fn head_only_mode_byte_identical_output_on_fixture() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;

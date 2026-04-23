@@ -323,10 +323,62 @@ impl ContentRef {
     /// Read the content through the normalization pipeline (D3) and
     /// return canonical bytes. Callers slice into `&[&str]` on demand.
     ///
-    /// Stubbed at the Phase 1 types slice; the engine/readers slice
-    /// implements it.
-    pub fn read_normalized(&self) -> Result<Vec<u8>> {
-        todo!("ContentRef::read_normalized lands with the readers slice")
+    /// Slice 1 scope: implemented for the cases the HEAD-only fast path
+    /// needs. LFS / custom `filter=<name>` drivers are deferred to a
+    /// later slice (see `docs/gix-filter-audit.md`).
+    pub fn read_normalized(&self, repo: &gix::Repository) -> Result<Vec<u8>> {
+        match self {
+            ContentRef::Blob(oid) => {
+                let obj = repo
+                    .find_object(*oid)
+                    .map_err(|e| Error::Git(format!("find blob `{oid}`: {e}")))?;
+                Ok(obj.into_blob().detach().data)
+            }
+            ContentRef::WorktreeFile(path) => {
+                let workdir = repo
+                    .workdir()
+                    .ok_or_else(|| Error::Git("bare repositories are not supported".into()))?;
+                let abs = workdir.join(path);
+                let md = std::fs::symlink_metadata(&abs)?;
+                if md.file_type().is_symlink() {
+                    let target = std::fs::read_link(&abs)?;
+                    return Ok(target.to_string_lossy().into_owned().into_bytes());
+                }
+                let file = std::fs::File::open(&abs)?;
+                // Apply the clean (to-git) filter so worktree bytes match
+                // blob bytes for comparison. LFS / custom drivers are out
+                // of slice-1 scope; we surface those as Git errors.
+                // TODO(stale-layers-plan): LFS + custom filter-process drivers.
+                let (mut pipeline, index) = repo
+                    .filter_pipeline(None)
+                    .map_err(|e| Error::Git(format!("filter pipeline: {e}")))?;
+                let outcome = pipeline
+                    .convert_to_git(file, path.as_path(), &index)
+                    .map_err(|e| Error::Git(format!("convert_to_git: {e}")))?;
+                use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
+                use std::io::Read;
+                let mut out = Vec::new();
+                match outcome {
+                    ToGitOutcome::Unchanged(mut r) => {
+                        r.read_to_end(&mut out)?;
+                    }
+                    ToGitOutcome::Buffer(buf) => {
+                        out.extend_from_slice(buf);
+                    }
+                    ToGitOutcome::Process(mut r) => {
+                        r.read_to_end(&mut out)?;
+                    }
+                }
+                Ok(out)
+            }
+            ContentRef::Sidecar(path) => {
+                // Slice 1: read raw. Re-normalization across filter changes
+                // (the .gitattributes-stamp dance in plan §B2) is a later
+                // slice.
+                // TODO(stale-layers-plan): re-normalize sidecars on read.
+                Ok(std::fs::read(path)?)
+            }
+        }
     }
 }
 
