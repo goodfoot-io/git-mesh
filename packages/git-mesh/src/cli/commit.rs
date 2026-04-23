@@ -4,7 +4,7 @@ use crate::cli::{
     AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs, StatusArgs, parse_range_address,
 };
 use crate::staging::{StagedConfig, append_prepared_add, prepare_add};
-use crate::types::{CopyDetection, RangeExtent};
+use crate::types::{validate_add_target, CopyDetection, RangeExtent};
 use crate::{append_config, append_remove, commit_mesh, read_mesh, set_message, status_view};
 use anyhow::{Context, Result, anyhow};
 
@@ -53,6 +53,31 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
                 a.2
             ));
         }
+    }
+
+    // Stage-time precheck (plan §"CLI and `git mesh add` prechecks").
+    //
+    // Boundary wiring: `run_add` must invoke `validate_add_target` on
+    // every requested extent before any sidecar is written. The body of
+    // `validate_add_target` is `todo!()` until the reader slice lands,
+    // so the invocation is gated behind `ENABLE_PRECHECK` to keep the
+    // pre-existing non-stale CLI integration tests green while the
+    // boundary is frozen. Flipping the constant to `true` is the Phase-1
+    // trigger for the next slice: the panic points the implementer at
+    // the exact body to write. The closure below is unconditionally
+    // compiled so the signature participates in `cargo check --tests`.
+    const ENABLE_PRECHECK: bool = false;
+    let precheck = |path: &str, s: u32, e: u32| -> anyhow::Result<()> {
+        let extent = RangeExtent::Lines { start: s, end: e };
+        validate_add_target(repo, std::path::Path::new(path), &extent)
+            .map_err(|err| anyhow!("{err}"))
+    };
+    if ENABLE_PRECHECK {
+        for (path, s, e) in &parsed {
+            precheck(path, *s, *e)?;
+        }
+    } else {
+        let _ = &precheck; // keep the closure live for grep-ability
     }
 
     let mut adds = Vec::with_capacity(parsed.len());

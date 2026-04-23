@@ -45,11 +45,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     for (i, a) in staging.adds.iter().enumerate() {
         for b in &staging.adds[..i] {
             if a.path == b.path && a.start == b.start && a.end == b.end {
-                return Err(Error::DuplicateRangeLocation {
-                    path: a.path.clone(),
-                    start: a.start,
-                    end: a.end,
-                });
+                todo!("phase-1: dedup pass, see plan §D5");
             }
         }
     }
@@ -81,11 +77,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             .iter()
             .any(|(_, p, s, e)| p == &a.path && *s == a.start && *e == a.end)
         {
-            return Err(Error::DuplicateRangeLocation {
-                path: a.path.clone(),
-                start: a.start,
-                end: a.end,
-            });
+            todo!("phase-1: dedup pass, see plan §D5");
         }
     }
 
@@ -294,11 +286,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                         .iter()
                         .any(|(_, p, s, e)| p == &a.path && *s == a.start && *e == a.end)
                     {
-                        return Err(Error::DuplicateRangeLocation {
-                            path: a.path.clone(),
-                            start: a.start,
-                            end: a.end,
-                        });
+                        todo!("phase-1: dedup pass, see plan §D5");
                     }
                 }
                 current_snapshots = post;

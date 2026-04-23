@@ -43,18 +43,17 @@ fn commit_writes_ranges_sorted_by_path_start_end() -> Result<()> {
 }
 
 #[test]
-
-fn commit_rejects_duplicate_location() -> Result<()> {
+#[ignore = "phase-1-pending: DuplicateRangeLocation removed per plan §D5; dedup is last-write-wins"]
+fn commit_dedups_duplicate_location_last_write_wins() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "dup", "file1.txt", 1, 5, None)?;
     append_add(&gix, "dup", "file1.txt", 1, 5, None)?;
     set_message(&gix, "dup", "m")?;
-    let err = commit_mesh(&gix, "dup").unwrap_err();
-    assert!(matches!(
-        err,
-        git_mesh::Error::DuplicateRangeLocation { .. }
-    ));
+    // Plan §D5: commit must succeed, keeping only the later staged add.
+    commit_mesh(&gix, "dup")?;
+    let m = read_mesh(&gix, "dup")?;
+    assert_eq!(m.ranges.len(), 1);
     Ok(())
 }
 

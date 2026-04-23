@@ -10,18 +10,23 @@
 
 #![allow(unused_variables, dead_code)]
 
-use crate::types::{Mesh, MeshResolved, RangeResolved};
+use crate::types::{EngineOptions, Mesh, MeshResolved, RangeResolved};
 use crate::Result;
 
 pub fn resolve_range(
     _repo: &gix::Repository,
     _mesh_name: &str,
     _range_id: &str,
+    _options: EngineOptions,
 ) -> Result<RangeResolved> {
     todo!("resolve_range is rewritten atop resolver::Engine in the engine slice")
 }
 
-pub fn resolve_mesh(_repo: &gix::Repository, _name: &str) -> Result<MeshResolved> {
+pub fn resolve_mesh(
+    _repo: &gix::Repository,
+    _name: &str,
+    _options: EngineOptions,
+) -> Result<MeshResolved> {
     todo!("resolve_mesh is rewritten atop resolver::Engine in the engine slice")
 }
 
@@ -32,7 +37,10 @@ pub fn culprit_commit(
     todo!("culprit_commit is rewritten atop resolver::Engine in the engine slice")
 }
 
-pub fn stale_meshes(_repo: &gix::Repository) -> Result<Vec<MeshResolved>> {
+pub fn stale_meshes(
+    _repo: &gix::Repository,
+    _options: EngineOptions,
+) -> Result<Vec<MeshResolved>> {
     todo!("stale_meshes is rewritten atop resolver::Engine in the engine slice")
 }
 

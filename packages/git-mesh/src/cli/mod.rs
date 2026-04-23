@@ -152,6 +152,23 @@ pub struct StaleArgs {
     #[arg(long)]
     pub no_exit_code: bool,
 
+    /// Disable the worktree layer (plan §B4 — part of the HEAD-only CI fast path).
+    #[arg(long)]
+    pub no_worktree: bool,
+
+    /// Disable the index layer.
+    #[arg(long)]
+    pub no_index: bool,
+
+    /// Disable the staged-mesh layer (`.git/mesh/staging/`).
+    #[arg(long)]
+    pub no_staged_mesh: bool,
+
+    /// Downgrade `ContentUnavailable` findings: they print but do not
+    /// drive the exit code (plan §B3).
+    #[arg(long)]
+    pub ignore_unavailable: bool,
+
     #[arg(long, conflicts_with_all = ["stat", "patch"])]
     pub oneline: bool,
 

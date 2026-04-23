@@ -23,8 +23,8 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::types::{
-    ContentRef, DriftSource, LayerSet, PendingDrift, RangeExtent, RangeStatus, Scope,
-    UnavailableReason,
+    ContentRef, DriftSource, EngineOptions, LayerSet, PendingDrift, RangeExtent, RangeStatus,
+    Scope, UnavailableReason,
 };
 use git_mesh::{
     append_add, commit_mesh, resolve_mesh, resolve_range, set_message, stale_meshes,
@@ -150,7 +150,7 @@ fn worktree_only_drift_changed_source_worktree_no_blob_exit_one() -> Result<()> 
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let r = &mr.ranges[0];
     assert_eq!(r.status, RangeStatus::Changed);
     // Source / current.blob live on the Phase 1 `Finding` shape which
@@ -178,7 +178,7 @@ fn git_add_moves_drift_worktree_to_index_with_staged_oid() -> Result<()> {
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.run_git(["add", "file1.txt"])?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let r = &mr.ranges[0];
     assert_eq!(r.status, RangeStatus::Changed);
     // Index-layer reads resolve to a blob.
@@ -248,7 +248,7 @@ fn ack_survives_moved_via_range_id() -> Result<()> {
         "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.commit_all("shift")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let r = &mr.ranges[0];
     assert_eq!(r.status, RangeStatus::Moved);
     // Non-zero exit only if the ack fails to match by range_id — the
@@ -338,7 +338,7 @@ fn merge_conflict_path_surfaces_merge_conflict_no_blob() -> Result<()> {
         .current_dir(repo.path())
         .args(["merge", "feature"])
         .output()?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let r = &mr.ranges[0];
     assert_eq!(r.status, RangeStatus::MergeConflict);
     assert!(
@@ -360,7 +360,7 @@ fn crlf_checkout_of_lf_blob_no_false_drift() -> Result<()> {
         "file1.txt",
         "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\nline9\r\nline10\r\n",
     )?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.ranges[0].status, RangeStatus::Fresh);
     Ok(())
 }
@@ -381,7 +381,7 @@ fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
     // Mutate the binary, exit 1.
     std::fs::write(repo.path().join("hero.png"), [9u8, 9, 9, 9])?;
     repo.commit_all("mutate binary")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
     assert_eq!(mr.ranges[0].anchored.extent, RangeExtent::Whole);
     // Re-anchor acknowledges.
@@ -423,7 +423,7 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
         .args(["pull"])
         .output()?;
     repo.run_git(["add", "sub"])?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
     Ok(())
 }
@@ -444,7 +444,7 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     std::fs::remove_file(repo.path().join("link"))?;
     std::os::unix::fs::symlink("file2.txt", repo.path().join("link"))?;
     repo.commit_all("retarget")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
     // Line-range pin on a symlink must be rejected at add time.
     let rej = repo.run_mesh(["add", "n", "link#L1-L1"])?;
@@ -468,7 +468,7 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     repo.run_mesh(["commit", "m"])?;
     write_lfs_pointer(&repo, "doc.bigtxt", &"b".repeat(64), 42)?;
     repo.commit_all("mutate pointer")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
     Ok(())
 }
@@ -488,7 +488,7 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     // Pointer changes, cache missing.
     write_lfs_pointer(&repo, "doc.bigtxt", &"d".repeat(64), 42)?;
     repo.commit_all("mutate pointer")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(
         mr.ranges[0].status,
         RangeStatus::ContentUnavailable(UnavailableReason::LfsNotFetched)
@@ -547,7 +547,7 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     repo.run_mesh(["commit", "m"])?;
     repo.write_file("config.secret", "new payload\n")?;
     repo.commit_all("mutate")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert!(matches!(
         mr.ranges[0].status,
         RangeStatus::ContentUnavailable(UnavailableReason::FilterFailed { .. })
@@ -564,7 +564,7 @@ fn git_mv_across_pinned_file_reports_moved_new_path() -> Result<()> {
     seed_line_range_mesh(&repo, "m")?;
     repo.run_git(["mv", "file1.txt", "renamed.txt"])?;
     repo.commit_all("rename")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let r = &mr.ranges[0];
     assert_eq!(r.status, RangeStatus::Moved);
     // Anchored path unchanged.
@@ -602,7 +602,7 @@ fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     // The pinned range itself drifts via the worktree layer; zero-OID
     // sibling must not poison the read.
     assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
@@ -686,9 +686,9 @@ fn content_ref_read_normalized_is_the_single_boundary() -> Result<()> {
 fn resolve_range_agrees_with_resolve_mesh_smoke() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
-    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     let rid = &mr.ranges[0].range_id;
-    let r = resolve_range(&repo.gix_repo()?, "m", rid)?;
+    let r = resolve_range(&repo.gix_repo()?, "m", rid, EngineOptions::full())?;
     assert_eq!(r.status, mr.ranges[0].status);
     Ok(())
 }
@@ -705,7 +705,7 @@ fn stale_meshes_sorts_worst_first_smoke() -> Result<()> {
         "XXX\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.commit_all("mutate")?;
-    let all = stale_meshes(&repo.gix_repo()?)?;
+    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
     assert!(
         all.iter()
             .any(|m| m.ranges.iter().any(|r| r.status == RangeStatus::Changed))

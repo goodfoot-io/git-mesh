@@ -163,10 +163,10 @@ pub enum Error {
     #[error("mesh already exists: {0}")]
     MeshAlreadyExists(String),
 
-    /// Two ranges in the same mesh share `(path, start, end)` (§4.2 invariant).
-    #[error("duplicate range location in mesh: {path}:{start}-{end}")]
-    DuplicateRangeLocation { path: String, start: u32, end: u32 },
-
+    // `DuplicateRangeLocation` removed per `docs/stale-layers-plan.md` §D5:
+    // staged `(path, extent)` duplicates are last-write-wins. The three
+    // former raise sites in `mesh/commit.rs` now call `todo!()` pending
+    // the dedup-pass implementation slice.
     /// `start` is not >= 1, or `end` < `start`, or the line range is
     /// outside the file's line count at the anchor commit (§6.1).
     #[error("invalid range: start={start} end={end}")]
@@ -427,4 +427,91 @@ pub struct StagedIndexEntry {
 pub struct PendingState {
     pub index: HashMap<PathBuf, StagedIndexEntry>,
     pub mesh_ops: Vec<crate::staging::StagedOp>,
+}
+
+/// Engine invocation options. See plan §B3/§B4.
+///
+/// `layers` selects which drift layers (on top of HEAD) participate;
+/// `ignore_unavailable` downgrades `ContentUnavailable` findings to
+/// non-exit-driving per §B3. `--no-exit-code` is an output-rendering
+/// concern and lives on the CLI, not in this struct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineOptions {
+    pub layers: LayerSet,
+    pub ignore_unavailable: bool,
+}
+
+impl EngineOptions {
+    /// All layers enabled, unavailable content still drives exit code.
+    pub fn full() -> Self {
+        Self {
+            layers: LayerSet::full(),
+            ignore_unavailable: false,
+        }
+    }
+
+    /// HEAD-only fast path (CI invariant per §B4).
+    pub fn committed_only() -> Self {
+        Self {
+            layers: LayerSet::committed_only(),
+            ignore_unavailable: false,
+        }
+    }
+}
+
+/// Public error boundary for `validate_add_target` — the stage-time
+/// precheck that rejects pins `git mesh add` can't honor (see plan
+/// §"CLI and `git mesh add` prechecks").
+///
+/// These errors surface at `git mesh add` time, not at commit time, so
+/// the operator gets immediate feedback before sidecars are written.
+#[derive(Debug, thiserror::Error)]
+pub enum AddPrecheckError {
+    /// Line-range pin on a `.gitattributes`-declared binary path.
+    #[error("line-range pin rejected on binary path: {path}")]
+    LineRangeOnBinary { path: String },
+
+    /// Line-range pin on a symlink (filters don't run on symlinks;
+    /// whole-file pins are allowed for retarget detection).
+    #[error("line-range pin rejected on symlink: {path}")]
+    LineRangeOnSymlink { path: String },
+
+    /// Line-range pin on a path inside a submodule (multi-repo content
+    /// resolution is out of scope).
+    #[error("line-range pin rejected inside submodule: {path}")]
+    LineRangeInSubmodule { path: String },
+
+    /// Whole-file pin on a non-gitlink path inside a submodule. The
+    /// submodule's object database is not opened; only the gitlink root
+    /// itself may be pinned whole-file.
+    #[error("whole-file pin rejected inside submodule (only the gitlink root is allowed): {path}")]
+    WholeFileInSubmodule { path: String },
+
+    /// `filter=lfs` path whose content is not locally cached. Reuses
+    /// `UnavailableReason::LfsNotFetched` vocabulary with `stale` output
+    /// per plan §D4.
+    #[error("content unavailable for {path}: {reason:?}")]
+    ContentUnavailable {
+        path: String,
+        reason: UnavailableReason,
+    },
+
+    /// Underlying I/O error while probing the path (stat, readlink,
+    /// gitattributes lookup). Surfaces as a precheck failure rather
+    /// than silently allowing the `add`.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// Stage-time validation for a single `git mesh add` target. Phase 1
+/// boundary: the body is stubbed. Called from `cli/commit.rs::run_add`
+/// before any sidecar is written.
+///
+/// See plan §"CLI and `git mesh add` prechecks" for the full rule set.
+pub fn validate_add_target(
+    _repo: &gix::Repository,
+    _path: &std::path::Path,
+    _extent: &RangeExtent,
+) -> std::result::Result<(), AddPrecheckError> {
+    todo!("phase-1: implement in reader slice")
 }
