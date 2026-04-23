@@ -16,22 +16,49 @@ pub fn resolve_range(
     range_id: &str,
 ) -> Result<RangeResolved> {
     let mesh = read_mesh(repo, mesh_name)?;
-    let r = read_range(repo, range_id)?;
-    resolve_range_inner(repo, &mesh.config, range_id, r)
+    match read_range(repo, range_id) {
+        Ok(r) => resolve_range_inner(repo, &mesh.config, range_id, r),
+        Err(Error::RangeNotFound(_)) => Ok(orphaned_placeholder(range_id)),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn resolve_mesh(repo: &gix::Repository, name: &str) -> Result<MeshResolved> {
     let mesh = read_mesh(repo, name)?;
     let mut ranges = Vec::with_capacity(mesh.ranges.len());
     for id in &mesh.ranges {
-        let r = read_range(repo, id)?;
-        ranges.push(resolve_range_inner(repo, &mesh.config, id, r)?);
+        match read_range(repo, id) {
+            Ok(r) => ranges.push(resolve_range_inner(repo, &mesh.config, id, r)?),
+            Err(Error::RangeNotFound(_)) => {
+                // The mesh references a range whose blob ref is gone. Surface
+                // this as an ORPHANED finding rather than aborting the whole
+                // command; hard errors are reserved for corruption that
+                // prevents reading the mesh itself (§5.3).
+                ranges.push(orphaned_placeholder(id));
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(MeshResolved {
         name: mesh.name,
         message: mesh.message,
         ranges,
     })
+}
+
+fn orphaned_placeholder(range_id: &str) -> RangeResolved {
+    RangeResolved {
+        range_id: range_id.into(),
+        anchor_sha: String::new(),
+        anchored: RangeLocation {
+            path: String::new(),
+            start: 0,
+            end: 0,
+            blob: String::new(),
+        },
+        current: None,
+        status: RangeStatus::Orphaned,
+    }
 }
 
 pub fn culprit_commit(

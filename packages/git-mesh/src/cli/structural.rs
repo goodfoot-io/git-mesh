@@ -99,7 +99,7 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
         if !fetch.iter().any(|l| l.contains("refs/meshes/")) {
             out.push(DoctorFinding {
                 code: DoctorCode::RefspecMissing,
-                severity: Severity::Warn,
+                severity: Severity::Info,
                 message: format!("remote `{remote}` has no mesh refspec"),
                 remediation: Some("run `git mesh push` or `fetch` once to bootstrap".into()),
             });
@@ -406,7 +406,7 @@ fn check_file_index(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
     }
 }
 
-pub fn run_doctor(repo: &gix::Repository) -> Result<i32> {
+pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Result<i32> {
     let findings = doctor_run(repo)?;
     let names = list_mesh_names(repo).unwrap_or_default();
     println!("mesh doctor: checking refs/meshes/v1/*");
@@ -430,10 +430,20 @@ pub fn run_doctor(repo: &gix::Repository) -> Result<i32> {
         } else {
             println!("mesh doctor: ok ({} mesh(es) checked)", names.len());
         }
-        Ok(0)
-    } else {
-        println!("mesh doctor: found {} finding(s)", findings.len());
-        // Exit 1 if any finding (fail-closed per CLAUDE.md).
+        return Ok(0);
+    }
+    println!("mesh doctor: found {} finding(s)", findings.len());
+    // Severity-driven exit codes (§6.7):
+    //   ERROR              → exit 1
+    //   INFO / WARN only   → exit 0
+    //   --strict promotes INFO and WARN to exit 1
+    let has_error = findings.iter().any(|f| f.severity == Severity::Error);
+    let has_non_ok = findings
+        .iter()
+        .any(|f| matches!(f.severity, Severity::Info | Severity::Warn | Severity::Error));
+    if has_error || (args.strict && has_non_ok) {
         Ok(1)
+    } else {
+        Ok(0)
     }
 }

@@ -116,7 +116,79 @@ fn doctor_flags_missing_hooks() -> Result<()> {
     let s = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(s.contains("MissingPostCommitHook"), "stdout={s}");
     assert!(s.contains("MissingPreCommitHook"), "stdout={s}");
-    assert_eq!(out.status.code(), Some(1));
+    // §6.7: INFO-only findings exit 0.
+    assert_eq!(out.status.code(), Some(0), "stdout={s}");
+    Ok(())
+}
+
+#[test]
+fn doctor_strict_promotes_info_to_exit_1() -> Result<()> {
+    // Fresh repo: only 2 INFO findings (missing hooks). Non-strict exits 0;
+    // --strict must promote to 1.
+    let repo = TestRepo::seeded()?;
+    let out_default = repo.run_mesh(["doctor"])?;
+    assert_eq!(
+        out_default.status.code(),
+        Some(0),
+        "non-strict INFO-only should exit 0; stdout={}",
+        String::from_utf8_lossy(&out_default.stdout)
+    );
+    let out_strict = repo.run_mesh(["doctor", "--strict"])?;
+    assert_eq!(
+        out_strict.status.code(),
+        Some(1),
+        "--strict INFO-only should exit 1; stdout={}",
+        String::from_utf8_lossy(&out_strict.stdout)
+    );
+    Ok(())
+}
+
+#[test]
+fn doctor_strict_promotes_warn_to_exit_1() -> Result<()> {
+    // Reproduces the user's scenario: WARN (file-index rebuilt) + 3 INFO.
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    let idx = repo.path().join(".git").join("mesh").join("file-index");
+    if idx.exists() {
+        std::fs::remove_file(&idx)?;
+    }
+    let out_default = repo.run_mesh(["doctor"])?;
+    assert_eq!(
+        out_default.status.code(),
+        Some(0),
+        "non-strict WARN+INFO should exit 0; stdout={}",
+        String::from_utf8_lossy(&out_default.stdout)
+    );
+    // Recreate the missing index so the second run reproduces the same
+    // finding set (doctor auto-rebuilds).
+    if idx.exists() {
+        std::fs::remove_file(&idx)?;
+    }
+    let out_strict = repo.run_mesh(["doctor", "--strict"])?;
+    let stdout = String::from_utf8_lossy(&out_strict.stdout);
+    assert!(stdout.contains("FileIndexMissing"), "stdout={stdout}");
+    assert_eq!(
+        out_strict.status.code(),
+        Some(1),
+        "--strict WARN+INFO should exit 1; stdout={stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn doctor_warn_only_exits_zero() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    install_hooks(&repo)?;
+    seed(&repo, "m")?;
+    // Delete the file index to force a WARN (auto-remediated).
+    let idx = repo.path().join(".git").join("mesh").join("file-index");
+    if idx.exists() {
+        std::fs::remove_file(&idx)?;
+    }
+    let out = repo.run_mesh(["doctor"])?;
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(s.contains("FileIndexMissing"), "stdout={s}");
+    assert_eq!(out.status.code(), Some(0), "stdout={s}");
     Ok(())
 }
 

@@ -163,11 +163,21 @@ fn render_human(
             println!("Orphaned ranges:");
             println!();
             for r in &orphaned {
-                println!("  {}#L{}-L{}", r.anchored.path, r.anchored.start, r.anchored.end);
-                let short = r.anchor_sha.get(..8).unwrap_or(&r.anchor_sha);
-                println!(
-                    "  anchor {short} is unreachable — run `git fetch` or check for a force-push"
-                );
+                if r.anchored.path.is_empty() {
+                    println!("  range {} (blob ref missing)", r.range_id);
+                    println!(
+                        "  run `git mesh fetch` or `git mesh rm` + re-anchor if the range is gone for good"
+                    );
+                } else {
+                    println!(
+                        "  {}#L{}-L{}",
+                        r.anchored.path, r.anchored.start, r.anchored.end
+                    );
+                    let short = r.anchor_sha.get(..8).unwrap_or(&r.anchor_sha);
+                    println!(
+                        "  anchor {short} is unreachable — run `git fetch` or check for a force-push"
+                    );
+                }
                 println!();
             }
         }

@@ -85,7 +85,7 @@ pub enum Commands {
     Push(PushArgs),
 
     /// Audit the local mesh setup (§6.7).
-    Doctor,
+    Doctor(DoctorArgs),
 
     /// Show staging-area state; `--check` is the pre-commit gate (§6.4).
     Status(StatusArgs),
@@ -266,6 +266,13 @@ pub struct PushArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct DoctorArgs {
+    /// Promote INFO and WARN findings to a non-zero exit (§6.7).
+    #[arg(long)]
+    pub strict: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct StatusArgs {
     /// Mesh name. Required unless `--check` is passed.
     pub name: Option<String>,
@@ -312,7 +319,7 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         Commands::Revert(args) => structural::run_revert(repo, args),
         Commands::Delete(args) => structural::run_delete(repo, args),
         Commands::Mv(args) => structural::run_mv(repo, args),
-        Commands::Doctor => structural::run_doctor(repo),
+        Commands::Doctor(args) => structural::run_doctor(repo, args),
         Commands::Fetch(args) => sync::run_fetch(repo, args),
         Commands::Push(args) => sync::run_push(repo, args),
     }

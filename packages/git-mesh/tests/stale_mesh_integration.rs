@@ -84,6 +84,38 @@ fn orphaned_when_anchor_unreachable() -> Result<()> {
 
 #[test]
 
+fn orphaned_when_range_blob_ref_missing() -> Result<()> {
+    // Deleting `refs/ranges/v1/<uuid>` must surface as ORPHANED, not a
+    // hard error (§5.3).
+    let repo = TestRepo::seeded()?;
+    seed_mesh_with_one_range(&repo, "m")?;
+    // Remove every range ref we just created.
+    let refs = repo.list_refs("refs/ranges/v1")?;
+    for r in &refs {
+        repo.run_git(["update-ref", "-d", r])?;
+    }
+    let mr = resolve_mesh(&repo.gix_repo()?, "m")?;
+    assert_eq!(mr.ranges.len(), 1);
+    assert_eq!(mr.ranges[0].status, RangeStatus::Orphaned);
+    // CLI path also succeeds (with --no-exit-code); porcelain reports ORPHANED.
+    let out = repo.run_mesh([
+        "stale",
+        "m",
+        "--format=porcelain",
+        "--no-exit-code",
+    ])?;
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ORPHANED"), "stdout={stdout}");
+    Ok(())
+}
+
+#[test]
+
 fn resolve_range_agrees_with_resolve_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_mesh_with_one_range(&repo, "m")?;

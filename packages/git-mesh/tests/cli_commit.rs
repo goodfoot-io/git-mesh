@@ -449,3 +449,90 @@ fn cli_config_unset_unknown_key_errors() -> Result<()> {
     assert!(!out.status.success());
     Ok(())
 }
+
+#[test]
+fn cli_add_rejects_duplicate_ranges_within_args() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh([
+        "add",
+        "m",
+        "file1.txt#L1-L2",
+        "file1.txt#L1-L2",
+    ])?;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("duplicate range location"),
+        "stderr={stderr}"
+    );
+    // And nothing was staged.
+    let status = repo.mesh_stdout(["status", "m"])?;
+    assert!(!status.contains("L1-L2"), "status={status}");
+    Ok(())
+}
+
+#[test]
+fn cli_add_rejects_duplicate_against_already_staged() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L2"])?;
+    let out = repo.run_mesh(["add", "m", "file1.txt#L1-L2"])?;
+    assert!(!out.status.success());
+    Ok(())
+}
+
+#[test]
+fn cli_rm_of_range_not_in_mesh_errors() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["message", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    let out = repo.run_mesh(["rm", "m", "file1.txt#L7-L9"])?;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("range not in mesh"), "stderr={stderr}");
+    Ok(())
+}
+
+#[test]
+fn cli_rm_of_staged_add_succeeds() -> Result<()> {
+    // Removing a range that exists only as a staged add should be allowed
+    // (it "undoes" the add in the same staging pass).
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    let out = repo.run_mesh(["rm", "m", "file1.txt#L1-L5"])?;
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
+#[test]
+fn cli_commit_no_name_commits_all_staged() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "a", "file1.txt#L1-L2"])?;
+    repo.mesh_stdout(["message", "a", "-m", "mesh a"])?;
+    repo.mesh_stdout(["add", "b", "file2.txt#L1-L2"])?;
+    repo.mesh_stdout(["message", "b", "-m", "mesh b"])?;
+    let stdout = repo.mesh_stdout(["commit"])?;
+    assert!(stdout.contains("refs/meshes/v1/a"), "stdout={stdout}");
+    assert!(stdout.contains("refs/meshes/v1/b"), "stdout={stdout}");
+    assert!(repo.ref_exists("refs/meshes/v1/a"));
+    assert!(repo.ref_exists("refs/meshes/v1/b"));
+    Ok(())
+}
+
+#[test]
+fn cli_commit_no_name_nothing_staged_exits_zero() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["commit"])?;
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("nothing staged"), "stdout={stdout}");
+    Ok(())
+}
