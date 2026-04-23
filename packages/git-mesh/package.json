@@ -5,6 +5,7 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
     "build": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
+    "build:local": "mkdir -p \"$HOME/.local/bin\" && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release && install -m 0755 target/build/release/git-mesh \"$HOME/.local/bin/git-mesh\"",
     "build:clean": "rm -rf target/build target/lint target/test target/typecheck && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
     "test": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/test cargo test --quiet -- --test-threads=1",
     "lint": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/lint cargo clippy --quiet -- -D warnings",
