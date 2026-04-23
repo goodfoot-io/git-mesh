@@ -58,9 +58,10 @@ fn show_no_abbrev_shows_full_sha() -> Result<()> {
     seed(&repo, "alpha")?;
     let out = repo.mesh_stdout(["alpha", "--no-abbrev"])?;
     // Look for a 40-char hex token on a Ranges line.
-    let has_40 = out
-        .lines()
-        .any(|l| l.split_whitespace().any(|w| w.len() == 40 && w.chars().all(|c| c.is_ascii_hexdigit())));
+    let has_40 = out.lines().any(|l| {
+        l.split_whitespace()
+            .any(|w| w.len() == 40 && w.chars().all(|c| c.is_ascii_hexdigit()))
+    });
     assert!(has_40, "--no-abbrev should emit a 40-char sha");
     Ok(())
 }

@@ -65,7 +65,11 @@ pub fn create_range(
         end,
         blob,
     };
-    let blob_oid = git_with_input(wd, ["hash-object", "-w", "--stdin"], &serialize_range(&range))?;
+    let blob_oid = git_with_input(
+        wd,
+        ["hash-object", "-w", "--stdin"],
+        &serialize_range(&range),
+    )?;
     let id = Uuid::new_v4().to_string();
     git::update_ref_cas(repo, &range_ref_path(&id), &blob_oid, None)?;
     Ok(id)
@@ -158,9 +162,8 @@ pub fn parse_range(text: &str) -> Result<Range> {
         }
     }
 
-    let (start, end, blob, path) = range_line.ok_or_else(|| {
-        Error::Parse("range blob missing `range` line".to_string())
-    })?;
+    let (start, end, blob, path) =
+        range_line.ok_or_else(|| Error::Parse("range blob missing `range` line".to_string()))?;
     Ok(Range {
         anchor_sha: anchor.ok_or_else(|| Error::Parse("missing `anchor` header".into()))?,
         created_at: created.ok_or_else(|| Error::Parse("missing `created` header".into()))?,

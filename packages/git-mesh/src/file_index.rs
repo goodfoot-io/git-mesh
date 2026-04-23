@@ -65,8 +65,20 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
         }
     }
     out.sort_by(|a, b| {
-        (a.path.as_str(), a.start, a.end, a.mesh_name.as_str(), a.range_id.as_str())
-            .cmp(&(b.path.as_str(), b.start, b.end, b.mesh_name.as_str(), b.range_id.as_str()))
+        (
+            a.path.as_str(),
+            a.start,
+            a.end,
+            a.mesh_name.as_str(),
+            a.range_id.as_str(),
+        )
+            .cmp(&(
+                b.path.as_str(),
+                b.start,
+                b.end,
+                b.mesh_name.as_str(),
+                b.range_id.as_str(),
+            ))
     });
     Ok(out)
 }
@@ -99,8 +111,12 @@ pub fn read_index(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
             path: fields[0].into(),
             mesh_name: fields[1].into(),
             range_id: fields[2].into(),
-            start: fields[3].parse().map_err(|_| Error::Parse("bad start".into()))?,
-            end: fields[4].parse().map_err(|_| Error::Parse("bad end".into()))?,
+            start: fields[3]
+                .parse()
+                .map_err(|_| Error::Parse("bad start".into()))?,
+            end: fields[4]
+                .parse()
+                .map_err(|_| Error::Parse("bad end".into()))?,
             anchor_short: fields[5].into(),
         });
     }

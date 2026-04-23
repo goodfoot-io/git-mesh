@@ -82,7 +82,10 @@ fn cli_commit_accepts_paths_with_spaces() -> Result<()> {
     repo.mesh_stdout(["message", "spaced", "-m", "Initial"])?;
     repo.mesh_stdout(["commit", "spaced"])?;
     let out = repo.mesh_stdout(["show", "spaced", "--oneline"])?;
-    assert!(out.contains("dir with spaces/file 3.txt#L1-L2"), "show={out}");
+    assert!(
+        out.contains("dir with spaces/file 3.txt#L1-L2"),
+        "show={out}"
+    );
     Ok(())
 }
 
@@ -101,7 +104,10 @@ fn cli_add_accepts_paths_with_spaces_alongside_other_ranges() -> Result<()> {
         "file1.txt#L1-L3",
     ])?;
     let status = repo.mesh_stdout(["status", "spaced"])?;
-    assert!(status.contains("dir with spaces/file 3.txt#L1-L2"), "status={status}");
+    assert!(
+        status.contains("dir with spaces/file 3.txt#L1-L2"),
+        "status={status}"
+    );
     assert!(status.contains("file1.txt#L1-L3"), "status={status}");
     Ok(())
 }
@@ -453,12 +459,7 @@ fn cli_config_unset_unknown_key_errors() -> Result<()> {
 #[test]
 fn cli_add_rejects_duplicate_ranges_within_args() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let out = repo.run_mesh([
-        "add",
-        "m",
-        "file1.txt#L1-L2",
-        "file1.txt#L1-L2",
-    ])?;
+    let out = repo.run_mesh(["add", "m", "file1.txt#L1-L2", "file1.txt#L1-L2"])?;
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(

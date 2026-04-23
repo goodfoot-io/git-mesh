@@ -5,9 +5,7 @@ mod support;
 use anyhow::Result;
 use git_mesh::staging::StagedConfig;
 use git_mesh::types::CopyDetection;
-use git_mesh::{
-    append_add, append_config, append_remove, commit_mesh, read_mesh, set_message,
-};
+use git_mesh::{append_add, append_config, append_remove, commit_mesh, read_mesh, set_message};
 use support::TestRepo;
 
 #[test]
@@ -53,7 +51,10 @@ fn commit_rejects_duplicate_location() -> Result<()> {
     append_add(&gix, "dup", "file1.txt", 1, 5, None)?;
     set_message(&gix, "dup", "m")?;
     let err = commit_mesh(&gix, "dup").unwrap_err();
-    assert!(matches!(err, git_mesh::Error::DuplicateRangeLocation { .. }));
+    assert!(matches!(
+        err,
+        git_mesh::Error::DuplicateRangeLocation { .. }
+    ));
     Ok(())
 }
 
@@ -147,7 +148,11 @@ fn commit_is_atomic_on_invalid_op() -> Result<()> {
     let gix = repo.gix_repo()?;
     append_add(&gix, "atomic", "file1.txt", 1, 5, None)?;
     std::fs::write(
-        repo.path().join(".git").join("mesh").join("staging").join("atomic"),
+        repo.path()
+            .join(".git")
+            .join("mesh")
+            .join("staging")
+            .join("atomic"),
         "add file1.txt#L1-L5\nadd no/such.txt#L1-L1\n",
     )?;
     std::fs::write(

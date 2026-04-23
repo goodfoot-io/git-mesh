@@ -30,14 +30,12 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     let since_oids = if let Some(since) = &args.since {
         let wd = crate::git::work_dir(repo)?;
         let head = crate::git::git_stdout(wd, ["rev-parse", "HEAD"])?;
-        let mut oids: std::collections::BTreeSet<String> = crate::git::git_stdout(
-            wd,
-            ["rev-list", &format!("{since}..{head}")],
-        )
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect();
+        let mut oids: std::collections::BTreeSet<String> =
+            crate::git::git_stdout(wd, ["rev-list", &format!("{since}..{head}")])
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect();
         let since_oid = crate::git::git_stdout(wd, ["rev-parse", since]).unwrap_or_default();
         if !since_oid.is_empty() {
             oids.insert(since_oid);
@@ -107,8 +105,10 @@ fn render_human(
         if !oneline {
             print_mesh_header(repo, m)?;
         }
-        let mesh_findings: Vec<&(String, RangeResolved)> =
-            findings.iter().filter(|(name, _)| name == &m.name).collect();
+        let mesh_findings: Vec<&(String, RangeResolved)> = findings
+            .iter()
+            .filter(|(name, _)| name == &m.name)
+            .collect();
         let mesh_total = m.ranges.len();
         let mesh_stale = mesh_findings.len();
 
@@ -186,7 +186,10 @@ fn render_human(
             println!("Changed ranges:");
             println!();
             for r in &changed {
-                println!("  {}#L{}-L{}", r.anchored.path, r.anchored.start, r.anchored.end);
+                println!(
+                    "  {}#L{}-L{}",
+                    r.anchored.path, r.anchored.start, r.anchored.end
+                );
                 if let Some(c) = culprit_commit_info(repo, r)? {
                     println!("  caused by {} {}  ({})", c.short, c.subject, c.relative);
                 }
@@ -240,18 +243,15 @@ struct CulpritInfo {
     relative: String,
 }
 
-fn culprit_commit_info(
-    repo: &gix::Repository,
-    r: &RangeResolved,
-) -> Result<Option<CulpritInfo>> {
+fn culprit_commit_info(repo: &gix::Repository, r: &RangeResolved) -> Result<Option<CulpritInfo>> {
     let Some(oid) = culprit_commit(repo, r)? else {
         return Ok(None);
     };
     let wd = crate::git::work_dir(repo)?;
-    let short = crate::git::git_stdout(wd, ["rev-parse", "--short", &oid]).unwrap_or_else(|_| {
-        oid.chars().take(8).collect::<String>()
-    });
-    let subject = crate::git::git_stdout(wd, ["show", "-s", "--format=%s", &oid]).unwrap_or_default();
+    let short = crate::git::git_stdout(wd, ["rev-parse", "--short", &oid])
+        .unwrap_or_else(|_| oid.chars().take(8).collect::<String>());
+    let subject =
+        crate::git::git_stdout(wd, ["show", "-s", "--format=%s", &oid]).unwrap_or_default();
     let relative =
         crate::git::git_stdout(wd, ["show", "-s", "--format=%cr", &oid]).unwrap_or_default();
     Ok(Some(CulpritInfo {
@@ -268,7 +268,10 @@ fn print_changed_diff(repo: &gix::Repository, r: &RangeResolved) -> Result<()> {
     let anchored_lines: Vec<&str> = anchored_text.lines().collect();
     let a_lo = (r.anchored.start as usize).saturating_sub(1);
     let a_hi = (r.anchored.end as usize).min(anchored_lines.len());
-    let a_slice: Vec<String> = anchored_lines[a_lo..a_hi].iter().map(|s| s.to_string()).collect();
+    let a_slice: Vec<String> = anchored_lines[a_lo..a_hi]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
     if let Some(cur) = &r.current {
         let current_text =
@@ -276,15 +279,15 @@ fn print_changed_diff(repo: &gix::Repository, r: &RangeResolved) -> Result<()> {
         let current_lines: Vec<&str> = current_text.lines().collect();
         let c_lo = (cur.start as usize).saturating_sub(1);
         let c_hi = (cur.end as usize).min(current_lines.len());
-        let c_slice: Vec<String> = current_lines[c_lo..c_hi].iter().map(|s| s.to_string()).collect();
+        let c_slice: Vec<String> = current_lines[c_lo..c_hi]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         println!(
             "--- {}#L{}-L{} (anchored)",
             r.anchored.path, r.anchored.start, r.anchored.end
         );
-        println!(
-            "+++ {}#L{}-L{} (HEAD)",
-            cur.path, cur.start, cur.end
-        );
+        println!("+++ {}#L{}-L{} (HEAD)", cur.path, cur.start, cur.end);
         print_unified_hunk(&a_slice, &c_slice, r.anchored.start, cur.start);
     } else {
         // Deletion: diff against /dev/null.
@@ -306,13 +309,7 @@ fn print_unified_hunk(a: &[String], b: &[String], a_start: u32, b_start: u32) {
     let a_refs: Vec<&str> = a.iter().map(String::as_str).collect();
     let b_refs: Vec<&str> = b.iter().map(String::as_str).collect();
     let diff = TextDiff::from_slices(&a_refs, &b_refs);
-    println!(
-        "@@ -{},{} +{},{} @@",
-        a_start,
-        a.len(),
-        b_start,
-        b.len()
-    );
+    println!("@@ -{},{} +{},{} @@", a_start, a.len(), b_start, b.len());
     for change in diff.iter_all_changes() {
         let prefix = match change.tag() {
             ChangeTag::Delete => "-",
@@ -369,7 +366,10 @@ fn render_json(
             RangeStatus::Fresh => continue,
         };
         let code = status_str(r.status);
-        let (s, e) = (r.anchored.start.saturating_sub(1), r.anchored.end.saturating_sub(1));
+        let (s, e) = (
+            r.anchored.start.saturating_sub(1),
+            r.anchored.end.saturating_sub(1),
+        );
         let data = if r.status == RangeStatus::Changed {
             let info = culprit_commit_info(repo, r)?;
             match info {
@@ -392,10 +392,7 @@ fn render_json(
             ),
             RangeStatus::Changed => "range content changed since anchor".to_string(),
             RangeStatus::Moved => match &r.current {
-                Some(cur) => format!(
-                    "range moved to {}#L{}-L{}",
-                    cur.path, cur.start, cur.end
-                ),
+                Some(cur) => format!("range moved to {}#L{}-L{}", cur.path, cur.start, cur.end),
                 None => "range moved".to_string(),
             },
             RangeStatus::Fresh => String::new(),
@@ -454,10 +451,7 @@ fn render_github(findings: &[(String, RangeResolved)]) {
             ),
             RangeStatus::Changed => "range content changed since anchor".to_string(),
             RangeStatus::Moved => match &r.current {
-                Some(cur) => format!(
-                    "range moved to {}#L{}-L{}",
-                    cur.path, cur.start, cur.end
-                ),
+                Some(cur) => format!("range moved to {}#L{}-L{}", cur.path, cur.start, cur.end),
                 None => "range moved".to_string(),
             },
             RangeStatus::Fresh => continue,

@@ -134,11 +134,7 @@ pub enum Error {
 
     /// Two ranges in the same mesh share `(path, start, end)` (§4.2 invariant).
     #[error("duplicate range location in mesh: {path}:{start}-{end}")]
-    DuplicateRangeLocation {
-        path: String,
-        start: u32,
-        end: u32,
-    },
+    DuplicateRangeLocation { path: String, start: u32, end: u32 },
 
     /// `start` is not >= 1, or `end` < `start`, or the line range is
     /// outside the file's line count at the anchor commit (§6.1).
@@ -211,11 +207,7 @@ pub enum Error {
     /// Mesh staged operation references a `(path, start, end)` not
     /// present in the current mesh (§6.2 step 3).
     #[error("range not in mesh: {path}#L{start}-L{end}")]
-    RangeNotInMesh {
-        path: String,
-        start: u32,
-        end: u32,
-    },
+    RangeNotInMesh { path: String, start: u32, end: u32 },
 
     /// Generic git-process / gix error.
     #[error("git: {0}")]

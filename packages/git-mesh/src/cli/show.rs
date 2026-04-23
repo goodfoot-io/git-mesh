@@ -1,6 +1,6 @@
 //! `git mesh` list / `git mesh <name>` show / `git mesh ls` — §10.4, §3.4.
 
-use crate::cli::{parse_range_address, LsArgs, ShowArgs};
+use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::range::read_range;
 use crate::{
     list_mesh_names, ls_all, ls_by_path, ls_by_path_range, mesh_commit_info, mesh_commit_info_at,
@@ -55,7 +55,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     if args.oneline {
         for id in &mesh.ranges {
             let r = read_range(repo, id)?;
-            let sha = if args.no_abbrev { r.anchor_sha.clone() } else { short(&r.anchor_sha).into() };
+            let sha = if args.no_abbrev {
+                r.anchor_sha.clone()
+            } else {
+                short(&r.anchor_sha).into()
+            };
             println!("{sha}  {}#L{}-L{}", r.path, r.start, r.end);
         }
         return Ok(0);
@@ -73,7 +77,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     println!("Ranges ({}):", mesh.ranges.len());
     for id in &mesh.ranges {
         let r = read_range(repo, id)?;
-        let sha = if args.no_abbrev { r.anchor_sha.clone() } else { short(&r.anchor_sha).into() };
+        let sha = if args.no_abbrev {
+            r.anchor_sha.clone()
+        } else {
+            short(&r.anchor_sha).into()
+        };
         println!("    {sha}  {}#L{}-L{}", r.path, r.start, r.end);
     }
 
@@ -95,8 +103,7 @@ fn render_format(
     let substituted = substitute_mesh_placeholders(repo, mesh, fmt, no_abbrev)?;
     // If there's any `%` left, delegate to git; else return as-is.
     if substituted.contains('%') {
-        let wd = crate::git::work_dir(repo)
-            .map_err(|e| anyhow::anyhow!("work dir: {e}"))?;
+        let wd = crate::git::work_dir(repo).map_err(|e| anyhow::anyhow!("work dir: {e}"))?;
         let rendered = crate::git::git_stdout_raw(
             wd,
             [

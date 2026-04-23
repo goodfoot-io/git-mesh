@@ -1,8 +1,8 @@
 //! Mesh commit pipeline — §6.1, §6.2.
 
 use crate::git::{
-    apply_ref_transaction, git_stdout, git_stdout_with_identity, git_with_input,
-    resolve_ref_oid_optional, work_dir, RefUpdate,
+    RefUpdate, apply_ref_transaction, create_commit, git_stdout, git_with_input,
+    resolve_ref_oid_optional, work_dir,
 };
 use crate::mesh::read::{parse_config_blob, serialize_config_blob};
 use crate::range::{create_range, read_range};
@@ -30,10 +30,14 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             let m = super::read::read_mesh_at(repo, name, Some(tip))?;
             (m.ranges, m.config, Some(m.message))
         }
-        None => (Vec::new(), MeshConfig {
-            copy_detection: crate::types::DEFAULT_COPY_DETECTION,
-            ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
-        }, None),
+        None => (
+            Vec::new(),
+            MeshConfig {
+                copy_detection: crate::types::DEFAULT_COPY_DETECTION,
+                ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
+            },
+            None,
+        ),
     };
 
     // Early: intra-staging duplicate-location detection.
@@ -165,8 +169,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             combined.push((id.clone(), r.path, r.start, r.end));
         }
         combined.sort_by(|a, b| (a.1.as_str(), a.2, a.3).cmp(&(b.1.as_str(), b.2, b.3)));
-        let final_ids: Vec<String> =
-            combined.iter().map(|(id, _, _, _)| id.clone()).collect();
+        let final_ids: Vec<String> = combined.iter().map(|(id, _, _, _)| id.clone()).collect();
 
         // Build tree: `ranges` blob + `config` blob.
         let ranges_text: String = {
@@ -177,28 +180,19 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             }
             s
         };
-        let ranges_blob =
-            git_with_input(wd, ["hash-object", "-w", "--stdin"], &ranges_text)?;
+        let ranges_blob = git_with_input(wd, ["hash-object", "-w", "--stdin"], &ranges_text)?;
         let config_text = serialize_config_blob(&new_config);
-        let config_blob =
-            git_with_input(wd, ["hash-object", "-w", "--stdin"], &config_text)?;
-        let tree_input = format!(
-            "100644 blob {config_blob}\tconfig\n100644 blob {ranges_blob}\tranges\n"
-        );
+        let config_blob = git_with_input(wd, ["hash-object", "-w", "--stdin"], &config_text)?;
+        let tree_input =
+            format!("100644 blob {config_blob}\tconfig\n100644 blob {ranges_blob}\tranges\n");
         let tree_oid = git_with_input(wd, ["mktree"], &tree_input)?;
 
         // Commit.
-        let mut args = vec![
-            "commit-tree".to_string(),
-            tree_oid,
-            "-m".to_string(),
-            message.clone(),
-        ];
-        if let Some(parent) = current_parent.as_deref() {
-            args.push("-p".to_string());
-            args.push(parent.to_string());
-        }
-        let candidate = git_stdout_with_identity(wd, args.iter().map(String::as_str))?;
+        let parents: Vec<String> = current_parent
+            .as_deref()
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default();
+        let candidate = create_commit(repo, &tree_oid, &message, &parents)?;
 
         // Atomic CAS update.
         let update = match current_parent.as_deref() {
@@ -222,8 +216,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 if attempt >= MAX_RETRIES {
                     return Err(Error::ConcurrentUpdate {
                         expected: current_parent.clone().unwrap_or_default(),
-                        found: resolve_ref_oid_optional(wd, &mesh_ref)?
-                            .unwrap_or_default(),
+                        found: resolve_ref_oid_optional(wd, &mesh_ref)?.unwrap_or_default(),
                     });
                 }
                 // Re-read the tip. If it hasn't actually changed, the
@@ -251,9 +244,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 for rem in &staging.removes {
                     let idx = post
                         .iter()
-                        .position(|(_, p, s, e)| {
-                            p == &rem.path && *s == rem.start && *e == rem.end
-                        })
+                        .position(|(_, p, s, e)| p == &rem.path && *s == rem.start && *e == rem.end)
                         .ok_or_else(|| Error::RangeNotInMesh {
                             path: rem.path.clone(),
                             start: rem.start,

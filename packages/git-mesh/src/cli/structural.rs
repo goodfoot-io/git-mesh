@@ -3,7 +3,9 @@
 use crate::cli::{DeleteArgs, MvArgs, RestoreArgs, RevertArgs};
 use crate::range::range_ref_path;
 use crate::sync::default_remote;
-use crate::{delete_mesh, file_index, list_mesh_names, read_mesh, rename_mesh, restore_mesh, revert_mesh};
+use crate::{
+    delete_mesh, file_index, list_mesh_names, read_mesh, rename_mesh, restore_mesh, revert_mesh,
+};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::fs;
@@ -85,11 +87,9 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
 
     // ---- Refspec check -----------------------------------------------
     let remote = default_remote(repo).unwrap_or_else(|_| "origin".into());
-    let url = crate::git::git_stdout_optional(
-        wd,
-        ["config", "--get", &format!("remote.{remote}.url")],
-    )
-    .unwrap_or(None);
+    let url =
+        crate::git::git_stdout_optional(wd, ["config", "--get", &format!("remote.{remote}.url")])
+            .unwrap_or(None);
     if url.is_some() {
         let fetch = crate::git::git_stdout_lines(
             wd,
@@ -137,9 +137,7 @@ fn check_hook(
             code,
             severity: Severity::Info,
             message: format!("`{name}` hook not installed"),
-            remediation: Some(format!(
-                "install at {install} with body: {suggested}"
-            )),
+            remediation: Some(format!("install at {install} with body: {suggested}")),
         });
     }
 }
@@ -157,7 +155,9 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
     };
     for e in entries.flatten() {
         let fname = e.file_name();
-        let Some(fn_str) = fname.to_str() else { continue };
+        let Some(fn_str) = fname.to_str() else {
+            continue;
+        };
         if let Some((base, rest)) = fn_str.rsplit_once('.') {
             if rest == "msg" {
                 continue;
@@ -173,7 +173,9 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
     }
 
     for (name, path) in &ops_files {
-        let Ok(text) = fs::read_to_string(path) else { continue };
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
         let mut add_n: u32 = 0;
         let mut expected_sidecars: BTreeSet<u32> = BTreeSet::new();
         for (idx, line) in text.lines().enumerate() {
@@ -191,10 +193,7 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                     out.push(DoctorFinding {
                         code: DoctorCode::StagingCorrupt,
                         severity: Severity::Error,
-                        message: format!(
-                            "malformed staging line in {}:{lineno}",
-                            path.display()
-                        ),
+                        message: format!("malformed staging line in {}:{lineno}", path.display()),
                         remediation: Some(format!("`git mesh restore {name}` and re-stage")),
                     });
                     continue;
@@ -212,9 +211,7 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                                 path.display(),
                                 sidecar_p.display()
                             ),
-                            remediation: Some(format!(
-                                "`git mesh restore {name}` and re-stage"
-                            )),
+                            remediation: Some(format!("`git mesh restore {name}` and re-stage")),
                         });
                     }
                 }
@@ -223,10 +220,7 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                     out.push(DoctorFinding {
                         code: DoctorCode::StagingCorrupt,
                         severity: Severity::Error,
-                        message: format!(
-                            "malformed staging line in {}:{lineno}",
-                            path.display()
-                        ),
+                        message: format!("malformed staging line in {}:{lineno}", path.display()),
                         remediation: Some(format!("`git mesh restore {name}` and re-stage")),
                     });
                 }
@@ -236,10 +230,7 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                 out.push(DoctorFinding {
                     code: DoctorCode::StagingCorrupt,
                     severity: Severity::Error,
-                    message: format!(
-                        "unknown staging op in {}:{lineno}",
-                        path.display()
-                    ),
+                    message: format!("unknown staging op in {}:{lineno}", path.display()),
                     remediation: Some(format!("`git mesh restore {name}` and re-stage")),
                 });
             }
@@ -254,7 +245,10 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                         "orphaned sidecar {} (no matching anchor-less `add` line)",
                         sc_path.display()
                     ),
-                    remediation: Some(format!("delete {} or `git mesh restore {name}`", sc_path.display())),
+                    remediation: Some(format!(
+                        "delete {} or `git mesh restore {name}`",
+                        sc_path.display()
+                    )),
                 });
             }
         }
@@ -293,11 +287,7 @@ fn is_valid_addr(s: &str) -> bool {
     a >= 1 && b >= a
 }
 
-fn check_range_reachability(
-    repo: &gix::Repository,
-    remote: &str,
-    out: &mut Vec<DoctorFinding>,
-) {
+fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<DoctorFinding>) {
     let wd = match crate::git::work_dir(repo) {
         Ok(w) => w,
         Err(_) => return,
@@ -333,9 +323,7 @@ fn check_range_reachability(
                 out.push(DoctorFinding {
                     code: DoctorCode::OrphanRangeRef,
                     severity: Severity::Error,
-                    message: format!(
-                        "mesh `{name}` references missing range `{id}`"
-                    ),
+                    message: format!("mesh `{name}` references missing range `{id}`"),
                     remediation: Some(remediation),
                 });
             }
@@ -438,9 +426,12 @@ pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Resul
     //   INFO / WARN only   → exit 0
     //   --strict promotes INFO and WARN to exit 1
     let has_error = findings.iter().any(|f| f.severity == Severity::Error);
-    let has_non_ok = findings
-        .iter()
-        .any(|f| matches!(f.severity, Severity::Info | Severity::Warn | Severity::Error));
+    let has_non_ok = findings.iter().any(|f| {
+        matches!(
+            f.severity,
+            Severity::Info | Severity::Warn | Severity::Error
+        )
+    });
     if has_error || (args.strict && has_non_ok) {
         Ok(1)
     } else {

@@ -105,7 +105,10 @@ fn install_hooks(repo: &TestRepo) -> Result<()> {
     let hooks = repo.path().join(".git").join("hooks");
     std::fs::create_dir_all(&hooks)?;
     std::fs::write(hooks.join("post-commit"), "#!/bin/sh\ngit mesh commit\n")?;
-    std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\ngit mesh status --check\n")?;
+    std::fs::write(
+        hooks.join("pre-commit"),
+        "#!/bin/sh\ngit mesh status --check\n",
+    )?;
     Ok(())
 }
 
@@ -266,11 +269,7 @@ fn doctor_flags_dangling_range_ref() -> Result<()> {
     // Write a dummy range ref pointing at an existing blob so the ref is
     // syntactically valid. Easiest: reuse the commit sha of HEAD as the value.
     let head = repo.head_sha()?;
-    repo.run_git([
-        "update-ref",
-        "refs/ranges/v1/dangling-test-id",
-        &head,
-    ])?;
+    repo.run_git(["update-ref", "refs/ranges/v1/dangling-test-id", &head])?;
     let out = repo.run_mesh(["doctor"])?;
     let s = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(s.contains("DanglingRangeRef"), "stdout={s}");

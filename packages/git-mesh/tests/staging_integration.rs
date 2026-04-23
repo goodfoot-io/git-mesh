@@ -27,7 +27,10 @@ fn append_add_creates_ops_and_sidecar() -> Result<()> {
         .path()
         .join(".git/mesh/staging")
         .join(format!("m.{}", s.adds[0].line_number));
-    assert!(sidecar.exists(), "§6.3 sidecar must exist at .git/mesh/staging/<name>.<N>");
+    assert!(
+        sidecar.exists(),
+        "§6.3 sidecar must exist at .git/mesh/staging/<name>.<N>"
+    );
     Ok(())
 }
 
@@ -48,7 +51,10 @@ fn append_add_rejects_missing_worktree_path() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     let err = append_add(&gix, "m", "no/such.txt", 1, 1, None).unwrap_err();
-    assert!(matches!(err, git_mesh::Error::Io(_) | git_mesh::Error::PathNotInTree { .. }));
+    assert!(matches!(
+        err,
+        git_mesh::Error::Io(_) | git_mesh::Error::PathNotInTree { .. }
+    ));
     Ok(())
 }
 

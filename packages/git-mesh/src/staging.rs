@@ -115,8 +115,8 @@ fn parse_line(line: &str) -> Result<Option<ParsedLine>> {
             Some((addr, anchor)) => (addr, Some(anchor.to_string())),
             None => (rest, None),
         };
-        let (path, start, end) = parse_range_address(addr)
-            .ok_or_else(|| Error::ParseStaging { line: line.into() })?;
+        let (path, start, end) =
+            parse_range_address(addr).ok_or_else(|| Error::ParseStaging { line: line.into() })?;
         return Ok(Some(ParsedLine::Add(StagedAdd {
             line_number: 0,
             path,
@@ -126,24 +126,19 @@ fn parse_line(line: &str) -> Result<Option<ParsedLine>> {
         })));
     }
     if let Some(rest) = line.strip_prefix("remove ") {
-        let (path, start, end) = parse_range_address(rest)
-            .ok_or_else(|| Error::ParseStaging { line: line.into() })?;
-        return Ok(Some(ParsedLine::Remove(StagedRemove {
-            path,
-            start,
-            end,
-        })));
+        let (path, start, end) =
+            parse_range_address(rest).ok_or_else(|| Error::ParseStaging { line: line.into() })?;
+        return Ok(Some(ParsedLine::Remove(StagedRemove { path, start, end })));
     }
     if let Some(rest) = line.strip_prefix("config ") {
         let (key, value) = rest
             .split_once(' ')
             .ok_or_else(|| Error::ParseStaging { line: line.into() })?;
         let entry = match key {
-            "copy-detection" => {
-                StagedConfig::CopyDetection(parse_copy_detection(value).ok_or_else(|| {
-                    Error::ParseStaging { line: line.into() }
-                })?)
-            }
+            "copy-detection" => StagedConfig::CopyDetection(
+                parse_copy_detection(value)
+                    .ok_or_else(|| Error::ParseStaging { line: line.into() })?,
+            ),
             "ignore-whitespace" => {
                 let b = match value {
                     "true" => true,
@@ -238,10 +233,7 @@ fn append_line(repo: &gix::Repository, name: &str, line: &str) -> Result<u32> {
     } else {
         String::new()
     };
-    let mut new_add_count: u32 = existing
-        .lines()
-        .filter(|l| l.starts_with("add "))
-        .count() as u32;
+    let mut new_add_count: u32 = existing.lines().filter(|l| l.starts_with("add ")).count() as u32;
     if line.starts_with("add ") {
         new_add_count += 1;
     }
@@ -357,13 +349,11 @@ pub fn append_remove(
     Ok(())
 }
 
-pub fn append_config(
-    repo: &gix::Repository,
-    name: &str,
-    entry: &StagedConfig,
-) -> Result<()> {
+pub fn append_config(repo: &gix::Repository, name: &str, entry: &StagedConfig) -> Result<()> {
     let (key, value) = match entry {
-        StagedConfig::CopyDetection(cd) => ("copy-detection", serialize_copy_detection(*cd).to_string()),
+        StagedConfig::CopyDetection(cd) => {
+            ("copy-detection", serialize_copy_detection(*cd).to_string())
+        }
         StagedConfig::IgnoreWhitespace(b) => ("ignore-whitespace", b.to_string()),
     };
     append_line(repo, name, &format!("config {key} {value}"))?;

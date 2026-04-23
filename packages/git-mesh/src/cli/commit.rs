@@ -1,12 +1,12 @@
 //! Staging + commit handlers — §6.2, §6.3, §6.4, §10.5.
 
-use crate::cli::{parse_range_address, AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs, StatusArgs};
-use crate::staging::{append_prepared_add, prepare_add, StagedConfig};
-use crate::types::CopyDetection;
-use crate::{
-    append_config, append_remove, commit_mesh, read_mesh, set_message, status_view,
+use crate::cli::{
+    AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs, StatusArgs, parse_range_address,
 };
-use anyhow::{anyhow, Context, Result};
+use crate::staging::{StagedConfig, append_prepared_add, prepare_add};
+use crate::types::CopyDetection;
+use crate::{append_config, append_remove, commit_mesh, read_mesh, set_message, status_view};
+use anyhow::{Context, Result, anyhow};
 
 pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
@@ -23,7 +23,9 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
             if a == b {
                 return Err(anyhow!(
                     "duplicate range location in mesh: {}:{}-{}",
-                    a.0, a.1, a.2
+                    a.0,
+                    a.1,
+                    a.2
                 ));
             }
         }
@@ -46,7 +48,9 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         if is_staged_add && !removed.contains(a) {
             return Err(anyhow!(
                 "duplicate range location in mesh: {}:{}-{}",
-                a.0, a.1, a.2
+                a.0,
+                a.1,
+                a.2
             ));
         }
     }
@@ -111,7 +115,10 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
             None => {
                 return Err(anyhow!(
                     "range not in mesh {}: {}#L{}-L{}",
-                    args.name, path, s, e
+                    args.name,
+                    path,
+                    s,
+                    e
                 ));
             }
         }
@@ -413,12 +420,18 @@ fn print_drift_diff(
     let s_hi = (f.end as usize).min(sidecar_lines.len());
     let c_hi = (f.end as usize).min(current_lines.len());
     let a_slice: Vec<String> = if s_lo <= s_hi {
-        sidecar_lines[s_lo..s_hi].iter().map(|s| s.to_string()).collect()
+        sidecar_lines[s_lo..s_hi]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         Vec::new()
     };
     let b_slice: Vec<String> = if s_lo <= c_hi {
-        current_lines[s_lo..c_hi].iter().map(|s| s.to_string()).collect()
+        current_lines[s_lo..c_hi]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         Vec::new()
     };
@@ -456,7 +469,9 @@ pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
             // §10.5: stage a reset to the built-in default for <key>.
             // Defaults come from DEFAULT_COPY_DETECTION / DEFAULT_IGNORE_WHITESPACE.
             let entry = match unset.as_str() {
-                "copy-detection" => StagedConfig::CopyDetection(crate::types::DEFAULT_COPY_DETECTION),
+                "copy-detection" => {
+                    StagedConfig::CopyDetection(crate::types::DEFAULT_COPY_DETECTION)
+                }
                 "ignore-whitespace" => {
                     StagedConfig::IgnoreWhitespace(crate::types::DEFAULT_IGNORE_WHITESPACE)
                 }

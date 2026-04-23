@@ -5,8 +5,7 @@ mod support;
 use anyhow::Result;
 use git_mesh::types::RangeStatus;
 use git_mesh::{
-    append_add, commit_mesh, culprit_commit, resolve_mesh, resolve_range, set_message,
-    stale_meshes,
+    append_add, commit_mesh, culprit_commit, resolve_mesh, resolve_range, set_message, stale_meshes,
 };
 use support::TestRepo;
 
@@ -98,12 +97,7 @@ fn orphaned_when_range_blob_ref_missing() -> Result<()> {
     assert_eq!(mr.ranges.len(), 1);
     assert_eq!(mr.ranges[0].status, RangeStatus::Orphaned);
     // CLI path also succeeds (with --no-exit-code); porcelain reports ORPHANED.
-    let out = repo.run_mesh([
-        "stale",
-        "m",
-        "--format=porcelain",
-        "--no-exit-code",
-    ])?;
+    let out = repo.run_mesh(["stale", "m", "--format=porcelain", "--no-exit-code"])?;
     assert!(
         out.status.success(),
         "stderr={}",
@@ -166,6 +160,11 @@ fn stale_meshes_sorts_worst_first() -> Result<()> {
     repo.commit_all("mutate")?;
     let all = stale_meshes(&repo.gix_repo()?)?;
     // Worst first — "dirty" (Changed) should precede "clean" (Fresh).
-    assert!(all[0].ranges.iter().any(|r| r.status == RangeStatus::Changed));
+    assert!(
+        all[0]
+            .ranges
+            .iter()
+            .any(|r| r.status == RangeStatus::Changed)
+    );
     Ok(())
 }

@@ -30,16 +30,18 @@ fn run() -> Result<i32> {
     let first = &args[1];
     let is_flag = first.starts_with('-');
     let is_reserved = RESERVED_MESH_NAMES.contains(&first.as_str())
-        || matches!(first.as_str(), "show" | "help" | "--help" | "-h" | "--version" | "-V");
+        || matches!(
+            first.as_str(),
+            "show" | "help" | "--help" | "-h" | "--version" | "-V"
+        );
 
     if !is_flag && !is_reserved {
         // Bare `git mesh <name> [--flags...]` — parse the tail as ShowArgs.
         let mut show_argv = vec![args[0].clone(), "show".to_string()];
         show_argv.extend(args[1..].iter().cloned());
         let cli = Cli::try_parse_from(show_argv)?;
-        let cmd = cli
-            .command
-            .unwrap_or_else(|| Commands::Show(ShowArgs {
+        let cmd = cli.command.unwrap_or_else(|| {
+            Commands::Show(ShowArgs {
                 name: first.clone(),
                 oneline: false,
                 format: None,
@@ -47,7 +49,8 @@ fn run() -> Result<i32> {
                 at: None,
                 log: false,
                 limit: None,
-            }));
+            })
+        });
         return cli::dispatch(&repo, cmd);
     }
 

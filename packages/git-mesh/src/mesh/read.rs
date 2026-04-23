@@ -1,8 +1,6 @@
 //! Read-only mesh operations — §6.5, §6.6, §10.4.
 
-use crate::git::{
-    git_show_file_lines, git_stdout, resolve_ref_oid_optional, work_dir,
-};
+use crate::git::{git_show_file_lines, git_stdout, resolve_ref_oid_optional, work_dir};
 use crate::types::{CopyDetection, Mesh, MeshConfig};
 use crate::{Error, Result};
 use std::path::Path;
@@ -65,11 +63,7 @@ pub fn read_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
     read_mesh_at(repo, name, None)
 }
 
-pub fn read_mesh_at(
-    repo: &gix::Repository,
-    name: &str,
-    commit_ish: Option<&str>,
-) -> Result<Mesh> {
+pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
     let wd = work_dir(repo)?;
     let commit_oid = resolve_mesh_revision(wd, name, commit_ish)?;
     let message = git_stdout(wd, ["show", "-s", "--format=%B", &commit_oid])?;
@@ -141,11 +135,7 @@ pub fn show_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
     read_mesh(repo, name)
 }
 
-pub fn show_mesh_at(
-    repo: &gix::Repository,
-    name: &str,
-    commit_ish: Option<&str>,
-) -> Result<Mesh> {
+pub fn show_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
     read_mesh_at(repo, name, commit_ish)
 }
 
@@ -197,18 +187,10 @@ pub fn mesh_log(
         .collect()
 }
 
-pub fn is_ancestor_commit(
-    repo: &gix::Repository,
-    name: &str,
-    ancestor: &str,
-) -> Result<bool> {
+pub fn is_ancestor_commit(repo: &gix::Repository, name: &str, ancestor: &str) -> Result<bool> {
     crate::git::is_ancestor(repo, ancestor, &mesh_ref(name))
 }
 
-pub fn resolve_commit_ish(
-    repo: &gix::Repository,
-    name: &str,
-    commit_ish: &str,
-) -> Result<String> {
+pub fn resolve_commit_ish(repo: &gix::Repository, name: &str, commit_ish: &str) -> Result<String> {
     resolve_mesh_revision(work_dir(repo)?, name, Some(commit_ish))
 }

@@ -289,12 +289,12 @@ pub struct StatusArgs {
 /// concern — the library side takes already-split `(path, start, end)`
 /// arguments.
 pub fn parse_range_address(text: &str) -> anyhow::Result<(String, u32, u32)> {
-    let (path, fragment) = text
-        .split_once("#L")
-        .ok_or_else(|| anyhow::anyhow!("invalid range `{text}`; expected <path>#L<start>-L<end>"))?;
-    let (start, end) = fragment
-        .split_once("-L")
-        .ok_or_else(|| anyhow::anyhow!("invalid range `{text}`; expected <path>#L<start>-L<end>"))?;
+    let (path, fragment) = text.split_once("#L").ok_or_else(|| {
+        anyhow::anyhow!("invalid range `{text}`; expected <path>#L<start>-L<end>")
+    })?;
+    let (start, end) = fragment.split_once("-L").ok_or_else(|| {
+        anyhow::anyhow!("invalid range `{text}`; expected <path>#L<start>-L<end>")
+    })?;
     anyhow::ensure!(!path.is_empty(), "range path cannot be empty");
     let start: u32 = start.parse()?;
     let end: u32 = end.parse()?;

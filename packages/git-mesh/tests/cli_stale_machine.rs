@@ -139,7 +139,10 @@ fn github_actions_emits_warning_annotation() -> Result<()> {
         "expected annotation with file=file1.txt, got: {s}"
     );
     // No non-spec fields like endLine=.
-    assert!(!s.contains("endLine="), "github-actions output must not include endLine=");
+    assert!(
+        !s.contains("endLine="),
+        "github-actions output must not include endLine="
+    );
     Ok(())
 }
 

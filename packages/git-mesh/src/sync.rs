@@ -11,8 +11,10 @@ const REFSPECS: [&str; 2] = [
 
 pub fn default_remote(repo: &gix::Repository) -> Result<String> {
     let wd = work_dir(repo)?;
-    Ok(git_stdout_optional(wd, ["config", "--get", "mesh.defaultRemote"])?
-        .unwrap_or_else(|| "origin".to_string()))
+    Ok(
+        git_stdout_optional(wd, ["config", "--get", "mesh.defaultRemote"])?
+            .unwrap_or_else(|| "origin".to_string()),
+    )
 }
 
 pub fn fetch_mesh_refs(repo: &gix::Repository, remote: &str) -> Result<()> {

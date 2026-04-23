@@ -139,7 +139,10 @@ fn human_output_groups_worst_first_orphaned_changed_moved() -> Result<()> {
     // "Changed ranges:" labelled section
     assert!(stdout.contains("Changed ranges:"));
     // Culprit line should include "caused by <short> <subject>"
-    assert!(stdout.contains("caused by "), "culprit attribution missing: {stdout}");
+    assert!(
+        stdout.contains("caused by "),
+        "culprit attribution missing: {stdout}"
+    );
     // Flat diff (no leading 2-space indent on `---`/`+++` lines).
     assert!(stdout.contains("--- file1.txt#L1-L5 (anchored)"));
     assert!(stdout.contains("+++ file1.txt"));
@@ -155,7 +158,9 @@ fn human_oneline_emits_status_path_range_per_line() -> Result<()> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Should contain a line starting with `CHANGED` and the range.
     assert!(
-        stdout.lines().any(|l| l.starts_with("CHANGED") && l.contains("file1.txt#L1-L5")),
+        stdout
+            .lines()
+            .any(|l| l.starts_with("CHANGED") && l.contains("file1.txt#L1-L5")),
         "oneline content: {stdout}"
     );
     // No mesh header.

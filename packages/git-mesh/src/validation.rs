@@ -58,7 +58,9 @@ fn validate_ref_component(value: &str) -> Result<()> {
             return Err(bad(format!("`{value}` must not contain whitespace")));
         }
         if ch.is_control() {
-            return Err(bad(format!("`{value}` must not contain control characters")));
+            return Err(bad(format!(
+                "`{value}` must not contain control characters"
+            )));
         }
         if matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\') {
             return Err(bad(format!("`{value}` must not contain `{ch}`")));

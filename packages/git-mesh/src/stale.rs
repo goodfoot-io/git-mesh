@@ -61,10 +61,7 @@ fn orphaned_placeholder(range_id: &str) -> RangeResolved {
     }
 }
 
-pub fn culprit_commit(
-    repo: &gix::Repository,
-    resolved: &RangeResolved,
-) -> Result<Option<String>> {
+pub fn culprit_commit(repo: &gix::Repository, resolved: &RangeResolved) -> Result<Option<String>> {
     if resolved.status != RangeStatus::Changed {
         return Ok(None);
     }
@@ -102,8 +99,18 @@ pub fn stale_meshes(repo: &gix::Repository) -> Result<Vec<MeshResolved>> {
     }
     // Worst-first: highest status among ranges, descending.
     out.sort_by(|a, b| {
-        let max_a = a.ranges.iter().map(|r| r.status).max().unwrap_or(RangeStatus::Fresh);
-        let max_b = b.ranges.iter().map(|r| r.status).max().unwrap_or(RangeStatus::Fresh);
+        let max_a = a
+            .ranges
+            .iter()
+            .map(|r| r.status)
+            .max()
+            .unwrap_or(RangeStatus::Fresh);
+        let max_b = b
+            .ranges
+            .iter()
+            .map(|r| r.status)
+            .max()
+            .unwrap_or(RangeStatus::Fresh);
         max_b.cmp(&max_a)
     });
     Ok(out)
@@ -195,7 +202,9 @@ fn is_commit_reachable(work_dir: &Path, commit: &str) -> Result<bool> {
             "refs",
         ],
     );
-    Ok(output.map(|o| o.lines().any(|l| !l.is_empty())).unwrap_or(false))
+    Ok(output
+        .map(|o| o.lines().any(|l| !l.is_empty()))
+        .unwrap_or(false))
 }
 
 #[derive(Clone, Debug)]
@@ -398,8 +407,10 @@ fn compute_new_range(
 fn parse_hunk(text: &str) -> Result<(u32, u32)> {
     let (start, count) = match text.split_once(',') {
         Some((s, c)) => (
-            s.parse().map_err(|_| Error::Parse("bad hunk start".into()))?,
-            c.parse().map_err(|_| Error::Parse("bad hunk count".into()))?,
+            s.parse()
+                .map_err(|_| Error::Parse("bad hunk start".into()))?,
+            c.parse()
+                .map_err(|_| Error::Parse("bad hunk count".into()))?,
         ),
         None => (
             text.parse().map_err(|_| Error::Parse("bad hunk".into()))?,
