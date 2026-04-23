@@ -1,0 +1,85 @@
+{
+  "name": "git-mesh",
+  "displayName": "Git Mesh",
+  "description": "Installs and exposes the Git Mesh CLI in VS Code.",
+  "version": "1.0.0",
+  "publisher": "goodfoot",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.101.0",
+    "node": ">=22"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/bundle.cjs",
+  "contributes": {
+    "configuration": {
+      "title": "Git Mesh",
+      "properties": {
+        "gitMesh.binary.releaseBaseUrl": {
+          "type": "string",
+          "default": "https://github.com/goodfoot-io/git-mesh/releases/download",
+          "description": "Base URL used to download managed Git Mesh CLI release assets."
+        },
+        "gitMesh.binary.usePathFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the extension to use a git-mesh binary already on PATH instead of the managed install. Intended for development and advanced setups."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "gitMesh.retryInstall",
+        "title": "Retry CLI Install",
+        "category": "Git Mesh"
+      },
+      {
+        "command": "gitMesh.showVersion",
+        "title": "Show CLI Version",
+        "category": "Git Mesh"
+      },
+      {
+        "command": "gitMesh.openTerminal",
+        "title": "Open Terminal",
+        "category": "Git Mesh"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "node scripts/build/build-production.js",
+    "build": "vsce package --no-dependencies && { [ -n \"${SKIP_INSTALL:-}\" ] || bash scripts/install-vsix.sh; }",
+    "build:testing": "node scripts/build/build-testing.js",
+    "test": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' tsx ./test/runTest.ts",
+    "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test ./scripts && jsdoczoom -l",
+    "typecheck": "tsgo --noEmit",
+    "clean": "rm -rf dist out dist-test-* *.vsix tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/vscode": "^1.100.0",
+    "@typescript/native-preview": "^7.0.0-dev",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "3.7.1",
+    "esbuild": "^0.27.2",
+    "glob": "^13.0.0",
+    "jsdoczoom": "^1.2.3",
+    "mocha": "^11.7.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goodfoot-io/git-mesh"
+  },
+  "author": {
+    "name": "Goodfoot Media LLC",
+    "url": "https://goodfoot.io"
+  }
+}

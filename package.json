@@ -1,0 +1,41 @@
+{
+  "name": "@goodfoot/git-mesh-monorepo",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-mesh.git"
+  },
+  "workspaces": {
+    "packages": [
+      "packages/*",
+      "npm/*"
+    ]
+  },
+  "scripts": {
+    "reset": "find . -type d -name node_modules | xargs rm -rf && rm -rf yarn.lock",
+    "knip": "knip --config ./knip.config.json",
+    "knip:fix": "knip --fix --config ./knip.config.json",
+    "lint": "yarn workspaces foreach --parallel -A run lint",
+    "test": "yarn workspaces foreach -A run test",
+    "test:skip-cache": "DISABLE_TEST_CACHE=true yarn workspaces foreach -A run test",
+    "typecheck": "bash scripts/typecheck.sh",
+    "build": "yarn workspaces foreach -At run build",
+    "watch": "yarn workspaces foreach -Api run watch",
+    "build:debug": "yarn workspaces foreach -A run build:debug",
+    "clean:tsbuildinfo": "find . \\( -name 'tsconfig.tsbuildinfo' -o -name 'tsconfig.typecheck-main.tsbuildinfo' \\) -not -path '*/node_modules/*' -not -path '*/.worktrees/*' -delete",
+    "validate": "bash scripts/validate.sh",
+    "bump": "bash scripts/bump.sh && yarn install",
+    "release": "bash scripts/release.sh"
+  },
+  "private": true,
+  "packageManager": "yarn@4.13.0",
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
+    "@types/node": "24.x",
+    "knip": "^5.82.1",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "puppeteer-core": "^24.42.0"
+  }
+}

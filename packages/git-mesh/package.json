@@ -1,0 +1,28 @@
+{
+  "name": "@goodfoot/git-mesh",
+  "version": "1.0.0",
+  "bin": "bin/git-mesh",
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "build": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
+    "build:clean": "rm -rf target/build target/lint target/test target/typecheck && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
+    "test": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/test cargo test --quiet -- --test-threads=1",
+    "lint": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/lint cargo clippy --quiet -- -D warnings",
+    "typecheck": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/typecheck cargo check --quiet"
+  },
+  "files": [
+    "bin/",
+    "scripts/postinstall.js"
+  ],
+  "optionalDependencies": {
+    "@goodfoot/git-mesh-darwin-arm64": "1.0.0",
+    "@goodfoot/git-mesh-darwin-x64": "1.0.0",
+    "@goodfoot/git-mesh-linux-arm64": "1.0.0",
+    "@goodfoot/git-mesh-linux-x64": "1.0.0",
+    "@goodfoot/git-mesh-win32-x64": "1.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-mesh.git"
+  }
+}

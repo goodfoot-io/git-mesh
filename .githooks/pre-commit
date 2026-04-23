@@ -1,0 +1,84 @@
+#!/bin/bash
+# Pre-commit hook:
+# 1. Keep package manifest versions locked to the highest semver.
+# 2. Run Biome fixes on staged TS/JS files.
+
+set -e
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=d)
+
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/extension/package\.json|packages/git-mesh/package\.json)$' || true)
+if [ -n "$VERSION_LOCK_STAGED" ]; then
+    echo "Locking package versions to highest semver..."
+    node <<'NODE'
+const fs = require('fs');
+
+const files = [
+  'package.json',
+  'packages/extension/package.json',
+  'packages/git-mesh/package.json'
+];
+
+function parseSemver(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (match == null) {
+    throw new Error(`Unsupported package version: ${version}`);
+  }
+  return match.slice(1).map(Number);
+}
+
+function compareSemver(a, b) {
+  const left = parseSemver(a);
+  const right = parseSemver(b);
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return left[i] - right[i];
+  }
+  return 0;
+}
+
+const packages = files.map((file) => ({
+  file,
+  json: JSON.parse(fs.readFileSync(file, 'utf8'))
+}));
+const highest = packages.map((entry) => entry.json.version).sort(compareSemver).at(-1);
+
+for (const entry of packages) {
+  if (entry.json.version !== highest) {
+    entry.json.version = highest;
+    fs.writeFileSync(entry.file, `${JSON.stringify(entry.json, null, 2)}\n`);
+  }
+}
+NODE
+    bash scripts/sync-versions.sh
+    yarn install
+    git add package.json packages/extension/package.json packages/git-mesh/package.json npm/git-mesh-*/package.json
+    git add yarn.lock .yarn/install-state.gz 2>/dev/null || true
+fi
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=d)
+
+BIOME_STAGED=$(echo "$STAGED_FILES" | grep -E '\.(ts|tsx|js|jsx)$' || true)
+if [ -z "$BIOME_STAGED" ]; then
+    exit 0
+fi
+
+echo "Running biome check --fix on staged files..."
+yarn biome check --fix --staged --no-errors-on-unmatched
+
+BIOME_CHANGED=""
+for f in $BIOME_STAGED; do
+    if ! git diff --quiet -- "$f" 2>/dev/null; then
+        BIOME_CHANGED="$BIOME_CHANGED $f"
+    fi
+done
+
+if [ -n "$BIOME_CHANGED" ]; then
+    git add $BIOME_CHANGED
+    echo "Re-staged biome-fixed files:$BIOME_CHANGED"
+fi
+
+exit 0

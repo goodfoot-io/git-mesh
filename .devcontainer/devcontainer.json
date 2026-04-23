@@ -1,0 +1,49 @@
+{
+  "name": "Git Mesh",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "biomejs.biome",
+        "yutengjing.vscode-mcp-bridge"
+      ],
+      "settings": {
+        "git.path": "/usr/bin/git",
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "biomejs.biome",
+        "editor.codeActionsOnSave": {
+          "source.organizeImports.biome": "explicit"
+        },
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "bash",
+            "icon": "terminal-bash"
+          },
+          "zsh": {
+            "path": "zsh"
+          }
+        },
+        "remote.autoForwardPorts": false
+      }
+    }
+  },
+  "remoteUser": "node",
+  "mounts": [
+    "source=claude-code-bashhistory,target=/commandhistory,type=volume",
+    "source=${localWorkspaceFolder}/.git,target=/workspace/.git,type=bind,consistency=cached"
+  ],
+  "remoteEnv": {
+    "TZ": "America/New_York",
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude",
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
+    "VSCODE_RECONNECTION_GRACE_TIME": "60000",
+    "PATH": "${containerEnv:PATH}:/home/node/.cargo/bin:/home/node/.local/bin:/workspace/.devcontainer/utilities"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "forwardPorts": [8080],
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
+}

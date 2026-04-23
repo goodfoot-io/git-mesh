@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-cli:
+    name: Build CLI (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/git-mesh
+
+      - name: Cargo check
+        run: cd packages/git-mesh && cargo check --quiet
+
+      - name: Cargo clippy
+        run: cd packages/git-mesh && cargo clippy --quiet -- -D warnings
+
+      - name: Cargo test
+        run: cd packages/git-mesh && cargo test --quiet -- --test-threads=1
+
+      - name: Cargo build (release)
+        run: cd packages/git-mesh && cargo build --release
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-mesh-cli
+          path: packages/git-mesh/target/release/git-mesh
+          retention-days: 1
+
+  build-extension:
+    name: Build Extension (TypeScript)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Download CLI binary
+        uses: actions/download-artifact@v4
+        with:
+          name: git-mesh-cli
+
+      - name: Place CLI binary on PATH
+        run: chmod +x git-mesh && sudo mv git-mesh /usr/local/bin/
+
+      - name: Install Xvfb
+        run: sudo apt-get install -y xvfb
+
+      - name: Lint
+        run: cd packages/extension && yarn lint
+
+      - name: Typecheck
+        run: cd packages/extension && yarn typecheck
+
+      - name: Test
+        run: cd packages/extension && yarn test
+
+      - name: Build
+        run: cd packages/extension && yarn build

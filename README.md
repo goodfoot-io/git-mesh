@@ -1,0 +1,106 @@
+# git-mesh
+
+`git-mesh` is a Rust CLI for recording durable relationships between exact
+line ranges in a Git repository. It stores mesh metadata in Git refs so teams
+can review, fetch, push, and audit those relationships alongside the code they
+describe.
+
+The monorepo ships:
+
+- **`@goodfoot/git-mesh`** - the Rust CLI and npm wrapper
+- **`goodfoot.git-mesh`** - a lightweight VS Code extension that manages the
+  packaged `git-mesh` binary and exposes command entry points
+
+The extension intentionally does not include a visualization webview yet. The
+current goal is reliable binary resolution and command execution; richer mesh
+visualization will be added later.
+
+## CLI
+
+During local development, run commands from `packages/git-mesh`:
+
+```bash
+cd packages/git-mesh
+yarn build
+```
+
+Common command shape:
+
+```bash
+git mesh doctor
+git mesh add frontend-backend-sync src/client.ts#L10-L40 src/server.ts#L20-L64
+git mesh message frontend-backend-sync -m "Client request matches server handler"
+git mesh commit frontend-backend-sync
+git mesh stale frontend-backend-sync
+```
+
+See [docs/git-mesh-the-missing-handbook.md](./docs/git-mesh-the-missing-handbook.md)
+for the project model and workflow.
+
+## VS Code Extension
+
+The VS Code extension is named `git-mesh` and publishes as
+`goodfoot.git-mesh`. For now it is a lightweight command and binary manager:
+
+- resolves the packaged `git-mesh` executable for the current platform
+- installs or retries the managed binary when needed
+- exposes Git Mesh command entry points inside VS Code
+- keeps terminal PATH integration focused on the managed binary
+
+It does not register a custom editor, Markdown renderer, search UI, or webview.
+
+## Monorepo Layout
+
+```text
+.
+├── packages/
+│   ├── git-mesh/       # @goodfoot/git-mesh Rust CLI
+│   └── extension/      # goodfoot.git-mesh VS Code extension
+├── npm/
+│   └── git-mesh-*/     # platform-specific binary distribution packages
+├── docs/
+│   ├── git-mesh-the-missing-handbook.md
+│   └── cross-compilation.md
+└── scripts/
+    ├── sync-versions.sh
+    ├── validate.sh
+    └── release.sh
+```
+
+## Contributing
+
+```bash
+git clone https://github.com/goodfoot-io/git-mesh.git
+cd git-mesh
+yarn install
+yarn build
+yarn validate
+```
+
+Use Yarn for all JavaScript package management. Per-package validation should
+run from the package directory that contains the changed files:
+
+```bash
+cd packages/git-mesh
+yarn lint
+yarn typecheck
+yarn test
+
+cd ../extension
+yarn lint
+yarn typecheck
+yarn test
+```
+
+Run `yarn validate` from the workspace root before finalizing code or
+configuration changes.
+
+## Releases
+
+Releases are tag-driven from `goodfoot-io/git-mesh`. CLI and extension release
+assets use `git-mesh` names, including `git-mesh-v*` tags and
+`git-mesh-cli-checksums.json`.
+
+## License
+
+MIT - Copyright (c) 2026 Goodfoot Media LLC. See [LICENSE](./LICENSE).

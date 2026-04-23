@@ -1,0 +1,181 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "git-mesh-v*"
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            npm-pkg: git-mesh-linux-x64
+            binary: git-mesh
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            npm-pkg: git-mesh-linux-arm64
+            binary: git-mesh
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            npm-pkg: git-mesh-darwin-x64
+            binary: git-mesh
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            npm-pkg: git-mesh-darwin-arm64
+            binary: git-mesh
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            npm-pkg: git-mesh-win32-x64
+            binary: git-mesh.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          target: ${{ matrix.target }}
+          working-directory: packages/git-mesh
+          args: --release
+
+      - name: Copy binary to npm package
+        shell: bash
+        run: |
+          mkdir -p npm/${{ matrix.npm-pkg }}/bin
+          cp packages/git-mesh/target/${{ matrix.target }}/release/${{ matrix.binary }} npm/${{ matrix.npm-pkg }}/bin/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.npm-pkg }}
+          path: npm/${{ matrix.npm-pkg }}/
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare platform packages
+        run: |
+          for pkg in git-mesh-linux-x64 git-mesh-linux-arm64 git-mesh-darwin-x64 git-mesh-darwin-arm64 git-mesh-win32-x64; do
+            cp -r artifacts/$pkg/* npm/$pkg/
+            chmod +x npm/$pkg/bin/git-mesh* 2>/dev/null || true
+          done
+
+      - name: Publish platform packages
+        run: |
+          for pkg in git-mesh-linux-x64 git-mesh-linux-arm64 git-mesh-darwin-x64 git-mesh-darwin-arm64 git-mesh-win32-x64; do
+            echo "Publishing @goodfoot/$pkg..."
+            cd npm/$pkg
+            npm publish --access public --provenance
+            cd ../..
+          done
+
+      - name: Publish meta-package
+        working-directory: packages/git-mesh
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json'));
+            for (const k of Object.keys(pkg.optionalDependencies || {}))
+              pkg.optionalDependencies[k] = pkg.version;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+          npm publish --access public --provenance
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          for pkg in git-mesh-linux-x64 git-mesh-linux-arm64 git-mesh-darwin-x64 git-mesh-darwin-arm64 git-mesh-win32-x64; do
+            if [ -f "artifacts/$pkg/bin/git-mesh.exe" ]; then
+              cp "artifacts/$pkg/bin/git-mesh.exe" "release-assets/$pkg.exe"
+            else
+              cp "artifacts/$pkg/bin/git-mesh" "release-assets/$pkg"
+            fi
+          done
+
+      - name: Generate checksums manifest
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          node <<'EOF'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const releaseVersion = process.env.RELEASE_VERSION.replace(/^git-mesh-v/, '');
+          const releaseDir = path.join(process.cwd(), 'release-assets');
+          const assets = {
+            'linux-x64': 'git-mesh-linux-x64',
+            'linux-arm64': 'git-mesh-linux-arm64',
+            'darwin-x64': 'git-mesh-darwin-x64',
+            'darwin-arm64': 'git-mesh-darwin-arm64',
+            'win32-x64': 'git-mesh-win32-x64.exe'
+          };
+
+          const manifest = { version: releaseVersion, assets: {} };
+          for (const [key, fileName] of Object.entries(assets)) {
+            const sha256 = crypto.createHash('sha256').update(fs.readFileSync(path.join(releaseDir, fileName))).digest('hex');
+            manifest.assets[key] = { name: fileName, sha256 };
+          }
+
+          fs.writeFileSync(path.join(releaseDir, 'git-mesh-cli-checksums.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
+
+  release-extension:
+    needs:
+      - publish-npm
+      - github-release
+    uses: ./.github/workflows/release-extension.yml
+    secrets: inherit
+    with:
+      release_tag: ${{ github.ref_name }}

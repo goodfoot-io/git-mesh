@@ -1,0 +1,81 @@
+#!/bin/bash
+# Git merge driver for package manifests.
+# Performs a standard 3-way merge, then resolves any remaining conflicts
+# where the only difference is a "version": "x.y.z" field by picking the
+# highest semver.
+#
+# Invoked by git with: %O %A %B %P
+#   $1 = ancestor (base)
+#   $2 = current (ours) — also the output path
+#   $3 = other (theirs)
+#   $4 = pathname (for logging)
+
+set -e
+
+BASE="$1"
+OURS="$2"
+THEIRS="$3"
+PATHNAME="${4:-unknown}"
+
+# Standard 3-way merge first — clean merges exit 0 here.
+if git merge-file -L ours -L base -L theirs "$OURS" "$BASE" "$THEIRS"; then
+    exit 0
+fi
+
+# Conflicts remain. Try to resolve version-only conflict hunks.
+python3 - "$OURS" "$PATHNAME" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+pathname = sys.argv[2]
+
+with open(path) as f:
+    content = f.read()
+
+conflict_re = re.compile(
+    r'<<<<<<< ours\n(.*?)\n=======\n(.*?)\n>>>>>>> theirs\n',
+    re.DOTALL,
+)
+version_re = re.compile(r'"version"\s*:\s*"(\d+\.\d+\.\d+)"')
+
+
+def semver(v):
+    return tuple(int(p) for p in v.split('.'))
+
+
+def resolve(match):
+    ours, theirs = match.group(1), match.group(2)
+    ours_versions = version_re.findall(ours)
+    theirs_versions = version_re.findall(theirs)
+
+    if not ours_versions or len(ours_versions) != len(theirs_versions):
+        return match.group(0)
+
+    # Non-version differences must be absent for a clean version-only resolution.
+    ours_norm = version_re.sub('"version": "X"', ours)
+    theirs_norm = version_re.sub('"version": "X"', theirs)
+    if ours_norm != theirs_norm:
+        return match.group(0)
+
+    winners = [
+        o if semver(o) >= semver(t) else t
+        for o, t in zip(ours_versions, theirs_versions)
+    ]
+    it = iter(winners)
+    return version_re.sub(lambda _: f'"version": "{next(it)}"', ours) + '\n'
+
+
+new_content = conflict_re.sub(resolve, content)
+
+if '<<<<<<< ours' in new_content:
+    sys.stderr.write(
+        f'merge-json-version: unresolved non-version conflict in {pathname}\n'
+    )
+    with open(path, 'w') as f:
+        f.write(new_content)
+    sys.exit(1)
+
+with open(path, 'w') as f:
+    f.write(new_content)
+PY

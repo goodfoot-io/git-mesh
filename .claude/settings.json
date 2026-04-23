@@ -1,0 +1,81 @@
+{
+  "env": {
+    "MAX_MCP_OUTPUT_TOKENS": "100000",
+    "CLAUDE_CODE_NO_FLICKER": "1",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "100000",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_API_HOOKS_LOG_FILE": "/workspace/.cards/logs/claude-code-cards-api-hooks.log"
+  },
+  "permissions": {
+    "allow": [],
+    "deny": [
+      "NotebookRead",
+      "NotebookEdit",
+      "EnterPlanMode",
+      "ExitPlanMode",
+      "EnterWorktree",
+      "ExitWorktree",
+      "LSP",
+      "Read(.worktrees/)",
+      "Read(./packages/extension/dist/)"
+    ],
+    "defaultMode": "bypassPermissions",
+    "disableAutoMode": "disable"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\a'"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "typescript-lsp@claude-plugins-official": false,
+    "typescript-hooks@goodfoot": true,
+    "typescript-claude-code-for-web-setup@goodfoot": false,
+    "project@goodfoot": false,
+    "vscode@goodfoot": true,
+    "goodfoot@goodfoot": true,
+    "jsdoczoom@goodfoot": true,
+    "expansion@goodfoot": true,
+    "browser@goodfoot": true,
+    "github@goodfoot": false,
+    "code-simplifier@claude-plugins-official": true,
+    "impeccable@impeccable": false,
+    "frontend-design@claude-plugins-official": true,
+    "plugin-dev@claude-plugins-official": true,
+    "claude-code-hooks@goodfoot": true,
+    "last30days@last30days-skill": true
+  },
+  "extraKnownMarketplaces": {
+    "last30days-skill": {
+      "source": {
+        "source": "github",
+        "repo": "mvanhorn/last30days-skill"
+      }
+    },
+    "impeccable": {
+      "source": {
+        "source": "github",
+        "repo": "pbakaus/impeccable"
+      }
+    },
+    "goodfoot": {
+      "source": {
+        "source": "github",
+        "repo": "goodfoot-io/marketplace"
+      }
+    },
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+out/
+dist/
+node_modules/
+*.vsix
+*.log
+.vscode-test/
+.DS_Store
+*.map
+metafile.json
+.build-swap.lock
+.dist-temp-*
+dist-test-*/
+!scripts/build/

@@ -1,0 +1,16 @@
+# Enforce LF line endings in the repository on all platforms
+* text=auto
+*.ts text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Resolve package version conflicts by picking the highest semver.
+package.json merge=json-version
+packages/extension/package.json merge=json-version
+packages/git-mesh/package.json merge=json-version

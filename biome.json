@@ -1,0 +1,95 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.13/schema.json",
+  "formatter": {
+    "enabled": true,
+    "lineWidth": 120,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "javascript": {
+    "formatter": {
+      "semicolons": "always",
+      "trailingCommas": "none",
+      "quoteStyle": "single"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "domains": {
+      "test": "recommended"
+    },
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": "warn",
+        "noInvalidUseBeforeDeclaration": "warn"
+      },
+      "style": {
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "noTemplateCurlyInString": "off",
+        "noArrayIndexKey": "warn",
+        "noNonNullAssertedOptionalChain": "off",
+        "useIterableCallbackReturn": "warn",
+        "noImplicitAnyLet": "warn",
+        "noAssignInExpressions": "warn",
+        "noUnsafeDeclarationMerging": "off"
+      },
+      "complexity": {
+        "noStaticOnlyClass": "warn",
+        "useLiteralKeys": "off"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "warn"
+      }
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": {
+          "level": "on",
+          "options": {
+            "groups": [":NODE:", ":PACKAGE:", ["@goodfoot/**"], ":PATH:"]
+          }
+        }
+      }
+    }
+  },
+  "files": {
+    "includes": [
+      "**/*.ts",
+      "**/*.tsx",
+      "**/*.js",
+      "**/*.jsx",
+      "!!**/node_modules",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/target",
+      "!!**/coverage",
+      "!!**/.next",
+      "!!**/.cache",
+      "!!**/*.log"
+    ]
+  },
+  "overrides": [
+    {
+      "includes": ["**/rendering/MarkdownRenderer.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noControlCharactersInRegex": "off",
+            "noMisleadingCharacterClass": "off"
+          }
+        }
+      }
+    }
+  ]
+}

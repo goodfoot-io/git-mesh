@@ -1,0 +1,76 @@
+name: Release Extension
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Verify matching CLI release assets
+        run: |
+          VERSION=$(node -p "require('./packages/extension/package.json').version")
+          EXPECTED_TAG="git-mesh-v${VERSION}"
+          if [ "${EXPECTED_TAG}" != "${{ inputs.release_tag }}" ]; then
+            echo "ERROR: release tag '${{ inputs.release_tag }}' does not match extension version ${VERSION}." >&2
+            exit 1
+          fi
+          BASE_URL="https://github.com/goodfoot-io/git-mesh/releases/download/${{ inputs.release_tag }}"
+          for asset in \
+            git-mesh-cli-checksums.json \
+            git-mesh-linux-x64 \
+            git-mesh-linux-arm64 \
+            git-mesh-darwin-x64 \
+            git-mesh-darwin-arm64 \
+            git-mesh-win32-x64.exe
+          do
+            curl -fsI "${BASE_URL}/${asset}" > /dev/null
+          done
+
+      - name: Production build
+        working-directory: packages/extension
+        run: yarn vscode:prepublish
+
+      - name: Package extension
+        working-directory: packages/extension
+        run: yarn vsce package --no-dependencies
+
+      - name: Publish to VS Code Marketplace
+        working-directory: packages/extension
+        run: yarn vsce publish --pat ${{ secrets.GIT_MESH_EXTENSION_VS_MARKETPLACE_TOKEN }} --no-dependencies
+
+      - name: Publish to Open VSX
+        working-directory: packages/extension
+        run: yarn dlx ovsx publish *.vsix --pat ${{ secrets.GIT_MESH_EXTENSION_OPEN_VSX_TOKEN }}
+
+      - name: Upload VSIX to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: packages/extension/*.vsix

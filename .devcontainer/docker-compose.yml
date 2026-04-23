@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  app:
+    hostname: git-mesh
+    extra_hosts:
+      - "git-mesh:127.0.0.1"
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspace:cached
+      - ${HOME}/devcontainer/git-mesh:/home/node:cached
+    environment:
+      - NODE_OPTIONS=--max-old-space-size=8192
+      - CLAUDE_CONFIG_DIR=/home/node/.claude
+    network_mode: host
+    dns:
+      - 1.1.1.1
+    command: sleep infinity

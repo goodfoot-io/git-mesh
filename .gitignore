@@ -1,0 +1,73 @@
+# Logs
+logs
+*.log
+
+# Build artifacts
+target/
+
+# Runtime data
+pids
+*.pid
+*.seed
+
+# Coverage directory used by tools like istanbul
+coverage
+
+# Dependency directory
+node_modules
+
+# Users Environment Variables
+.lock-wscript
+
+.DS_Store
+
+.env
+.env.local
+.env.test
+
+# Yarn 4.x specific
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+
+# IDE specific
+.cursor/
+*.code-workspace
+
+# TypeScript
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Build directories
+dist/
+*/dist/
+build/
+*/build/
+
+# Additional logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+.nyc_output
+*.lcov
+.jest/
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# VSCode extension artifacts
+*.vsix
+
+.yarn/install-state.gz
+
+.worktrees
+*.lock
+.devcontainer/home/

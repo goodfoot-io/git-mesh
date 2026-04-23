@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "./tsconfig.typecheck-main.tsbuildinfo",
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "allowUnusedLabels": false,
+    "allowUnreachableCode": false,
+    "typeRoots": ["./types", "./node_modules/@types"]
+  },
+  "include": [
+    "packages/extension/src/**/*.ts",
+    "packages/extension/test/**/*.ts"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/dist",
+    "**/build"
+  ]
+}

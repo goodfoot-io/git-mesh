@@ -1,0 +1,59 @@
+# Source files (already bundled)
+src/**
+*.ts
+
+# Test files and test build directories
+test/**
+dist-test-*/**
+*.test.ts
+*.test.js
+.vscode-test/**
+.vscode-test
+
+# Build configuration and tools
+tsconfig.json
+tsconfig.tsbuildinfo
+
+# Build and release scripts
+scripts/**
+
+# Development files
+.vscode/**
+.gitignore
+.editorconfig
+
+# Build artifacts and intermediate files
+build/**
+build
+out/**
+out
+*.map
+dist/**/*.d.ts
+dist/**/*.d.ts.map
+dist/**/*.js.map
+
+# Package files
+node_modules/**
+.yarn/**
+yarn.lock
+.yarnrc.yml
+
+# Documentation
+*.md
+!README.md
+
+# CI/CD and version control
+.github/**
+.git/**
+.gitattributes
+
+# Package output
+*.vsix
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+.env
+.env.*
