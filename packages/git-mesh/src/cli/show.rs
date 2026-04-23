@@ -61,11 +61,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
             } else {
                 short(&r.anchor_sha).into()
             };
-            let (start, end) = match r.extent {
-                RangeExtent::Lines { start, end } => (start, end),
-                RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+            let addr = match r.extent {
+                RangeExtent::Lines { start, end } => format!("{}#L{}-L{}", r.path, start, end),
+                RangeExtent::Whole => r.path.clone(),
             };
-            println!("{sha}  {}#L{}-L{}", r.path, start, end);
+            println!("{sha}  {addr}");
         }
         return Ok(0);
     }
@@ -87,11 +87,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         } else {
             short(&r.anchor_sha).into()
         };
-        let (start, end) = match r.extent {
-            RangeExtent::Lines { start, end } => (start, end),
-            RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+        let addr = match r.extent {
+            RangeExtent::Lines { start, end } => format!("{}#L{}-L{}", r.path, start, end),
+            RangeExtent::Whole => r.path.clone(),
         };
-        println!("    {sha}  {}#L{}-L{}", r.path, start, end);
+        println!("    {sha}  {addr}");
     }
 
     // Consume unused field warning via bind.
@@ -239,13 +239,13 @@ fn evaluate_mesh_token(
                         } else {
                             short(&r.anchor_sha).to_string()
                         };
-                        let (start, end) = match r.extent {
-                            RangeExtent::Lines { start, end } => (start, end),
-                            RangeExtent::Whole => {
-                                todo!("whole-file support lands in a later slice")
+                        let addr = match r.extent {
+                            RangeExtent::Lines { start, end } => {
+                                format!("{}#L{}-L{}", r.path, start, end)
                             }
+                            RangeExtent::Whole => r.path.clone(),
                         };
-                        lines.push(format!("{sha}  {}#L{}-L{}", r.path, start, end));
+                        lines.push(format!("{sha}  {addr}"));
                     }
                     Err(_) => lines.push(format!("<missing>  <{id}>")),
                 }

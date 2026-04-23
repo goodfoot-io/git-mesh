@@ -4,17 +4,25 @@
 //! - `<name>`           — pending operations, one per line
 //! - `<name>.msg`       — staged commit message (optional)
 //! - `<name>.<N>`       — full-file sidecar bytes per staged `add` line
+//! - `<name>.<N>.meta`  — JSON sidecar metadata (freshness stamp +
+//!   acknowledged `range_id`); see plan §B2 / §D3.
 //!
 //! Operation line format:
 //! ```text
 //! add <path>#L<start>-L<end>[\t<anchor-sha>]
+//! add <path>[\t<anchor-sha>]                    # whole-file pin (D2)
 //! remove <path>#L<start>-L<end>
+//! remove <path>                                 # whole-file pin (D2)
 //! config <key> <value>
 //! ```
 
 use crate::git::{self, work_dir};
-use crate::types::{CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE};
+use crate::types::{
+    CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE, NormalizationStamp,
+    RangeExtent,
+};
 use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,18 +30,34 @@ const ADD_ANCHOR_SEPARATOR: char = '\t';
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StagedAdd {
+    /// `N` in `<mesh>.<N>` — sidecar/file ordering key (1-based).
     pub line_number: u32,
     pub path: String,
-    pub start: u32,
-    pub end: u32,
+    pub extent: RangeExtent,
     pub anchor: Option<String>,
+}
+
+impl StagedAdd {
+    /// Convenience: line-range start (or `0` for whole-file).
+    pub fn start(&self) -> u32 {
+        match self.extent {
+            RangeExtent::Lines { start, .. } => start,
+            RangeExtent::Whole => 0,
+        }
+    }
+    /// Convenience: line-range end (or `0` for whole-file).
+    pub fn end(&self) -> u32 {
+        match self.extent {
+            RangeExtent::Lines { end, .. } => end,
+            RangeExtent::Whole => 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedAdd {
     pub path: String,
-    pub start: u32,
-    pub end: u32,
+    pub extent: RangeExtent,
     pub anchor: Option<String>,
     pub bytes: Vec<u8>,
 }
@@ -41,8 +65,22 @@ pub(crate) struct PreparedAdd {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StagedRemove {
     pub path: String,
-    pub start: u32,
-    pub end: u32,
+    pub extent: RangeExtent,
+}
+
+impl StagedRemove {
+    pub fn start(&self) -> u32 {
+        match self.extent {
+            RangeExtent::Lines { start, .. } => start,
+            RangeExtent::Whole => 0,
+        }
+    }
+    pub fn end(&self) -> u32 {
+        match self.extent {
+            RangeExtent::Lines { end, .. } => end,
+            RangeExtent::Whole => 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,10 +90,6 @@ pub enum StagedConfig {
 }
 
 /// A single staged mesh operation in `.git/mesh/staging/<mesh>`.
-///
-/// Phase 1 scaffold type: `PendingState.mesh_ops` is the canonical ordered
-/// view of staged operations the engine will consume. Real population
-/// lands with the engine slice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StagedOp {
     Add(StagedAdd),
@@ -87,6 +121,20 @@ pub struct StatusView {
     pub drift: Vec<DriftFinding>,
 }
 
+/// JSON sidecar for `<mesh>.<N>` capturing the normalization-version
+/// stamp and the range_id this staged op acknowledges (if any). Plan
+/// §B2 / §D3.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SidecarMeta {
+    /// `gitattributes` SHA-1 + filter-driver-list hash captured at
+    /// `git mesh add` time.
+    pub stamp: NormalizationStamp,
+    /// The `range_id` this staged op intends to ack, if any. Resolved
+    /// at `git mesh add` time by looking up the active mesh range at
+    /// `(path, extent)`.
+    pub range_id: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Paths.
 // ---------------------------------------------------------------------------
@@ -104,8 +152,12 @@ fn msg_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
     Ok(staging_dir(repo)?.join(format!("{name}.msg")))
 }
 
-fn sidecar_path(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {
+pub(crate) fn sidecar_path(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {
     Ok(staging_dir(repo)?.join(format!("{name}.{n}")))
+}
+
+pub(crate) fn sidecar_meta_path(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {
+    Ok(staging_dir(repo)?.join(format!("{name}.{n}.meta")))
 }
 
 fn ensure_dir(p: &Path) -> Result<()> {
@@ -114,11 +166,44 @@ fn ensure_dir(p: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Address parser (line-range vs. whole-file).
+// ---------------------------------------------------------------------------
+
+/// Parse a `<path>#L<start>-L<end>` line-range address, or a bare
+/// `<path>` whole-file address. Returns `None` on malformed line-range
+/// fragments — callers should reject those at the CLI boundary.
+pub fn parse_address(text: &str) -> Option<(String, RangeExtent)> {
+    if let Some((path, fragment)) = text.split_once("#L") {
+        let (start, end) = fragment.split_once("-L")?;
+        if path.is_empty() {
+            return None;
+        }
+        let start: u32 = start.parse().ok()?;
+        let end: u32 = end.parse().ok()?;
+        if start < 1 || end < start {
+            return None;
+        }
+        return Some((path.to_string(), RangeExtent::Lines { start, end }));
+    }
+    if text.is_empty() {
+        return None;
+    }
+    Some((text.to_string(), RangeExtent::Whole))
+}
+
+/// Back-compat helper for the existing line-range tests.
+#[allow(dead_code)]
+pub(crate) fn parse_range_address(text: &str) -> Option<(String, u32, u32)> {
+    match parse_address(text)? {
+        (p, RangeExtent::Lines { start, end }) => Some((p, start, end)),
+        (_, RangeExtent::Whole) => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Parsing.
 // ---------------------------------------------------------------------------
 
-/// Parse one ops-file line into the correct bucket. Returns `Ok(None)` if
-/// the line is empty.
 fn parse_line(line: &str) -> Result<Option<ParsedLine>> {
     if line.trim().is_empty() {
         return Ok(None);
@@ -128,20 +213,19 @@ fn parse_line(line: &str) -> Result<Option<ParsedLine>> {
             Some((addr, anchor)) => (addr, Some(anchor.to_string())),
             None => (rest, None),
         };
-        let (path, start, end) =
-            parse_range_address(addr).ok_or_else(|| Error::ParseStaging { line: line.into() })?;
+        let (path, extent) =
+            parse_address(addr).ok_or_else(|| Error::ParseStaging { line: line.into() })?;
         return Ok(Some(ParsedLine::Add(StagedAdd {
             line_number: 0,
             path,
-            start,
-            end,
+            extent,
             anchor,
         })));
     }
     if let Some(rest) = line.strip_prefix("remove ") {
-        let (path, start, end) =
-            parse_range_address(rest).ok_or_else(|| Error::ParseStaging { line: line.into() })?;
-        return Ok(Some(ParsedLine::Remove(StagedRemove { path, start, end })));
+        let (path, extent) =
+            parse_address(rest).ok_or_else(|| Error::ParseStaging { line: line.into() })?;
+        return Ok(Some(ParsedLine::Remove(StagedRemove { path, extent })));
     }
     if let Some(rest) = line.strip_prefix("config ") {
         let (key, value) = rest
@@ -173,20 +257,6 @@ enum ParsedLine {
     Config(StagedConfig),
 }
 
-pub(crate) fn parse_range_address(text: &str) -> Option<(String, u32, u32)> {
-    let (path, fragment) = text.split_once("#L")?;
-    let (start, end) = fragment.split_once("-L")?;
-    if path.is_empty() {
-        return None;
-    }
-    let start: u32 = start.parse().ok()?;
-    let end: u32 = end.parse().ok()?;
-    if start < 1 || end < start {
-        return None;
-    }
-    Some((path.to_string(), start, end))
-}
-
 fn parse_copy_detection(value: &str) -> Option<CopyDetection> {
     Some(match value {
         "off" => CopyDetection::Off,
@@ -203,6 +273,13 @@ pub(crate) fn serialize_copy_detection(cd: CopyDetection) -> &'static str {
         CopyDetection::SameCommit => "same-commit",
         CopyDetection::AnyFileInCommit => "any-file-in-commit",
         CopyDetection::AnyFileInRepo => "any-file-in-repo",
+    }
+}
+
+fn format_address(path: &str, extent: RangeExtent) -> String {
+    match extent {
+        RangeExtent::Lines { start, end } => format!("{path}#L{start}-L{end}"),
+        RangeExtent::Whole => path.to_string(),
     }
 }
 
@@ -237,10 +314,39 @@ pub fn read_staging(repo: &gix::Repository, name: &str) -> Result<Staging> {
     Ok(staging)
 }
 
+/// Snapshot all staged ops in canonical order (matches the on-disk file
+/// line order). Used by the engine to populate `PendingFinding`s.
+pub fn read_staged_ops(repo: &gix::Repository, name: &str) -> Result<Vec<StagedOp>> {
+    let ops_p = ops_path(repo, name)?;
+    let mut out: Vec<StagedOp> = Vec::new();
+    if ops_p.exists() {
+        let text = fs::read_to_string(&ops_p)?;
+        let mut add_count: u32 = 0;
+        for line in text.lines() {
+            if let Some(parsed) = parse_line(line)? {
+                match parsed {
+                    ParsedLine::Add(mut a) => {
+                        add_count += 1;
+                        a.line_number = add_count;
+                        out.push(StagedOp::Add(a));
+                    }
+                    ParsedLine::Remove(r) => out.push(StagedOp::Remove(r)),
+                    ParsedLine::Config(c) => out.push(StagedOp::Config(c)),
+                }
+            }
+        }
+    }
+    let msg_p = msg_path(repo, name)?;
+    if msg_p.exists() {
+        let body = fs::read_to_string(&msg_p)?;
+        out.push(StagedOp::Message(body));
+    }
+    Ok(out)
+}
+
 fn append_line(repo: &gix::Repository, name: &str, line: &str) -> Result<u32> {
     let ops_p = ops_path(repo, name)?;
     ensure_dir(ops_p.parent().unwrap())?;
-    // Count existing add lines to compute the new add-line number.
     let existing = if ops_p.exists() {
         fs::read_to_string(&ops_p)?
     } else {
@@ -277,26 +383,47 @@ fn count_lines(bytes: &[u8]) -> u32 {
 fn validate_add_target(
     repo: &gix::Repository,
     path: &str,
-    start: u32,
-    end: u32,
+    extent: RangeExtent,
     anchor: Option<&str>,
 ) -> Result<Vec<u8>> {
     validate_staging_path(path)?;
-    if start < 1 || end < start {
-        return Err(Error::InvalidRange { start, end });
-    }
-
     let bytes = match anchor {
         Some(commit) => {
-            let blob = git::path_blob_at(repo, commit, path)?;
-            git::read_blob_bytes(repo, &blob)?
+            // Whole-file submodule gitlinks: no blob to read; treat as empty.
+            match git::path_blob_at(repo, commit, path) {
+                Ok(blob) => git::read_blob_bytes(repo, &blob).unwrap_or_default(),
+                Err(_) if matches!(extent, RangeExtent::Whole) => Vec::new(),
+                Err(e) => return Err(e),
+            }
         }
-        None => git::read_worktree_bytes(repo, path)?,
+        None => {
+            // For whole-file pins, allow missing worktree entries only
+            // when the path resolves to a tree entry at HEAD (e.g.
+            // submodule gitlinks). Otherwise reject — there is nothing
+            // to anchor on.
+            match git::read_worktree_bytes(repo, path) {
+                Ok(b) => b,
+                Err(_) if matches!(extent, RangeExtent::Whole) => {
+                    let head = git::head_oid(repo)?;
+                    if !path_exists_in_tree(repo, &head, path) {
+                        return Err(Error::Git(format!(
+                            "path not found in worktree or HEAD: {path}"
+                        )));
+                    }
+                    Vec::new()
+                }
+                Err(e) => return Err(e),
+            }
+        }
     };
-
-    let line_count = count_lines(&bytes);
-    if end > line_count {
-        return Err(Error::InvalidRange { start, end });
+    if let RangeExtent::Lines { start, end } = extent {
+        if start < 1 || end < start {
+            return Err(Error::InvalidRange { start, end });
+        }
+        let line_count = count_lines(&bytes);
+        if end > line_count {
+            return Err(Error::InvalidRange { start, end });
+        }
     }
     Ok(bytes)
 }
@@ -304,16 +431,14 @@ fn validate_add_target(
 pub(crate) fn prepare_add(
     repo: &gix::Repository,
     path: &str,
-    start: u32,
-    end: u32,
+    extent: RangeExtent,
     anchor: Option<&str>,
 ) -> Result<PreparedAdd> {
     Ok(PreparedAdd {
         path: path.to_string(),
-        start,
-        end,
+        extent,
         anchor: anchor.map(str::to_string),
-        bytes: validate_add_target(repo, path, start, end, anchor)?,
+        bytes: validate_add_target(repo, path, extent, anchor)?,
     })
 }
 
@@ -321,19 +446,25 @@ pub(crate) fn append_prepared_add(
     repo: &gix::Repository,
     name: &str,
     add: &PreparedAdd,
+    range_id: Option<String>,
 ) -> Result<()> {
+    let addr = format_address(&add.path, add.extent);
     let line = match add.anchor.as_deref() {
-        Some(sha) => format!(
-            "add {}#L{}-L{}{}{sha}",
-            add.path, add.start, add.end, ADD_ANCHOR_SEPARATOR
-        ),
-        None => format!("add {}#L{}-L{}", add.path, add.start, add.end),
+        Some(sha) => format!("add {addr}{ADD_ANCHOR_SEPARATOR}{sha}"),
+        None => format!("add {addr}"),
     };
     let add_n = append_line(repo, name, &line)?;
     fs::write(sidecar_path(repo, name, add_n)?, &add.bytes)?;
+    // Write sidecar metadata: stamp + range_id.
+    let stamp = crate::types::current_normalization_stamp(repo).unwrap_or_default();
+    let meta = SidecarMeta { stamp, range_id };
+    let meta_json = serde_json::to_vec_pretty(&meta)
+        .map_err(|e| Error::Parse(format!("serialize sidecar meta: {e}")))?;
+    fs::write(sidecar_meta_path(repo, name, add_n)?, meta_json)?;
     Ok(())
 }
 
+/// Append a line-range add. Convenience kept stable across slices.
 pub fn append_add(
     repo: &gix::Repository,
     name: &str,
@@ -342,8 +473,20 @@ pub fn append_add(
     end: u32,
     anchor: Option<&str>,
 ) -> Result<()> {
-    let add = prepare_add(repo, path, start, end, anchor)?;
-    append_prepared_add(repo, name, &add)
+    let add = prepare_add(repo, path, RangeExtent::Lines { start, end }, anchor)?;
+    append_prepared_add(repo, name, &add, None)
+}
+
+/// Append a whole-file add (plan §D2). The sidecar carries the bytes at
+/// `anchor`, or worktree bytes when `anchor` is unset.
+pub fn append_add_whole(
+    repo: &gix::Repository,
+    name: &str,
+    path: &str,
+    anchor: Option<&str>,
+) -> Result<()> {
+    let add = prepare_add(repo, path, RangeExtent::Whole, anchor)?;
+    append_prepared_add(repo, name, &add, None)
 }
 
 pub fn append_remove(
@@ -358,6 +501,12 @@ pub fn append_remove(
         return Err(Error::InvalidRange { start, end });
     }
     append_line(repo, name, &format!("remove {path}#L{start}-L{end}"))?;
+    Ok(())
+}
+
+pub fn append_remove_whole(repo: &gix::Repository, name: &str, path: &str) -> Result<()> {
+    validate_staging_path(path)?;
+    append_line(repo, name, &format!("remove {path}"))?;
     Ok(())
 }
 
@@ -398,9 +547,11 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
         };
         let matches = fname == name
             || fname == format!("{name}.msg")
-            || fname
-                .strip_prefix(&format!("{name}."))
-                .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()));
+            || fname.strip_prefix(&format!("{name}.")).is_some_and(|rest| {
+                // `<N>` (sidecar) or `<N>.meta` (sidecar metadata).
+                let stripped = rest.strip_suffix(".meta").unwrap_or(rest);
+                !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())
+            });
         if matches {
             fs::remove_file(entry.path())?;
         }
@@ -422,12 +573,14 @@ pub fn drift_check(repo: &gix::Repository, name: &str) -> Result<Vec<DriftFindin
         let sidecar = fs::read(&sidecar_p)?;
         let current = git::read_worktree_bytes(repo, &add.path).unwrap_or_default();
         if sidecar != current {
-            // Build a minimal diff description — not a real unified diff,
-            // but tests only inspect path/start/end.
+            let (start, end) = match add.extent {
+                RangeExtent::Lines { start, end } => (start, end),
+                RangeExtent::Whole => (0, 0),
+            };
             findings.push(DriftFinding {
                 path: add.path.clone(),
-                start: add.start,
-                end: add.end,
+                start,
+                end,
                 diff: "working-tree bytes differ from sidecar".into(),
             });
         }
@@ -447,8 +600,6 @@ pub fn status_view(repo: &gix::Repository, name: &str) -> Result<StatusView> {
 // Internal helpers used by the commit pipeline.
 // ---------------------------------------------------------------------------
 
-/// Collapse staged configs via last-write-wins and return the resolved
-/// `(copy_detection, ignore_whitespace)` overriding the given baseline.
 pub(crate) fn resolve_staged_config(
     staging: &Staging,
     baseline: (CopyDetection, bool),
@@ -464,8 +615,52 @@ pub(crate) fn resolve_staged_config(
     (cd, iw)
 }
 
-/// Returns baseline defaults as used when a mesh has no prior config blob.
 #[allow(dead_code)]
 pub(crate) fn default_config() -> (CopyDetection, bool) {
     (DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE)
+}
+
+fn path_exists_in_tree(repo: &gix::Repository, commit_sha: &str, path: &str) -> bool {
+    let Some(workdir) = repo.workdir() else {
+        return false;
+    };
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["ls-tree", commit_sha, "--", path])
+        .output();
+    matches!(out, Ok(o) if o.status.success() && !o.stdout.is_empty())
+}
+
+/// Read the sidecar metadata file (stamp + range_id) for `<mesh>.<N>`.
+/// Returns `None` if the file is missing or malformed (treat as
+/// "captured under unknown rules — re-normalize before comparing").
+pub(crate) fn read_sidecar_meta(
+    repo: &gix::Repository,
+    name: &str,
+    n: u32,
+) -> Option<SidecarMeta> {
+    let p = sidecar_meta_path(repo, name, n).ok()?;
+    let bytes = fs::read(&p).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Update the `range_id` on an existing sidecar's `.meta` file. Used by
+/// the dedup pass when a new add ends up shadowing an existing range.
+#[allow(dead_code)]
+pub(crate) fn update_sidecar_range_id(
+    repo: &gix::Repository,
+    name: &str,
+    n: u32,
+    range_id: Option<String>,
+) -> Result<()> {
+    let p = sidecar_meta_path(repo, name, n)?;
+    let mut meta = read_sidecar_meta(repo, name, n).unwrap_or_else(|| SidecarMeta {
+        stamp: NormalizationStamp::default(),
+        range_id: None,
+    });
+    meta.range_id = range_id;
+    let bytes = serde_json::to_vec_pretty(&meta)
+        .map_err(|e| Error::Parse(format!("serialize sidecar meta: {e}")))?;
+    fs::write(&p, bytes)?;
+    Ok(())
 }

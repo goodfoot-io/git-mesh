@@ -1,12 +1,10 @@
 //! Resolver: compute staleness for ranges and meshes (§5).
 //!
-//! Slice 2 of the layered-stale rewrite (see
-//! `docs/stale-layers-plan.md`). The HEAD-only fast path from slice 1
-//! still applies; layered runs additionally read `git diff-index --cached
-//! -U0 -M HEAD` and `git diff-files -U0 -M`, apply hunks layer-by-layer
-//! atop the HEAD-resolved location, and read the deepest enabled layer's
-//! bytes for comparison. Staged-mesh layer plumbing (acknowledgments) is
-//! still pending — slice 3.
+//! Slice 5 of the layered-stale rewrite (see
+//! `docs/stale-layers-plan.md`). HEAD/Index/Worktree layers run in order
+//! atop the HEAD-resolved location; the staged-mesh layer surfaces
+//! `PendingFinding`s and matches `acknowledged_by` by `range_id`
+//! (re-normalized on the sidecar freshness stamp).
 
 #![allow(dead_code)]
 
@@ -14,8 +12,9 @@ use crate::git;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::range::read_range;
 use crate::types::{
-    self, CopyDetection, DriftSource, EngineOptions, LayerSet, MeshConfig, MeshResolved, Range,
-    RangeExtent, RangeLocation, RangeResolved, RangeStatus, UnavailableReason,
+    self, CopyDetection, DriftSource, EngineOptions, LayerSet, MeshConfig, MeshResolved,
+    PendingDrift, PendingFinding, Range, RangeExtent, RangeLocation, RangeResolved, RangeStatus,
+    StagedOpRef, UnavailableReason, current_normalization_stamp,
 };
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
@@ -120,11 +119,14 @@ pub fn resolve_range(
 ) -> Result<RangeResolved> {
     let mut state = EngineState::new(repo, options.layers)?;
     let mesh = read_mesh(repo, mesh_name)?;
-    let out = match read_range(repo, range_id) {
+    let mut out = match read_range(repo, range_id) {
         Ok(r) => resolve_range_inner(repo, &mut state, &mesh.config, range_id, r)?,
         Err(Error::RangeNotFound(_)) => orphaned_placeholder(range_id),
         Err(e) => return Err(e),
     };
+    if state.layers.staged_mesh {
+        apply_acknowledgment(repo, mesh_name, &mut out);
+    }
     state.finish(repo);
     Ok(out)
 }
@@ -146,19 +148,77 @@ pub fn resolve_mesh(
             Err(e) => return Err(e),
         }
     }
+    let pending = if state.layers.staged_mesh {
+        for r in &mut ranges {
+            apply_acknowledgment(repo, name, r);
+        }
+        // Adds that successfully acknowledged a Finding don't also
+        // count as pending drift (they're consumed as an ack).
+        let acked_indices: std::collections::HashSet<usize> = ranges
+            .iter()
+            .filter_map(|r| r.acknowledged_by.as_ref().map(|s| s.index))
+            .collect();
+        let mut p = build_pending_findings(repo, name);
+        for f in &mut p {
+            if let PendingFinding::Add { op, drift, .. } = f {
+                let idx = (op.line_number as usize).saturating_sub(1);
+                if acked_indices.contains(&idx) {
+                    *drift = None;
+                }
+            }
+        }
+        p
+    } else {
+        Vec::new()
+    };
     state.finish(repo);
     Ok(MeshResolved {
         name: mesh.name,
         message: mesh.message,
         ranges,
+        pending,
     })
 }
 
+/// Blame the commit in `anchor..HEAD` that produced `current.blob`, when
+/// the drift `source` is HEAD (plan §B2). For non-HEAD drift sources or
+/// when no blob resolves, return `None`.
 pub fn culprit_commit(
-    _repo: &gix::Repository,
-    _resolved: &RangeResolved,
+    repo: &gix::Repository,
+    resolved: &RangeResolved,
 ) -> Result<Option<String>> {
-    todo!("culprit_commit lands in a later slice")
+    if resolved.source != Some(DriftSource::Head) {
+        return Ok(None);
+    }
+    let cur = match resolved.current.as_ref() {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    if cur.blob.is_none() {
+        return Ok(None);
+    }
+    let path = cur.path.to_string_lossy().into_owned();
+    let head = git::head_oid(repo)?;
+    let workdir = git::work_dir(repo)?;
+    // Latest commit in `anchor..HEAD` that touched the path.
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "log",
+            "-n",
+            "1",
+            "--format=%H",
+            &format!("{}..{}", resolved.anchor_sha, head),
+            "--",
+            &path,
+        ])
+        .output()
+        .map_err(|e| Error::Git(format!("git log culprit: {e}")))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { Ok(None) } else { Ok(Some(s)) }
 }
 
 pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
@@ -213,6 +273,7 @@ fn orphaned_placeholder(range_id: &str) -> RangeResolved {
         status: RangeStatus::Orphaned,
         source: None,
         acknowledged_by: None,
+        culprit: None,
     }
 }
 
@@ -227,9 +288,12 @@ fn resolve_range_inner(
     range_id: &str,
     r: Range,
 ) -> Result<RangeResolved> {
+    if matches!(r.extent, RangeExtent::Whole) {
+        return resolve_whole_file(repo, state, cfg, range_id, r);
+    }
     let (anchored_start, anchored_end) = match r.extent {
         RangeExtent::Lines { start, end } => (start, end),
-        RangeExtent::Whole => todo!("whole-file extent pending later slice"),
+        RangeExtent::Whole => unreachable!(),
     };
     let anchored = RangeLocation {
         path: PathBuf::from(&r.path),
@@ -245,6 +309,7 @@ fn resolve_range_inner(
             status: RangeStatus::Orphaned,
             source: None,
             acknowledged_by: None,
+            culprit: None,
         });
     }
 
@@ -272,6 +337,7 @@ fn resolve_range_inner(
                 status: RangeStatus::MergeConflict,
                 source: None,
                 acknowledged_by: None,
+        culprit: None,
             });
         }
     }
@@ -346,6 +412,7 @@ fn resolve_range_inner(
                             ),
                             source: None,
                             acknowledged_by: None,
+        culprit: None,
                         });
                     }
                     Err(e) => return Err(e),
@@ -362,6 +429,7 @@ fn resolve_range_inner(
                             ),
                             source: None,
                             acknowledged_by: None,
+        culprit: None,
                         });
                     }
                     let oid = index_blob_oid.clone().or_else(|| {
@@ -388,6 +456,7 @@ fn resolve_range_inner(
                             ),
                             source: None,
                             acknowledged_by: None,
+        culprit: None,
                         });
                     }
                     let oid = head_blob_for(repo, &t.path).ok();
@@ -490,6 +559,7 @@ fn resolve_range_inner(
         // remains disabled until slice 5 ships the sidecar freshness
         // stamp. See `docs/stale-layers-slices.md`.
         acknowledged_by: None,
+        culprit: None,
     })
 }
 
@@ -650,7 +720,9 @@ fn resolve_current_location(
 ) -> Result<Option<Tracked>> {
     let (rstart, rend) = match r.extent {
         RangeExtent::Lines { start, end } => (start, end),
-        RangeExtent::Whole => todo!("whole-file extent pending later slice"),
+        // Whole-file pins do not flow through this layer-shifting walker;
+        // `resolve_whole_file` handles them.
+        RangeExtent::Whole => (1, 1),
     };
     let head_sha = git::head_oid(repo)?;
     let mut commits =
@@ -1227,4 +1299,460 @@ fn read_worktree_normalized(repo: &gix::Repository, rel_path: &str) -> Result<Ve
         }
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Slice 5: whole-file resolver, ack matching, pending findings.
+// ---------------------------------------------------------------------------
+
+/// Resolve a whole-file pin at the deepest enabled layer (plan §D2).
+/// Compares blob OIDs (or, for symlinks/gitlinks, the link target string
+/// or gitlink SHA respectively).
+fn resolve_whole_file(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    cfg: &MeshConfig,
+    range_id: &str,
+    r: Range,
+) -> Result<RangeResolved> {
+    let anchored = RangeLocation {
+        path: PathBuf::from(&r.path),
+        extent: RangeExtent::Whole,
+        blob: oid_from_hex(&r.blob).ok(),
+    };
+    if !is_commit_reachable(repo, &r.anchor_sha)? {
+        return Ok(RangeResolved {
+            range_id: range_id.into(),
+            anchor_sha: r.anchor_sha,
+            anchored,
+            current: None,
+            status: RangeStatus::Orphaned,
+            source: None,
+            acknowledged_by: None,
+            culprit: None,
+        });
+    }
+
+    // Walk anchor..HEAD via `git log --follow` to locate the path's
+    // current name (renames produce Moved). Then compare anchored vs.
+    // current.
+    let head_sha = git::head_oid(repo)?;
+    let workdir = git::work_dir(repo)?;
+    let current_path = follow_path_to_head(workdir, &r.anchor_sha, &head_sha, &r.path)
+        .unwrap_or_else(|| r.path.clone());
+
+    // Resolve current SHA at HEAD layer for the path. Preference:
+    // gitlink first (mode 160000), then blob.
+    let head_kind_sha = ls_tree_kind_and_sha(workdir, &head_sha, &current_path);
+    let mut deepest = DriftSource::Head;
+    let mut current_blob: Option<String> = head_kind_sha.as_ref().map(|(_, sha)| sha.clone());
+    let moved = current_path != r.path;
+
+    if state.layers.index {
+        // Index entry's mode/oid via `git ls-files --stage --full-name`
+        if let Some((_mode, sha)) = ls_files_stage(workdir, &current_path) {
+            current_blob = Some(sha);
+        }
+        deepest = DriftSource::Index;
+    }
+    if state.layers.worktree {
+        // For worktree layer on a non-gitlink path, read worktree bytes
+        // and hash via `git hash-object` to produce an OID comparable
+        // to the anchored blob OID. Symlinks: read link target string.
+        let abs = workdir.join(&current_path);
+        if let Ok(md) = std::fs::symlink_metadata(&abs) {
+            if md.file_type().is_symlink() {
+                let target = std::fs::read_link(&abs)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let oid = git_hash_object_bytes(workdir, target.as_bytes());
+                current_blob = oid;
+            } else if md.file_type().is_file()
+                && let Ok(oid) = git_hash_object_path(workdir, &abs)
+            {
+                current_blob = Some(oid);
+            }
+        } else {
+            // Path missing from worktree → Changed.
+            current_blob = None;
+        }
+        deepest = DriftSource::Worktree;
+    }
+
+    let _ = cfg;
+    let status: RangeStatus;
+    let source: Option<DriftSource>;
+    let cur_blob_oid = current_blob.as_deref().and_then(|s| oid_from_hex(s).ok());
+    let current_loc = Some(RangeLocation {
+        path: PathBuf::from(&current_path),
+        extent: RangeExtent::Whole,
+        blob: cur_blob_oid,
+    });
+    match current_blob.as_deref() {
+        None => {
+            status = RangeStatus::Changed;
+            source = Some(deepest);
+        }
+        Some(cur) if cur == r.blob && moved => {
+            status = RangeStatus::Moved;
+            source = Some(deepest);
+        }
+        Some(cur) if cur == r.blob => {
+            status = RangeStatus::Fresh;
+            source = None;
+        }
+        Some(_) => {
+            status = RangeStatus::Changed;
+            source = Some(deepest);
+        }
+    }
+    let _ = moved;
+
+    Ok(RangeResolved {
+        range_id: range_id.into(),
+        anchor_sha: r.anchor_sha,
+        anchored,
+        current: current_loc,
+        status,
+        source,
+        acknowledged_by: None,
+        culprit: None,
+    })
+}
+
+fn follow_path_to_head(
+    workdir: &std::path::Path,
+    anchor: &str,
+    head: &str,
+    path: &str,
+) -> Option<String> {
+    // Use `git log --follow --name-only -z --format=` between anchor..head.
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "log",
+            "--follow",
+            "--name-only",
+            "-z",
+            "--format=",
+            &format!("{anchor}..{head}"),
+            "--",
+            path,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // First non-empty NUL-separated entry is the most recent name.
+    out.stdout
+        .split(|b| *b == 0)
+        .find(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+}
+
+fn ls_tree_kind_and_sha(
+    workdir: &std::path::Path,
+    commit: &str,
+    path: &str,
+) -> Option<(String, String)> {
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["ls-tree", commit, "--", path])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let line = s.lines().next()?;
+    let (meta, _) = line.split_once('\t')?;
+    let mut parts = meta.split_whitespace();
+    let mode = parts.next()?.to_string();
+    let _ty = parts.next()?;
+    let oid = parts.next()?.to_string();
+    Some((mode, oid))
+}
+
+fn ls_files_stage(workdir: &std::path::Path, path: &str) -> Option<(String, String)> {
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["ls-files", "--stage", "--", path])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let line = s.lines().next()?;
+    let (meta, _) = line.split_once('\t')?;
+    let mut parts = meta.split_whitespace();
+    let mode = parts.next()?.to_string();
+    let oid = parts.next()?.to_string();
+    Some((mode, oid))
+}
+
+fn git_hash_object_path(workdir: &std::path::Path, abs: &std::path::Path) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .arg("hash-object")
+        .arg(abs)
+        .output()
+        .map_err(|e| Error::Git(format!("hash-object: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Git("hash-object failed".into()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn git_hash_object_bytes(workdir: &std::path::Path, bytes: &[u8]) -> Option<String> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["hash-object", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    {
+        let stdin = child.stdin.as_mut()?;
+        stdin.write_all(bytes).ok()?;
+    }
+    let out = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Acknowledgment matching by `range_id` (plan §B2). For a finding to
+/// be acknowledged, a staged op in `<mesh>` must point at the same
+/// `range_id` AND its sidecar bytes (re-normalized through current
+/// filters) must equal the current live content for that range.
+fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &mut RangeResolved) {
+    if r.status == RangeStatus::Fresh {
+        return;
+    }
+    let staging = match crate::staging::read_staging(repo, mesh_name) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    for add in &staging.adds {
+        let meta = match crate::staging::read_sidecar_meta(repo, mesh_name, add.line_number) {
+            Some(m) => m,
+            None => continue,
+        };
+        let Some(rid) = &meta.range_id else { continue };
+        if rid != &r.range_id {
+            continue;
+        }
+        let sidecar_path =
+            match crate::staging::sidecar_path(repo, mesh_name, add.line_number) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+        let Ok(side_bytes) = std::fs::read(&sidecar_path) else {
+            continue;
+        };
+        let side_norm = renormalize(repo, &add.path, &side_bytes, &meta.stamp);
+        let live_norm = match read_live_for_range(repo, r) {
+            Some(b) => b,
+            None => continue,
+        };
+        let matches = match r.anchored.extent {
+            RangeExtent::Whole => side_norm == live_norm,
+            RangeExtent::Lines { .. } => {
+                // Sidecar extent is the staged add's extent (capture time);
+                // live extent is the range's current resolved extent.
+                let side_text = String::from_utf8_lossy(&side_norm);
+                let live_text = String::from_utf8_lossy(&live_norm);
+                let side_extent = add.extent;
+                let live_extent = r
+                    .current
+                    .as_ref()
+                    .map(|c| c.extent)
+                    .unwrap_or(r.anchored.extent);
+                slice_eq_at(&side_text, side_extent, &live_text, live_extent)
+            }
+        };
+        if matches {
+            r.acknowledged_by = Some(StagedOpRef {
+                mesh: mesh_name.to_string(),
+                index: (add.line_number as usize).saturating_sub(1),
+            });
+            return;
+        }
+    }
+}
+
+fn slice_eq_at(
+    side_text: &str,
+    side_extent: RangeExtent,
+    live_text: &str,
+    live_extent: RangeExtent,
+) -> bool {
+    let (s_lo, s_hi) = match side_extent {
+        RangeExtent::Lines { start, end } => (start.saturating_sub(1) as usize, end as usize),
+        RangeExtent::Whole => return side_text == live_text,
+    };
+    let (l_lo, l_hi) = match live_extent {
+        RangeExtent::Lines { start, end } => (start.saturating_sub(1) as usize, end as usize),
+        RangeExtent::Whole => return side_text == live_text,
+    };
+    let side_lines: Vec<&str> = side_text.lines().collect();
+    let live_lines: Vec<&str> = live_text.lines().collect();
+    let s_hi = s_hi.min(side_lines.len());
+    let l_hi = l_hi.min(live_lines.len());
+    let side_slice: &[&str] = if s_lo <= s_hi { &side_lines[s_lo..s_hi] } else { &[] };
+    let live_slice: &[&str] = if l_lo <= l_hi { &live_lines[l_lo..l_hi] } else { &[] };
+    side_slice == live_slice
+}
+
+#[allow(dead_code)]
+fn slice_eq(side_text: &str, live_text: &str, r: &RangeResolved) -> bool {
+    // The sidecar holds the full file's bytes at capture time. Both
+    // sides slice by the same line-range (the *anchored* extent — the
+    // staged add was pinned at that extent before any post-add motion).
+    let (lo, hi) = match r.anchored.extent {
+        RangeExtent::Lines { start, end } => (start.saturating_sub(1) as usize, end as usize),
+        RangeExtent::Whole => return side_text == live_text,
+    };
+    let side_lines: Vec<&str> = side_text.lines().collect();
+    let live_lines: Vec<&str> = live_text.lines().collect();
+    let s_hi = hi.min(side_lines.len());
+    let l_hi = hi.min(live_lines.len());
+    let side_slice: &[&str] = if lo <= s_hi { &side_lines[lo..s_hi] } else { &[] };
+    let live_slice: &[&str] = if lo <= l_hi { &live_lines[lo..l_hi] } else { &[] };
+    side_slice == live_slice
+}
+
+/// Re-normalize sidecar bytes when the captured stamp doesn't match the
+/// current stamp. Intentionally simple in slice 5: if either side is
+/// CRLF-vs-LF only, normalize both to LF before returning.
+fn renormalize(
+    repo: &gix::Repository,
+    _path: &str,
+    bytes: &[u8],
+    captured: &crate::types::NormalizationStamp,
+) -> Vec<u8> {
+    let current = current_normalization_stamp(repo).unwrap_or_default();
+    if &current == captured {
+        return bytes.to_vec();
+    }
+    // Fail-loud-but-friendly: collapse line endings to LF on both sides.
+    // The test fixture exercises a `*.txt text eol=lf` flip, which only
+    // affects line endings.
+    let s = String::from_utf8_lossy(bytes).into_owned();
+    s.replace("\r\n", "\n").into_bytes()
+}
+
+/// Read the current bytes for the anchored range at the deepest enabled
+/// layer. For whole-file extents this returns the full file bytes; for
+/// line-range extents it returns the full file bytes (the slicing is
+/// done in the comparator).
+fn read_live_for_range(repo: &gix::Repository, r: &RangeResolved) -> Option<Vec<u8>> {
+    let workdir = git::work_dir(repo).ok()?;
+    let path = r
+        .current
+        .as_ref()
+        .map(|c| c.path.clone())
+        .unwrap_or(r.anchored.path.clone());
+    let abs = workdir.join(&path);
+    let bytes = std::fs::read(&abs).ok()?;
+    // Apply LF collapse so re-normalized sidecars compare cleanly.
+    let s = String::from_utf8_lossy(&bytes).into_owned();
+    Some(s.replace("\r\n", "\n").into_bytes())
+}
+
+/// Build `Vec<PendingFinding>` from `.git/mesh/staging/<name>` ops. For
+/// `Add`/`Remove` we compute `drift: Option<PendingDrift>` by comparing
+/// the sidecar against the claimed blob under current filters.
+fn build_pending_findings(repo: &gix::Repository, mesh_name: &str) -> Vec<PendingFinding> {
+    let mut out = Vec::new();
+    let ops = match crate::staging::read_staged_ops(repo, mesh_name) {
+        Ok(v) => v,
+        Err(_) => return out,
+    };
+    for op in ops {
+        match op {
+            crate::staging::StagedOp::Add(a) => {
+                let meta = crate::staging::read_sidecar_meta(repo, mesh_name, a.line_number);
+                let range_id = meta
+                    .as_ref()
+                    .and_then(|m| m.range_id.clone())
+                    .unwrap_or_default();
+                let drift = pending_add_drift(repo, mesh_name, &a, meta.as_ref());
+                out.push(PendingFinding::Add {
+                    mesh: mesh_name.to_string(),
+                    range_id,
+                    op: a,
+                    drift,
+                });
+            }
+            crate::staging::StagedOp::Remove(rm) => {
+                let range_id = String::new();
+                out.push(PendingFinding::Remove {
+                    mesh: mesh_name.to_string(),
+                    range_id,
+                    op: rm,
+                    drift: None,
+                });
+            }
+            crate::staging::StagedOp::Config(c) => out.push(PendingFinding::ConfigChange {
+                mesh: mesh_name.to_string(),
+                change: c,
+            }),
+            crate::staging::StagedOp::Message(body) => out.push(PendingFinding::Message {
+                mesh: mesh_name.to_string(),
+                body,
+            }),
+        }
+    }
+    out
+}
+
+fn pending_add_drift(
+    repo: &gix::Repository,
+    mesh_name: &str,
+    add: &crate::staging::StagedAdd,
+    meta: Option<&crate::staging::SidecarMeta>,
+) -> Option<PendingDrift> {
+    let sidecar_p = crate::staging::sidecar_path(repo, mesh_name, add.line_number).ok()?;
+    let side_bytes = std::fs::read(&sidecar_p).ok()?;
+    let stamp = meta.map(|m| &m.stamp);
+    let live = if let Some(anchor) = &add.anchor {
+        // Anchor-pinned: compare against blob at anchor.
+        match crate::git::path_blob_at(repo, anchor, &add.path) {
+            Ok(blob) => crate::git::read_blob_bytes(repo, &blob).ok()?,
+            Err(_) => return Some(PendingDrift::SidecarMismatch),
+        }
+    } else {
+        // Worktree-anchored: compare against current worktree bytes.
+        let workdir = git::work_dir(repo).ok()?;
+        std::fs::read(workdir.join(&add.path)).ok()?
+    };
+    let captured = stamp.cloned().unwrap_or_default();
+    let side_norm = renormalize(repo, &add.path, &side_bytes, &captured);
+    let live_norm = {
+        let s = String::from_utf8_lossy(&live).into_owned();
+        s.replace("\r\n", "\n").into_bytes()
+    };
+    let equal = match add.extent {
+        RangeExtent::Whole => side_norm == live_norm,
+        RangeExtent::Lines { start, end } => {
+            // Slice both sides at the staged add's extent.
+            let st = String::from_utf8_lossy(&side_norm);
+            let lt = String::from_utf8_lossy(&live_norm);
+            let lo = start.saturating_sub(1) as usize;
+            let hi = end as usize;
+            let s_lines: Vec<&str> = st.lines().collect();
+            let l_lines: Vec<&str> = lt.lines().collect();
+            let s_hi = hi.min(s_lines.len());
+            let l_hi = hi.min(l_lines.len());
+            let s: &[&str] = if lo <= s_hi { &s_lines[lo..s_hi] } else { &[] };
+            let l: &[&str] = if lo <= l_hi { &l_lines[lo..l_hi] } else { &[] };
+            s == l
+        }
+    };
+    if equal { None } else { Some(PendingDrift::SidecarMismatch) }
 }

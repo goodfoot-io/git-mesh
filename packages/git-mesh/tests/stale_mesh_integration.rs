@@ -187,7 +187,7 @@ fn git_add_moves_drift_worktree_to_index_with_staged_oid() -> Result<()> {
 
 /// Plan bullet: `git mesh add` matching sidecar → acknowledged_by populated, exit 0.
 #[test]
-#[ignore = "phase-1-pending: acknowledgment matching pending engine slice"]
+
 fn git_mesh_add_matching_sidecar_acknowledges_exit_zero() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -209,7 +209,7 @@ fn git_mesh_add_matching_sidecar_acknowledges_exit_zero() -> Result<()> {
 
 /// Plan bullet: Subsequent worktree edit invalidates the ack → exit 1.
 #[test]
-#[ignore = "phase-1-pending: ack invalidation on drift pending engine slice"]
+
 fn worktree_edit_after_ack_invalidates_exit_one() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -231,7 +231,7 @@ fn worktree_edit_after_ack_invalidates_exit_one() -> Result<()> {
 /// Plan bullet: Ack matching survives Moved: range's extent shifts, sidecar at
 /// old extent still acknowledges via range_id.
 #[test]
-#[ignore = "phase-1-pending: ack-by-range_id survival across Moved pending engine"]
+
 fn ack_survives_moved_via_range_id() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -258,7 +258,7 @@ fn ack_survives_moved_via_range_id() -> Result<()> {
 /// Plan bullet: Sidecar captured before a `.gitattributes` EOL change: re-normalized
 /// on read still acknowledges.
 #[test]
-#[ignore = "phase-1-pending: sidecar freshness stamp / re-normalization pending readers slice"]
+
 fn sidecar_before_gitattributes_eol_change_still_acks() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -362,7 +362,7 @@ fn crlf_checkout_of_lf_blob_no_false_drift() -> Result<()> {
 /// Plan bullet: Whole-file pin on a binary asset: blob OID change → Changed;
 /// `git mesh add <name> <path>` re-anchors and acknowledges.
 #[test]
-#[ignore = "phase-1-pending: whole-file pins pending RangeExtent::Whole resolver path"]
+
 fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Commit a small binary-looking asset.
@@ -388,7 +388,7 @@ fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
 /// Plan bullet: Whole-file pin on a submodule gitlink: index-layer SHA change
 /// (`git submodule update` staged) → Changed.
 #[test]
-#[ignore = "phase-1-pending: submodule gitlink whole-file pins pending engine slice"]
+
 fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let inner = add_submodule_gitlink(&repo, "sub")?;
@@ -425,7 +425,7 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
 /// Plan bullet: Whole-file pin on a symlink: retarget → Changed. Line-range pin
 /// on a symlink is rejected at `git mesh add`.
 #[test]
-#[ignore = "phase-1-pending: symlink whole-file pins + line-range rejection pending prechecks"]
+
 fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<()> {
     let repo = TestRepo::seeded()?;
     std::os::unix::fs::symlink("file1.txt", repo.path().join("link"))?;

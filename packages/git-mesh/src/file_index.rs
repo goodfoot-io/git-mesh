@@ -57,7 +57,10 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
             let r = read_range(repo, &id)?;
             let (start, end) = match r.extent {
                 RangeExtent::Lines { start, end } => (start, end),
-                RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+                // Whole-file pins are recorded as `0..0` in the index for
+                // sort/lookup; the renderer prints `*` in place of a
+                // line range. See plan §D2.
+                RangeExtent::Whole => (0, 0),
             };
             out.push(IndexEntry {
                 path: r.path,

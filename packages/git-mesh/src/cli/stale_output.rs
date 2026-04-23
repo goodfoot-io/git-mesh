@@ -45,7 +45,24 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             }
         }
     }
-    let stale_count = findings.len();
+    // Plan §B3: an acknowledged finding does not drive exit code.
+    // It still renders so the user sees it.
+    let unacked_findings: usize = findings
+        .iter()
+        .filter(|(_, r)| r.acknowledged_by.is_none())
+        .count();
+    // Pending Add/Remove with `SidecarMismatch` drift drive exit too;
+    // Message/ConfigChange never do.
+    let pending_drift: usize = meshes
+        .iter()
+        .flat_map(|m| m.pending.iter())
+        .filter(|p| matches!(
+            p,
+            crate::types::PendingFinding::Add { drift: Some(_), .. }
+                | crate::types::PendingFinding::Remove { drift: Some(_), .. }
+        ))
+        .count();
+    let stale_count = unacked_findings + pending_drift;
 
     match args.format {
         StaleFormat::Human => render_human(&meshes, &findings, args.oneline, args.stat)?,
@@ -137,7 +154,10 @@ fn render_porcelain(findings: &[(String, RangeResolved)], show_src: bool) {
         let (s, e) = extent_lines(r.anchored.extent);
         let anchor_short = r.anchor_sha.get(..8).unwrap_or(&r.anchor_sha);
         if show_src {
-            let src = source_marker(r.source);
+            let mut src = source_marker(r.source).to_string();
+            if r.acknowledged_by.is_some() {
+                src.push_str("/ack");
+            }
             println!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 status_str(&r.status),

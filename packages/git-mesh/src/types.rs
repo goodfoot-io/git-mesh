@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 /// The extent of a pinned range: either the whole file, or an inclusive
 /// 1-based line range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RangeExtent {
     Whole,
     Lines { start: u32, end: u32 },
@@ -133,15 +133,14 @@ pub struct RangeResolved {
     pub current: Option<RangeLocation>,
     pub status: RangeStatus,
     /// Layer that produced the drift; `None` when `Fresh` or terminal.
-    /// Slice 2 of the layered-stale plan: this carries the same meaning as
-    /// `Finding::source` until the renderer slice migrates wholesale to
-    /// `Finding`.
     pub source: Option<DriftSource>,
     /// Staged re-anchor that acknowledges this drift, matched by `range_id`.
-    /// Slice 3 scaffolding: the field is plumbed end-to-end but always set
-    /// to `None` until slice 5 ships the sidecar freshness stamp that lets
-    /// the engine trust ack matches. See `docs/stale-layers-slices.md`.
+    /// Populated in slice 5: the engine compares re-normalized sidecar
+    /// bytes against the live content for the referenced range.
     pub acknowledged_by: Option<StagedOpRef>,
+    /// Commit blamed for the current divergence. Only populated when
+    /// `source == Some(Head)` and `current.blob.is_some()` (plan §B2/§D3).
+    pub culprit: Option<Culprit>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +150,9 @@ pub struct MeshResolved {
     /// One resolved entry per Range id in the Mesh, in the Mesh's
     /// stored order.
     pub ranges: Vec<RangeResolved>,
+    /// Pending mesh ops surfaced from `.git/mesh/staging/<name>` when
+    /// `LayerSet.staged_mesh` is on. Empty otherwise.
+    pub pending: Vec<PendingFinding>,
 }
 
 /// Public error boundary for the `git-mesh` library.
@@ -628,15 +630,274 @@ pub enum AddPrecheckError {
     Io(#[from] std::io::Error),
 }
 
-/// Stage-time validation for a single `git mesh add` target. Phase 1
-/// boundary: the body is stubbed. Called from `cli/commit.rs::run_add`
-/// before any sidecar is written.
+/// Stage-time validation for a single `git mesh add` target. Called from
+/// `cli/commit.rs::run_add` before any sidecar is written.
 ///
 /// See plan §"CLI and `git mesh add` prechecks" for the full rule set.
 pub fn validate_add_target(
-    _repo: &gix::Repository,
-    _path: &std::path::Path,
-    _extent: &RangeExtent,
+    repo: &gix::Repository,
+    path: &std::path::Path,
+    extent: &RangeExtent,
 ) -> std::result::Result<(), AddPrecheckError> {
-    todo!("phase-1: implement in reader slice")
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| AddPrecheckError::Io(std::io::Error::other("bare repo")))?;
+    let path_str = path.to_string_lossy().into_owned();
+    let abs = workdir.join(path);
+
+    // Submodule detection via `git ls-files --stage`.
+    let submodule_kind = submodule_classify(workdir, &path_str)?;
+
+    // Symlink detection (worktree only).
+    let is_symlink = std::fs::symlink_metadata(&abs)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+
+    // .gitattributes: filter driver name (e.g. "lfs", "binary", custom).
+    let filter = path_filter_attribute(workdir, path).unwrap_or(None);
+    let is_binary_attr = check_binary_attribute(workdir, path).unwrap_or(false);
+    let is_lfs = filter.as_deref() == Some("lfs");
+
+    match extent {
+        RangeExtent::Lines { .. } => {
+            if is_binary_attr {
+                return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
+            }
+            if is_symlink {
+                return Err(AddPrecheckError::LineRangeOnSymlink { path: path_str });
+            }
+            if matches!(submodule_kind, SubmoduleKind::Inside | SubmoduleKind::Gitlink) {
+                return Err(AddPrecheckError::LineRangeInSubmodule { path: path_str });
+            }
+        }
+        RangeExtent::Whole => {
+            if matches!(submodule_kind, SubmoduleKind::Inside) {
+                return Err(AddPrecheckError::WholeFileInSubmodule { path: path_str });
+            }
+            // Whole-file on the gitlink root is allowed.
+        }
+    }
+
+    if is_lfs {
+        // Probe local LFS object cache. The standard layout is
+        // `.git/lfs/objects/<oid[..2]>/<oid[2..4]>/<oid>`. We only
+        // need to detect "no LFS content cached for this pointer".
+        if let Ok(bytes) = std::fs::read(&abs)
+            && let Some(oid) = parse_lfs_pointer_oid(&bytes)
+        {
+            let lfs_path = workdir
+                .join(".git")
+                .join("lfs")
+                .join("objects")
+                .join(&oid[..2.min(oid.len())])
+                .join(&oid[2.min(oid.len())..4.min(oid.len())])
+                .join(&oid);
+            if !lfs_path.exists() {
+                return Err(AddPrecheckError::ContentUnavailable {
+                    path: path_str,
+                    reason: UnavailableReason::LfsNotFetched,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubmoduleKind {
+    /// The path is itself a submodule gitlink (mode 160000).
+    Gitlink,
+    /// The path lives inside a submodule (a parent in `path` is a
+    /// gitlink).
+    Inside,
+    /// Neither.
+    None,
+}
+
+fn submodule_classify(
+    workdir: &std::path::Path,
+    path: &str,
+) -> std::result::Result<SubmoduleKind, AddPrecheckError> {
+    // Read all gitlinks once.
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["ls-files", "--stage"])
+        .output()
+        .map_err(|e| AddPrecheckError::Io(std::io::Error::other(format!("ls-files: {e}"))))?;
+    if !out.status.success() {
+        return Ok(SubmoduleKind::None);
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let mut gitlinks: Vec<String> = Vec::new();
+    for line in s.lines() {
+        // <mode> <oid> <stage>\t<path>
+        let Some((meta, p)) = line.split_once('\t') else {
+            continue;
+        };
+        if meta.starts_with("160000") {
+            gitlinks.push(p.to_string());
+        }
+    }
+    for g in &gitlinks {
+        if g == path {
+            return Ok(SubmoduleKind::Gitlink);
+        }
+        let prefix = format!("{g}/");
+        if path.starts_with(&prefix) {
+            return Ok(SubmoduleKind::Inside);
+        }
+    }
+    Ok(SubmoduleKind::None)
+}
+
+fn check_binary_attribute(
+    workdir: &std::path::Path,
+    path: &std::path::Path,
+) -> std::result::Result<bool, std::io::Error> {
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["check-attr", "binary", "--"])
+        .arg(path)
+        .output()?;
+    if !out.status.success() {
+        return Ok(false);
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in s.lines() {
+        if let Some(idx) = line.rfind(": ") {
+            let value = line[idx + 2..].trim();
+            return Ok(value == "set" || value == "true");
+        }
+    }
+    Ok(false)
+}
+
+fn parse_lfs_pointer_oid(bytes: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    if !s.starts_with("version https://git-lfs.github.com/spec/") {
+        return None;
+    }
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("oid sha256:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Sidecar normalization stamp (plan §B2 / §D3).
+// ---------------------------------------------------------------------------
+
+/// Snapshot of the active normalization rules at sidecar capture time.
+/// On `stale` read, an engine-side mismatch against the *current* stamp
+/// triggers re-normalization of both sides before comparison.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizationStamp {
+    /// SHA-1 of the repo-root `.gitattributes` blob (lowercase hex).
+    /// Empty string when no `.gitattributes` is present.
+    pub gitattributes_sha1: String,
+    /// Hash of the configured `filter.<name>.{clean,smudge,process}`
+    /// driver list at capture time. Empty when no drivers are set.
+    pub filter_drivers_sha1: String,
+}
+
+/// Compute the current normalization stamp for `repo`.
+pub fn current_normalization_stamp(repo: &gix::Repository) -> Result<NormalizationStamp> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::Git("bare repo".into()))?;
+    let attrs_sha = stamp_gitattributes_sha1(workdir);
+    let drivers_sha = stamp_filter_drivers_sha1(workdir);
+    Ok(NormalizationStamp {
+        gitattributes_sha1: attrs_sha,
+        filter_drivers_sha1: drivers_sha,
+    })
+}
+
+fn stamp_gitattributes_sha1(workdir: &std::path::Path) -> String {
+    let p = workdir.join(".gitattributes");
+    let bytes = match std::fs::read(&p) {
+        Ok(b) => b,
+        Err(_) => return String::new(),
+    };
+    sha1_hex(&bytes)
+}
+
+fn stamp_filter_drivers_sha1(workdir: &std::path::Path) -> String {
+    // Snapshot the configured filter-driver names + their command lines
+    // by listing `git config --get-regexp '^filter\.'`.
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["config", "--get-regexp", "^filter\\."])
+        .output();
+    let Ok(out) = out else {
+        return String::new();
+    };
+    if !out.status.success() {
+        return String::new();
+    }
+    sha1_hex(&out.stdout)
+}
+
+/// Lowercase hex SHA-1 of `bytes`. We avoid pulling in another crate by
+/// shelling out to `git hash-object --stdin` in --no-filters mode? Too
+/// heavy. Inline a tiny implementation.
+fn sha1_hex(bytes: &[u8]) -> String {
+    use_sha1::sha1_hex(bytes)
+}
+
+mod use_sha1 {
+    /// Minimal SHA-1. Returns lowercase hex.
+    pub fn sha1_hex(input: &[u8]) -> String {
+        let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+        let bit_len = (input.len() as u64).wrapping_mul(8);
+        let mut padded = Vec::with_capacity(input.len() + 9 + 64);
+        padded.extend_from_slice(input);
+        padded.push(0x80);
+        while padded.len() % 64 != 56 {
+            padded.push(0);
+        }
+        padded.extend_from_slice(&bit_len.to_be_bytes());
+        for chunk in padded.chunks_exact(64) {
+            let mut w = [0u32; 80];
+            for (i, word) in chunk.chunks_exact(4).enumerate() {
+                w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+            }
+            for i in 16..80 {
+                w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+            }
+            let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+            for (i, &wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
+                    20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                    _ => (b ^ c ^ d, 0xCA62C1D6),
+                };
+                let t = a
+                    .rotate_left(5)
+                    .wrapping_add(f)
+                    .wrapping_add(e)
+                    .wrapping_add(k)
+                    .wrapping_add(wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
+            h[0] = h[0].wrapping_add(a);
+            h[1] = h[1].wrapping_add(b);
+            h[2] = h[2].wrapping_add(c);
+            h[3] = h[3].wrapping_add(d);
+            h[4] = h[4].wrapping_add(e);
+        }
+        let mut out = String::with_capacity(40);
+        for word in h {
+            out.push_str(&format!("{word:08x}"));
+        }
+        out
+    }
 }

@@ -20,7 +20,7 @@ fn append_add_creates_ops_and_sidecar() -> Result<()> {
     let s = read_staging(&gix, "m")?;
     assert_eq!(s.adds.len(), 1);
     assert_eq!(s.adds[0].path, "file1.txt");
-    assert_eq!((s.adds[0].start, s.adds[0].end), (1, 5));
+    assert_eq!((s.adds[0].start(), s.adds[0].end()), (1, 5));
     assert!(s.adds[0].anchor.is_none());
     // Sidecar present — N=1 for first staged add line.
     let sidecar = repo

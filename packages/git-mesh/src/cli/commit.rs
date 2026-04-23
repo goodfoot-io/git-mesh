@@ -1,9 +1,7 @@
 //! Staging + commit handlers — §6.2, §6.3, §6.4, §10.5.
 
-use crate::cli::{
-    AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs, StatusArgs, parse_range_address,
-};
-use crate::staging::{StagedConfig, append_prepared_add, prepare_add};
+use crate::cli::{AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs, StatusArgs};
+use crate::staging::{StagedConfig, append_prepared_add, parse_address, prepare_add};
 use crate::types::{validate_add_target, CopyDetection, RangeExtent};
 use crate::{append_config, append_remove, commit_mesh, read_mesh, set_message, status_view};
 use anyhow::{Context, Result, anyhow};
@@ -12,149 +10,157 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
     // Parse every address first; fail-closed with no partial staging.
-    let mut parsed: Vec<(String, u32, u32)> = Vec::with_capacity(args.ranges.len());
+    let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
     for addr in &args.ranges {
-        parsed.push(parse_range_address(addr)?);
+        let p = parse_address(addr).ok_or_else(|| {
+            anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]")
+        })?;
+        parsed.push(p);
     }
 
-    // Reject duplicate `(path, start, end)` within this invocation.
+    // Reject duplicate `(path, extent)` within this invocation.
     for (i, a) in parsed.iter().enumerate() {
         for b in &parsed[..i] {
             if a == b {
                 return Err(anyhow!(
-                    "duplicate range location in mesh: {}:{}-{}",
-                    a.0,
-                    a.1,
-                    a.2
+                    "duplicate range location in mesh: {}",
+                    format_addr(a)
                 ));
             }
         }
     }
 
     // Reject against already-staged adds for this mesh (net of staged
-    // removes — a pending remove of the same location means the add is
-    // a valid re-anchor within one staging pass).
+    // removes).
     let existing = crate::staging::read_staging(repo, &args.name).unwrap_or_default();
-    let removed: std::collections::HashSet<(String, u32, u32)> = existing
+    let removed: std::collections::HashSet<(String, RangeExtent)> = existing
         .removes
         .iter()
-        .map(|r| (r.path.clone(), r.start, r.end))
+        .map(|r| (r.path.clone(), r.extent))
         .collect();
     for a in &parsed {
         let is_staged_add = existing
             .adds
             .iter()
-            .any(|s| s.path == a.0 && s.start == a.1 && s.end == a.2);
+            .any(|s| s.path == a.0 && s.extent == a.1);
         if is_staged_add && !removed.contains(a) {
             return Err(anyhow!(
-                "duplicate range location in mesh: {}:{}-{}",
-                a.0,
-                a.1,
-                a.2
+                "duplicate range location in mesh: {}",
+                format_addr(a)
             ));
         }
     }
 
     // Stage-time precheck (plan §"CLI and `git mesh add` prechecks").
-    //
-    // Boundary wiring: `run_add` must invoke `validate_add_target` on
-    // every requested extent before any sidecar is written. The body of
-    // `validate_add_target` is `todo!()` until the reader slice lands,
-    // so the invocation is gated behind `ENABLE_PRECHECK` to keep the
-    // pre-existing non-stale CLI integration tests green while the
-    // boundary is frozen. Flipping the constant to `true` is the Phase-1
-    // trigger for the next slice: the panic points the implementer at
-    // the exact body to write. The closure below is unconditionally
-    // compiled so the signature participates in `cargo check --tests`.
-    const ENABLE_PRECHECK: bool = false;
-    let precheck = |path: &str, s: u32, e: u32| -> anyhow::Result<()> {
-        let extent = RangeExtent::Lines { start: s, end: e };
-        validate_add_target(repo, std::path::Path::new(path), &extent)
-            .map_err(|err| anyhow!("{err}"))
-    };
-    if ENABLE_PRECHECK {
-        for (path, s, e) in &parsed {
-            precheck(path, *s, *e)?;
-        }
-    } else {
-        let _ = &precheck; // keep the closure live for grep-ability
+    for (path, extent) in &parsed {
+        validate_add_target(repo, std::path::Path::new(path), extent)
+            .map_err(|err| anyhow!("{err}"))?;
     }
 
-    let mut adds = Vec::with_capacity(parsed.len());
-    for (path, s, e) in &parsed {
-        adds.push(prepare_add(repo, path, *s, *e, args.at.as_deref())?);
+    // Resolve the existing range_id for this `(path, extent)` in the
+    // mesh, so the staged add can later be matched as an ack by the
+    // engine via `range_id` (plan §B2 — stable across `Moved`).
+    let mesh_ranges_lookup = mesh_range_id_lookup(repo, &args.name);
+
+    let mut prepared = Vec::with_capacity(parsed.len());
+    for (path, extent) in &parsed {
+        prepared.push(prepare_add(repo, path, *extent, args.at.as_deref())?);
     }
-    for add in &adds {
-        append_prepared_add(repo, &args.name, add)?;
+    for (add, (path, extent)) in prepared.iter().zip(parsed.iter()) {
+        let range_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();
+        append_prepared_add(repo, &args.name, add, range_id)?;
     }
     Ok(0)
+}
+
+fn format_addr(a: &(String, RangeExtent)) -> String {
+    match a.1 {
+        RangeExtent::Lines { start, end } => format!("{}:{}-{}", a.0, start, end),
+        RangeExtent::Whole => a.0.clone(),
+    }
+}
+
+fn mesh_range_id_lookup(
+    repo: &gix::Repository,
+    mesh_name: &str,
+) -> std::collections::HashMap<(String, RangeExtent), String> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(mesh) = read_mesh(repo, mesh_name) else {
+        return out;
+    };
+    for id in &mesh.ranges {
+        if let Ok(r) = crate::range::read_range(repo, id) {
+            out.insert((r.path, r.extent), id.clone());
+        }
+    }
+    out
 }
 
 pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
-    // Parse all addresses first; fail-closed with no partial staging.
-    let mut parsed: Vec<(String, u32, u32)> = Vec::with_capacity(args.ranges.len());
+    let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
     for addr in &args.ranges {
-        parsed.push(parse_range_address(addr)?);
+        let p = parse_address(addr).ok_or_else(|| {
+            anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]")
+        })?;
+        parsed.push(p);
     }
 
-    // Compute effective mesh state = committed ranges + staged adds − staged removes.
-    let mut present: Vec<(String, u32, u32)> = Vec::new();
+    let mut present: Vec<(String, RangeExtent)> = Vec::new();
     match read_mesh(repo, &args.name) {
         Ok(mesh) => {
             for id in &mesh.ranges {
                 let r = crate::range::read_range(repo, id)?;
-                let (start, end) = match r.extent {
-                    RangeExtent::Lines { start, end } => (start, end),
-                    RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
-                };
-                present.push((r.path, start, end));
+                present.push((r.path, r.extent));
             }
         }
-        Err(crate::Error::MeshNotFound(_)) => {
-            // New mesh — only staged state counts.
-        }
+        Err(crate::Error::MeshNotFound(_)) => {}
         Err(e) => return Err(e.into()),
     }
     let staging = crate::staging::read_staging(repo, &args.name).unwrap_or_default();
     for a in &staging.adds {
-        present.push((a.path.clone(), a.start, a.end));
+        present.push((a.path.clone(), a.extent));
     }
     for r in &staging.removes {
         if let Some(idx) = present
             .iter()
-            .position(|(p, s, e)| p == &r.path && *s == r.start && *e == r.end)
+            .position(|(p, e)| p == &r.path && *e == r.extent)
         {
             present.remove(idx);
         }
     }
 
-    // Validate every requested remove against `present`, applying earlier
-    // removes in this invocation so multi-range rm works.
     let mut effective = present.clone();
-    for (path, s, e) in &parsed {
+    for (path, extent) in &parsed {
         let idx = effective
             .iter()
-            .position(|(p, ss, ee)| p == path && ss == s && ee == e);
+            .position(|(p, e)| p == path && e == extent);
         match idx {
             Some(i) => {
                 effective.remove(i);
             }
             None => {
-                return Err(anyhow!(
-                    "range not in mesh {}: {}#L{}-L{}",
-                    args.name,
-                    path,
-                    s,
-                    e
-                ));
+                let addr = match extent {
+                    RangeExtent::Lines { start, end } => {
+                        format!("{path}#L{start}-L{end}")
+                    }
+                    RangeExtent::Whole => path.clone(),
+                };
+                return Err(anyhow!("range not in mesh {}: {addr}", args.name));
             }
         }
     }
 
-    for (path, s, e) in &parsed {
-        append_remove(repo, &args.name, path, *s, *e)?;
+    for (path, extent) in &parsed {
+        match extent {
+            RangeExtent::Lines { start, end } => {
+                append_remove(repo, &args.name, path, *start, *end)?;
+            }
+            RangeExtent::Whole => {
+                crate::staging::append_remove_whole(repo, &args.name, path)?;
+            }
+        }
     }
     Ok(0)
 }
@@ -374,10 +380,20 @@ pub fn run_status(repo: &gix::Repository, args: StatusArgs) -> Result<i32> {
         println!("Staged changes:");
         println!();
         for a in &sv.staging.adds {
-            println!("  add     {}#L{}-L{}", a.path, a.start, a.end);
+            match a.extent {
+                RangeExtent::Lines { start, end } => {
+                    println!("  add     {}#L{}-L{}", a.path, start, end);
+                }
+                RangeExtent::Whole => println!("  add     {}", a.path),
+            }
         }
         for r in &sv.staging.removes {
-            println!("  remove  {}#L{}-L{}", r.path, r.start, r.end);
+            match r.extent {
+                RangeExtent::Lines { start, end } => {
+                    println!("  remove  {}#L{}-L{}", r.path, start, end);
+                }
+                RangeExtent::Whole => println!("  remove  {}", r.path),
+            }
         }
         for c in &sv.staging.configs {
             match c {
@@ -429,7 +445,7 @@ fn print_drift_diff(
     let add = staging
         .adds
         .iter()
-        .find(|a| a.path == f.path && a.start == f.start && a.end == f.end);
+        .find(|a| a.path == f.path && a.start() == f.start && a.end() == f.end);
     let Some(add) = add else {
         return Ok(());
     };
