@@ -101,25 +101,69 @@ fn render_format(
     no_abbrev: bool,
 ) -> anyhow::Result<String> {
     let substituted = substitute_mesh_placeholders(repo, mesh, fmt, no_abbrev)?;
-    // If there's any `%` left, delegate to git; else return as-is.
     if substituted.contains('%') {
-        let wd = crate::git::work_dir(repo).map_err(|e| anyhow::anyhow!("work dir: {e}"))?;
-        let rendered = crate::git::git_stdout_raw(
-            wd,
-            [
-                "show",
-                "-s",
-                &format!("--format={substituted}"),
-                &info.commit_oid,
-            ],
-        )
-        .map_err(|e| anyhow::anyhow!("git show: {e}"))?;
-        // `git show` appends a trailing newline that `println!` will
-        // double; strip it here.
-        Ok(rendered.trim_end_matches('\n').to_string())
+        substitute_commit_placeholders(repo, &substituted, &info.commit_oid)
     } else {
         Ok(substituted)
     }
+}
+
+/// Minimal `git show --format=` emulation: supports the common single-letter
+/// placeholders `%H`, `%h`, `%s`, `%an`, `%ae`, `%ad`, `%B`, `%cd`, `%cr`,
+/// `%n`, and `%%`. Unknown `%X` tokens are left literal — matching git's
+/// own behavior.
+fn substitute_commit_placeholders(
+    repo: &gix::Repository,
+    fmt: &str,
+    commit_oid: &str,
+) -> anyhow::Result<String> {
+    let meta = crate::git::commit_meta(repo, commit_oid)
+        .map_err(|e| anyhow::anyhow!("commit meta: {e}"))?;
+    let mut out = String::with_capacity(fmt.len());
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let Some(nc) = chars.next() else {
+            out.push('%');
+            break;
+        };
+        match nc {
+            '%' => out.push('%'),
+            'n' => out.push('\n'),
+            'H' => out.push_str(commit_oid),
+            'h' => out.push_str(&commit_oid[..7.min(commit_oid.len())]),
+            's' => out.push_str(&meta.summary),
+            'B' => out.push_str(meta.message.trim_end_matches('\n')),
+            'a' | 'c' => {
+                let Some(sub) = chars.next() else {
+                    out.push('%');
+                    out.push(nc);
+                    break;
+                };
+                match (nc, sub) {
+                    ('a', 'n') => out.push_str(&meta.author_name),
+                    ('a', 'e') => out.push_str(&meta.author_email),
+                    ('a', 'd') | ('c', 'd') => out.push_str(&meta.author_date_rfc2822),
+                    ('c', 'r') => out.push_str(&crate::cli::stale_output::format_relative(
+                        meta.committer_time,
+                    )),
+                    _ => {
+                        out.push('%');
+                        out.push(nc);
+                        out.push(sub);
+                    }
+                }
+            }
+            other => {
+                out.push('%');
+                out.push(other);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Replace every `%(ranges)`, `%(ranges:count)`, `%(config:<key>)`, and

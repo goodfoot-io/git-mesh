@@ -276,8 +276,7 @@ fn validate_add_target(
     let bytes = match anchor {
         Some(commit) => {
             let blob = git::path_blob_at(repo, commit, path)?;
-            let wd = work_dir(repo)?;
-            crate::git::git_stdout_raw(wd, ["cat-file", "-p", &blob])?.into_bytes()
+            git::read_blob_bytes(repo, &blob)?
         }
         None => git::read_worktree_bytes(repo, path)?,
     };

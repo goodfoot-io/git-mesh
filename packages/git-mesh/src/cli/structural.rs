@@ -87,15 +87,9 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
 
     // ---- Refspec check -----------------------------------------------
     let remote = default_remote(repo).unwrap_or_else(|_| "origin".into());
-    let url =
-        crate::git::git_stdout_optional(wd, ["config", "--get", &format!("remote.{remote}.url")])
-            .unwrap_or(None);
+    let url = crate::sync::get_remote_url(repo, &remote);
     if url.is_some() {
-        let fetch = crate::git::git_stdout_lines(
-            wd,
-            ["config", "--get-all", &format!("remote.{remote}.fetch")],
-        )
-        .unwrap_or_default();
+        let fetch = crate::sync::get_remote_multi(repo, &remote, "fetch");
         if !fetch.iter().any(|l| l.contains("refs/meshes/")) {
             out.push(DoctorFinding {
                 code: DoctorCode::RefspecMissing,
@@ -310,11 +304,7 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
                 .is_some();
             if !exists {
                 // Decide remediation based on whether a remote is configured.
-                let remote_url = crate::git::git_stdout_optional(
-                    wd,
-                    ["config", "--get", &format!("remote.{remote}.url")],
-                )
-                .unwrap_or(None);
+                let remote_url = crate::sync::get_remote_url(repo, remote);
                 let remediation = if remote_url.is_some() {
                     format!("`git mesh fetch` to pull `{id}` from `{remote}`")
                 } else {
@@ -331,16 +321,10 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
     }
 
     // Dangling: every refs/ranges/v1/* not in `referenced`.
-    let Ok(range_refs) = crate::git::git_stdout_lines(
-        wd,
-        [
-            "for-each-ref",
-            "--format=%(refname:strip=3)",
-            "refs/ranges/v1",
-        ],
-    ) else {
+    let Ok(range_refs) = crate::git::list_refs_stripped(repo, "refs/ranges/v1") else {
         return;
     };
+    let _ = wd;
     for id in range_refs.iter().filter(|s| !s.is_empty()) {
         if !referenced.contains(id) {
             out.push(DoctorFinding {

@@ -9,7 +9,7 @@
 //! range <start> <end> <blob>\t<path>
 //! ```
 
-use crate::git::{self, git_stdout, git_with_input, work_dir};
+use crate::git::{self, work_dir};
 use crate::types::Range;
 use crate::{Error, Result};
 use chrono::Utc;
@@ -45,9 +45,9 @@ pub fn create_range(
     if start < 1 || end < start {
         return Err(Error::InvalidRange { start, end });
     }
-    let wd = work_dir(repo)?;
+    let _wd = work_dir(repo)?;
     // Confirm anchor reachable before dereferencing a tree against it.
-    if git_stdout(wd, ["rev-parse", "--verify", "--quiet", anchor_sha]).is_err() {
+    if repo.rev_parse_single(anchor_sha).is_err() {
         return Err(Error::Unreachable {
             anchor_sha: anchor_sha.to_string(),
         });
@@ -65,11 +65,7 @@ pub fn create_range(
         end,
         blob,
     };
-    let blob_oid = git_with_input(
-        wd,
-        ["hash-object", "-w", "--stdin"],
-        &serialize_range(&range),
-    )?;
+    let blob_oid = git::write_blob_bytes(repo, serialize_range(&range).as_bytes())?;
     let id = Uuid::new_v4().to_string();
     git::update_ref_cas(repo, &range_ref_path(&id), &blob_oid, None)?;
     Ok(id)
@@ -77,9 +73,9 @@ pub fn create_range(
 
 pub fn read_range(repo: &gix::Repository, range_id: &str) -> Result<Range> {
     let wd = work_dir(repo)?;
-    let oid = git_stdout(wd, ["rev-parse", &range_ref_path(range_id)])
-        .map_err(|_| Error::RangeNotFound(range_id.to_string()))?;
-    let raw = crate::git::git_stdout_raw(wd, ["cat-file", "-p", &oid])?;
+    let oid = crate::git::resolve_ref_oid_optional(wd, &range_ref_path(range_id))?
+        .ok_or_else(|| Error::RangeNotFound(range_id.to_string()))?;
+    let raw = crate::git::read_git_text(repo, &oid)?;
     parse_range(&raw)
 }
 

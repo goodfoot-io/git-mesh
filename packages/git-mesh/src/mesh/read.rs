@@ -1,9 +1,8 @@
 //! Read-only mesh operations — §6.5, §6.6, §10.4.
 
-use crate::git::{git_show_file_lines, git_stdout, resolve_ref_oid_optional, work_dir};
+use crate::git::{self, git_show_file_lines, resolve_ref_oid_optional, work_dir};
 use crate::types::{CopyDetection, Mesh, MeshConfig};
 use crate::{Error, Result};
-use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeshCommitInfo {
@@ -20,7 +19,7 @@ fn mesh_ref(name: &str) -> String {
 }
 
 pub(crate) fn resolve_mesh_revision(
-    work_dir: &Path,
+    repo: &gix::Repository,
     name: &str,
     commit_ish: Option<&str>,
 ) -> Result<String> {
@@ -36,25 +35,13 @@ pub(crate) fn resolve_mesh_revision(
             }
         }
     };
-    git_stdout(work_dir, ["rev-parse", &revision])
+    repo.rev_parse_single(revision.as_str())
+        .map(|id| id.detach().to_string())
         .map_err(|_| Error::MeshNotFound(name.to_string()))
 }
 
 pub fn list_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
-    let wd = work_dir(repo)?;
-    let output = git_stdout(
-        wd,
-        [
-            "for-each-ref",
-            "--format=%(refname:strip=3)",
-            "refs/meshes/v1",
-        ],
-    )?;
-    let mut names: Vec<String> = output
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect();
+    let mut names = git::list_refs_stripped(repo, "refs/meshes/v1")?;
     names.sort();
     Ok(names)
 }
@@ -65,10 +52,10 @@ pub fn read_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
 
 pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
     let wd = work_dir(repo)?;
-    let commit_oid = resolve_mesh_revision(wd, name, commit_ish)?;
-    let message = git_stdout(wd, ["show", "-s", "--format=%B", &commit_oid])?;
+    let commit_oid = resolve_mesh_revision(repo, name, commit_ish)?;
+    let message = git::commit_meta(repo, &commit_oid)?.message;
     let ranges = git_show_file_lines(wd, &commit_oid, "ranges").unwrap_or_default();
-    let config = read_config_blob(wd, &commit_oid).unwrap_or_else(|_| default_config());
+    let config = read_config_blob(repo, &commit_oid).unwrap_or_else(|_| default_config());
     Ok(Mesh {
         name: name.to_string(),
         ranges,
@@ -84,8 +71,9 @@ fn default_config() -> MeshConfig {
     }
 }
 
-pub(crate) fn read_config_blob(work_dir: &Path, commit_oid: &str) -> Result<MeshConfig> {
-    let text = git_stdout(work_dir, ["show", &format!("{commit_oid}:config")])?;
+pub(crate) fn read_config_blob(repo: &gix::Repository, commit_oid: &str) -> Result<MeshConfig> {
+    let blob_oid = git::path_blob_at(repo, commit_oid, "config")?;
+    let text = git::read_git_text(repo, &blob_oid)?;
     parse_config_blob(&text)
 }
 
@@ -148,20 +136,15 @@ pub fn mesh_commit_info_at(
     name: &str,
     commit_ish: Option<&str>,
 ) -> Result<MeshCommitInfo> {
-    let wd = work_dir(repo)?;
-    let commit_oid = resolve_mesh_revision(wd, name, commit_ish)?;
-    let author_name = git_stdout(wd, ["show", "-s", "--format=%an", &commit_oid])?;
-    let author_email = git_stdout(wd, ["show", "-s", "--format=%ae", &commit_oid])?;
-    let author_date = git_stdout(wd, ["show", "-s", "--format=%aD", &commit_oid])?;
-    let summary = git_stdout(wd, ["show", "-s", "--format=%s", &commit_oid])?;
-    let message = git_stdout(wd, ["show", "-s", "--format=%B", &commit_oid])?;
+    let commit_oid = resolve_mesh_revision(repo, name, commit_ish)?;
+    let meta = git::commit_meta(repo, &commit_oid)?;
     Ok(MeshCommitInfo {
         commit_oid,
-        author_name,
-        author_email,
-        author_date,
-        summary,
-        message,
+        author_name: meta.author_name,
+        author_email: meta.author_email,
+        author_date: meta.author_date_rfc2822,
+        summary: meta.summary,
+        message: meta.message,
     })
 }
 
@@ -172,18 +155,11 @@ pub fn mesh_log(
 ) -> Result<Vec<MeshCommitInfo>> {
     let wd = work_dir(repo)?;
     // Validate the ref exists first.
-    resolve_ref_oid_optional(wd, &mesh_ref(name))?
+    let tip = resolve_ref_oid_optional(wd, &mesh_ref(name))?
         .ok_or_else(|| Error::MeshNotFound(name.into()))?;
-    let mut args = vec!["rev-list".to_string()];
-    if let Some(limit) = limit {
-        args.push(format!("--max-count={limit}"));
-    }
-    args.push(mesh_ref(name));
-    let commits = git_stdout(wd, args.iter().map(String::as_str))?;
-    commits
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|oid| mesh_commit_info_at(repo, name, Some(oid)))
+    let oids = git::rev_walk_excluding(repo, &[&tip], &[], limit)?;
+    oids.into_iter()
+        .map(|oid| mesh_commit_info_at(repo, name, Some(&oid)))
         .collect()
 }
 
@@ -192,5 +168,5 @@ pub fn is_ancestor_commit(repo: &gix::Repository, name: &str, ancestor: &str) ->
 }
 
 pub fn resolve_commit_ish(repo: &gix::Repository, name: &str, commit_ish: &str) -> Result<String> {
-    resolve_mesh_revision(work_dir(repo)?, name, Some(commit_ish))
+    resolve_mesh_revision(repo, name, Some(commit_ish))
 }

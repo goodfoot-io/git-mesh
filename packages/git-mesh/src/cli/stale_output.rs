@@ -28,15 +28,19 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
 
     // Optional --since filter: only ranges whose anchor is in <since>..HEAD.
     let since_oids = if let Some(since) = &args.since {
-        let wd = crate::git::work_dir(repo)?;
-        let head = crate::git::git_stdout(wd, ["rev-parse", "HEAD"])?;
-        let mut oids: std::collections::BTreeSet<String> =
-            crate::git::git_stdout(wd, ["rev-list", &format!("{since}..{head}")])
+        let head = crate::git::head_oid(repo)?;
+        let since_oid = repo
+            .rev_parse_single(since.as_str())
+            .map(|id| id.detach().to_string())
+            .unwrap_or_default();
+        let mut oids: std::collections::BTreeSet<String> = if since_oid.is_empty() {
+            std::collections::BTreeSet::new()
+        } else {
+            crate::git::rev_walk_excluding(repo, &[&head], &[&since_oid], None)
                 .unwrap_or_default()
-                .lines()
-                .map(str::to_string)
-                .collect();
-        let since_oid = crate::git::git_stdout(wd, ["rev-parse", since]).unwrap_or_default();
+                .into_iter()
+                .collect()
+        };
         if !since_oid.is_empty() {
             oids.insert(since_oid);
         }
@@ -247,13 +251,13 @@ fn culprit_commit_info(repo: &gix::Repository, r: &RangeResolved) -> Result<Opti
     let Some(oid) = culprit_commit(repo, r)? else {
         return Ok(None);
     };
-    let wd = crate::git::work_dir(repo)?;
-    let short = crate::git::git_stdout(wd, ["rev-parse", "--short", &oid])
-        .unwrap_or_else(|_| oid.chars().take(8).collect::<String>());
-    let subject =
-        crate::git::git_stdout(wd, ["show", "-s", "--format=%s", &oid]).unwrap_or_default();
-    let relative =
-        crate::git::git_stdout(wd, ["show", "-s", "--format=%cr", &oid]).unwrap_or_default();
+    let short = shorten_oid(repo, &oid);
+    let meta = crate::git::commit_meta(repo, &oid).ok();
+    let subject = meta.as_ref().map(|m| m.summary.clone()).unwrap_or_default();
+    let relative = meta
+        .as_ref()
+        .map(|m| format_relative(m.committer_time))
+        .unwrap_or_default();
     Ok(Some(CulpritInfo {
         short,
         subject,
@@ -261,10 +265,57 @@ fn culprit_commit_info(repo: &gix::Repository, r: &RangeResolved) -> Result<Opti
     }))
 }
 
+fn shorten_oid(repo: &gix::Repository, oid: &str) -> String {
+    use std::str::FromStr;
+    let id = match gix::ObjectId::from_str(oid) {
+        Ok(id) => id,
+        Err(_) => return oid.chars().take(8).collect(),
+    };
+    match repo.find_object(id) {
+        Ok(_) => {
+            // Use 7 chars by default (git's default short length).
+            oid.chars().take(7).collect()
+        }
+        Err(_) => oid.chars().take(8).collect(),
+    }
+}
+
+pub(crate) fn format_relative(committer_time: i64) -> String {
+    let now = chrono::Utc::now().timestamp();
+    let diff = now - committer_time;
+    if diff < 0 {
+        return "in the future".into();
+    }
+    let secs = diff;
+    let mins = secs / 60;
+    let hours = mins / 60;
+    let days = hours / 24;
+    let weeks = days / 7;
+    let months = days / 30;
+    let years = days / 365;
+    if years > 0 {
+        format!("{years} year{} ago", plural(years))
+    } else if months > 0 {
+        format!("{months} month{} ago", plural(months))
+    } else if weeks > 0 {
+        format!("{weeks} week{} ago", plural(weeks))
+    } else if days > 0 {
+        format!("{days} day{} ago", plural(days))
+    } else if hours > 0 {
+        format!("{hours} hour{} ago", plural(hours))
+    } else if mins > 0 {
+        format!("{mins} minute{} ago", plural(mins))
+    } else {
+        format!("{secs} second{} ago", plural(secs))
+    }
+}
+
+fn plural(n: i64) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
 fn print_changed_diff(repo: &gix::Repository, r: &RangeResolved) -> Result<()> {
-    let wd = crate::git::work_dir(repo)?;
-    let anchored_text =
-        crate::git::git_stdout(wd, ["cat-file", "-p", &r.anchored.blob]).unwrap_or_default();
+    let anchored_text = crate::git::read_git_text(repo, &r.anchored.blob).unwrap_or_default();
     let anchored_lines: Vec<&str> = anchored_text.lines().collect();
     let a_lo = (r.anchored.start as usize).saturating_sub(1);
     let a_hi = (r.anchored.end as usize).min(anchored_lines.len());
@@ -274,8 +325,7 @@ fn print_changed_diff(repo: &gix::Repository, r: &RangeResolved) -> Result<()> {
         .collect();
 
     if let Some(cur) = &r.current {
-        let current_text =
-            crate::git::git_stdout(wd, ["cat-file", "-p", &cur.blob]).unwrap_or_default();
+        let current_text = crate::git::read_git_text(repo, &cur.blob).unwrap_or_default();
         let current_lines: Vec<&str> = current_text.lines().collect();
         let c_lo = (cur.start as usize).saturating_sub(1);
         let c_hi = (cur.end as usize).min(current_lines.len());

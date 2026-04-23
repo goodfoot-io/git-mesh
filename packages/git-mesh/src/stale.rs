@@ -1,6 +1,6 @@
 //! Resolver: compute staleness for ranges and meshes (§5).
 
-use crate::git::{git_stdout, work_dir};
+use crate::git::{self, work_dir};
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::range::read_range;
 use crate::types::{
@@ -8,7 +8,6 @@ use crate::types::{
 };
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
-use std::path::Path;
 
 pub fn resolve_range(
     repo: &gix::Repository,
@@ -65,24 +64,24 @@ pub fn culprit_commit(repo: &gix::Repository, resolved: &RangeResolved) -> Resul
     if resolved.status != RangeStatus::Changed {
         return Ok(None);
     }
-    let wd = work_dir(repo)?;
+    let _wd = work_dir(repo)?;
     let current = match &resolved.current {
         Some(c) => c,
         None => return Ok(None),
     };
-    let anchored_text = git_stdout(wd, ["cat-file", "-p", &resolved.anchored.blob])?;
+    let anchored_text = git::read_git_text(repo, &resolved.anchored.blob)?;
     let anchored_lines: Vec<&str> = anchored_text.lines().collect();
     let a_lo = (resolved.anchored.start as usize).saturating_sub(1);
     let a_hi = (resolved.anchored.end as usize).min(anchored_lines.len());
     let anchored_slice: Vec<&str> = anchored_lines[a_lo..a_hi].to_vec();
-    let current_text = git_stdout(wd, ["cat-file", "-p", &current.blob])?;
+    let current_text = git::read_git_text(repo, &current.blob)?;
     let current_lines: Vec<&str> = current_text.lines().collect();
     let c_lo = (current.start as usize).saturating_sub(1);
     let c_hi = (current.end as usize).min(current_lines.len());
     let current_slice: Vec<&str> = current_lines[c_lo..c_hi].to_vec();
 
     blame_culprit(
-        wd,
+        repo,
         &current.path,
         current.start,
         &anchored_slice,
@@ -126,14 +125,14 @@ fn resolve_range_inner(
     range_id: &str,
     r: Range,
 ) -> Result<RangeResolved> {
-    let wd = work_dir(repo)?;
+    let _wd = work_dir(repo)?;
     let anchored = RangeLocation {
         path: r.path.clone(),
         start: r.start,
         end: r.end,
         blob: r.blob.clone(),
     };
-    if !is_commit_reachable(wd, &r.anchor_sha)? {
+    if !is_commit_reachable(repo, &r.anchor_sha)? {
         return Ok(RangeResolved {
             range_id: range_id.into(),
             anchor_sha: r.anchor_sha,
@@ -142,12 +141,12 @@ fn resolve_range_inner(
             status: RangeStatus::Orphaned,
         });
     }
-    let current = resolve_current_location(wd, &r, cfg.copy_detection)?;
+    let current = resolve_current_location(repo, &r, cfg.copy_detection)?;
     let status = match &current {
         None => RangeStatus::Changed,
         Some(loc) => {
-            let anchored_text = git_stdout(wd, ["cat-file", "-p", &r.blob])?;
-            let current_text = git_stdout(wd, ["cat-file", "-p", &loc.blob])?;
+            let anchored_text = git::read_git_text(repo, &r.blob)?;
+            let current_text = git::read_git_text(repo, &loc.blob)?;
             let anchored_lines: Vec<&str> = anchored_text.lines().collect();
             let current_lines: Vec<&str> = current_text.lines().collect();
             let a_lo = (r.start as usize).saturating_sub(1);
@@ -191,20 +190,8 @@ fn lines_equal(a: &[&str], b: &[&str], ignore_ws: bool) -> bool {
     })
 }
 
-fn is_commit_reachable(work_dir: &Path, commit: &str) -> Result<bool> {
-    let output = git_stdout(
-        work_dir,
-        [
-            "for-each-ref",
-            "--format=%(refname)",
-            "--contains",
-            commit,
-            "refs",
-        ],
-    );
-    Ok(output
-        .map(|o| o.lines().any(|l| !l.is_empty()))
-        .unwrap_or(false))
+fn is_commit_reachable(repo: &gix::Repository, commit: &str) -> Result<bool> {
+    git::commit_reachable_from_any_ref(repo, commit)
 }
 
 #[derive(Clone, Debug)]
@@ -215,36 +202,30 @@ struct Tracked {
 }
 
 fn resolve_current_location(
-    wd: &Path,
+    repo: &gix::Repository,
     r: &Range,
     copy_detection: CopyDetection,
 ) -> Result<Option<RangeLocation>> {
-    let head_sha = git_stdout(wd, ["rev-parse", "HEAD"])?;
-    let commits = git_stdout(
-        wd,
-        [
-            "rev-list",
-            "--ancestry-path",
-            "--reverse",
-            &format!("{}..{head_sha}", r.anchor_sha),
-        ],
-    )
-    .unwrap_or_default();
+    let head_sha = git::head_oid(repo)?;
+    // Walk anchor..HEAD in chronological order (oldest first).
+    let mut commits =
+        git::rev_walk_excluding(repo, &[&head_sha], &[&r.anchor_sha], None).unwrap_or_default();
+    commits.reverse();
     let mut loc = Tracked {
         path: r.path.clone(),
         start: r.start,
         end: r.end,
     };
     let mut parent = r.anchor_sha.clone();
-    for commit in commits.lines().filter(|l| !l.is_empty()) {
-        match advance(wd, &parent, commit, &loc, copy_detection)? {
+    for commit in &commits {
+        match advance(repo, &parent, commit, &loc, copy_detection)? {
             Change::Unchanged => {}
             Change::Deleted => return Ok(None),
             Change::Updated(next) => loc = next,
         }
-        parent = commit.into();
+        parent = commit.clone();
     }
-    let blob = match git_stdout(wd, ["rev-parse", &format!("HEAD:{}", loc.path)]) {
+    let blob = match git::path_blob_at(repo, &head_sha, &loc.path) {
         Ok(b) => b,
         Err(_) => return Ok(None),
     };
@@ -263,13 +244,13 @@ enum Change {
 }
 
 fn advance(
-    wd: &Path,
+    repo: &gix::Repository,
     parent: &str,
     commit: &str,
     loc: &Tracked,
     copy_detection: CopyDetection,
 ) -> Result<Change> {
-    let entries = name_status(wd, parent, commit, copy_detection)?;
+    let entries = name_status(repo, parent, commit, copy_detection)?;
     let mut next_path: Option<String> = None;
     let mut deleted = false;
     let mut modified = false;
@@ -303,7 +284,7 @@ fn advance(
     }
     if deleted {
         if let Some(p) = next_path {
-            let (s, e) = compute_new_range(wd, parent, commit, loc, &p)?;
+            let (s, e) = compute_new_range(repo, parent, commit, loc, &p)?;
             return Ok(Change::Updated(Tracked {
                 path: p,
                 start: s,
@@ -316,7 +297,7 @@ fn advance(
         return Ok(Change::Unchanged);
     }
     let p = next_path.unwrap_or_else(|| loc.path.clone());
-    let (s, e) = compute_new_range(wd, parent, commit, loc, &p)?;
+    let (s, e) = compute_new_range(repo, parent, commit, loc, &p)?;
     Ok(Change::Updated(Tracked {
         path: p,
         start: s,
@@ -325,45 +306,23 @@ fn advance(
 }
 
 fn compute_new_range(
-    wd: &Path,
+    repo: &gix::Repository,
     parent: &str,
     commit: &str,
     loc: &Tracked,
     new_path: &str,
 ) -> Result<(u32, u32)> {
-    let output = if new_path == loc.path {
-        git_stdout(wd, ["diff", "-U0", parent, commit, "--", &loc.path]).unwrap_or_default()
-    } else {
-        git_stdout(
-            wd,
-            [
-                "diff",
-                "-U0",
-                "--find-renames",
-                "--find-copies",
-                parent,
-                commit,
-                "--",
-                &loc.path,
-                new_path,
-            ],
-        )
-        .unwrap_or_default()
-    };
+    // Obtain old/new blob contents via tree lookups.
+    let old_text = git::path_blob_at(repo, parent, &loc.path)
+        .and_then(|b| git::read_git_text(repo, &b))
+        .unwrap_or_default();
+    let new_text = git::path_blob_at(repo, commit, new_path)
+        .and_then(|b| git::read_git_text(repo, &b))
+        .unwrap_or_default();
+    let hunks = compute_hunks(&old_text, &new_text);
     let mut start = loc.start as i64;
     let mut end = loc.end as i64;
-    for line in output.lines() {
-        let Some(rest) = line.strip_prefix("@@ -") else {
-            continue;
-        };
-        let Some((old, new_rest)) = rest.split_once(" +") else {
-            continue;
-        };
-        let Some((new, _)) = new_rest.split_once(" @@") else {
-            continue;
-        };
-        let (os, oc) = parse_hunk(old)?;
-        let (ns, nc) = parse_hunk(new)?;
+    for (os, oc, ns, nc) in hunks {
         let os = os as i64;
         let oc = oc as i64;
         let ns = ns as i64;
@@ -404,20 +363,80 @@ fn compute_new_range(
     Ok((s, e))
 }
 
-fn parse_hunk(text: &str) -> Result<(u32, u32)> {
-    let (start, count) = match text.split_once(',') {
-        Some((s, c)) => (
-            s.parse()
-                .map_err(|_| Error::Parse("bad hunk start".into()))?,
-            c.parse()
-                .map_err(|_| Error::Parse("bad hunk count".into()))?,
-        ),
-        None => (
-            text.parse().map_err(|_| Error::Parse("bad hunk".into()))?,
-            1,
-        ),
-    };
-    Ok((start, count))
+/// Compute `diff -U0`-style hunks between two blob texts, returning
+/// `(old_start, old_count, new_start, new_count)` in 1-based line numbers.
+/// Pure `(0,0)`-origin hunks follow git's convention: an insertion before
+/// line 1 has `old_start=0, old_count=0`; a deletion tail at line N (old)
+/// with no new content has `new_start=N-1, new_count=0` — matching the
+/// hunk-apply logic in [`compute_new_range`].
+fn compute_hunks(old: &str, new: &str) -> Vec<(u32, u32, u32, u32)> {
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    let diff = TextDiff::from_slices(&a, &b);
+    let mut hunks: Vec<(u32, u32, u32, u32)> = Vec::new();
+    // Walk changes and bundle contiguous Delete/Insert runs into a hunk.
+    let mut cur_old_start: Option<usize> = None;
+    let mut cur_new_start: Option<usize> = None;
+    let mut cur_oc: u32 = 0;
+    let mut cur_nc: u32 = 0;
+    // Track 1-based positions for the next expected delete/insert.
+    let mut next_old_line: usize = 1;
+    let mut next_new_line: usize = 1;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Equal => {
+                if cur_old_start.is_some() || cur_new_start.is_some() {
+                    let os = cur_old_start.unwrap_or(next_old_line.saturating_sub(1));
+                    let ns = cur_new_start.unwrap_or(next_new_line.saturating_sub(1));
+                    // Emulate git's convention: pure inserts use old_start = insertion_point - 1
+                    // (the old line AFTER which the insertion occurs).
+                    let (emitted_os, emitted_ns) = if cur_oc == 0 {
+                        // pure insert: old_start = line before insertion (0 if at top)
+                        (next_old_line.saturating_sub(1), ns)
+                    } else if cur_nc == 0 {
+                        // pure delete: new_start = line before deletion (0 if at top)
+                        (os, next_new_line.saturating_sub(1))
+                    } else {
+                        (os, ns)
+                    };
+                    hunks.push((emitted_os as u32, cur_oc, emitted_ns as u32, cur_nc));
+                    cur_old_start = None;
+                    cur_new_start = None;
+                    cur_oc = 0;
+                    cur_nc = 0;
+                }
+                next_old_line += 1;
+                next_new_line += 1;
+            }
+            ChangeTag::Delete => {
+                if cur_old_start.is_none() {
+                    cur_old_start = Some(next_old_line);
+                }
+                cur_oc += 1;
+                next_old_line += 1;
+            }
+            ChangeTag::Insert => {
+                if cur_new_start.is_none() {
+                    cur_new_start = Some(next_new_line);
+                }
+                cur_nc += 1;
+                next_new_line += 1;
+            }
+        }
+    }
+    if cur_old_start.is_some() || cur_new_start.is_some() {
+        let os = cur_old_start.unwrap_or(next_old_line.saturating_sub(1));
+        let ns = cur_new_start.unwrap_or(next_new_line.saturating_sub(1));
+        let (emitted_os, emitted_ns) = if cur_oc == 0 {
+            (next_old_line.saturating_sub(1), ns)
+        } else if cur_nc == 0 {
+            (os, next_new_line.saturating_sub(1))
+        } else {
+            (os, ns)
+        };
+        hunks.push((emitted_os as u32, cur_oc, emitted_ns as u32, cur_nc));
+    }
+    hunks
 }
 
 enum NS {
@@ -429,71 +448,86 @@ enum NS {
 }
 
 fn name_status(
-    wd: &Path,
+    repo: &gix::Repository,
     parent: &str,
     commit: &str,
     copy_detection: CopyDetection,
 ) -> Result<Vec<NS>> {
-    let mut args = vec![
-        "diff-tree".to_string(),
-        "--no-commit-id".to_string(),
-        "--name-status".to_string(),
-        "-r".to_string(),
-        "-M".to_string(),
-    ];
-    for a in copy_detection_args(copy_detection) {
-        args.push(a.to_string());
-    }
-    args.push(parent.into());
-    args.push(commit.into());
-    let output = git_stdout(wd, args.iter().map(String::as_str))?;
+    use std::str::FromStr;
+    let parent_oid = gix::ObjectId::from_str(parent)
+        .map_err(|e| Error::Git(format!("parse parent oid: {e}")))?;
+    let commit_oid = gix::ObjectId::from_str(commit)
+        .map_err(|e| Error::Git(format!("parse commit oid: {e}")))?;
+    let parent_commit = repo
+        .find_commit(parent_oid)
+        .map_err(|e| Error::Git(format!("find parent: {e}")))?;
+    let commit_obj = repo
+        .find_commit(commit_oid)
+        .map_err(|e| Error::Git(format!("find commit: {e}")))?;
+    let parent_tree = parent_commit
+        .tree()
+        .map_err(|e| Error::Git(format!("parent tree: {e}")))?;
+    let new_tree = commit_obj
+        .tree()
+        .map_err(|e| Error::Git(format!("commit tree: {e}")))?;
+    let mut platform = parent_tree
+        .changes()
+        .map_err(|e| Error::Git(format!("tree changes: {e}")))?;
+    // Enable rename tracking; copy detection is controlled per-config.
+    platform.options(|opts| {
+        let want_copies = !matches!(copy_detection, CopyDetection::Off);
+        opts.track_path().track_rewrites(Some(gix::diff::Rewrites {
+            copies: if want_copies {
+                Some(gix::diff::rewrites::Copies::default())
+            } else {
+                None
+            },
+            percentage: Some(0.5),
+            limit: 1000,
+            track_empty: false,
+        }));
+    });
     let mut out = Vec::new();
-    for line in output.lines().filter(|l| !l.is_empty()) {
-        let mut parts = line.split('\t');
-        let status = parts.next().unwrap_or_default();
-        match status.chars().next() {
-            Some('A') => {
-                if let Some(p) = parts.next() {
-                    out.push(NS::Added { path: p.into() });
+    platform
+        .for_each_to_obtain_tree(&new_tree, |change| -> Result<std::ops::ControlFlow<()>> {
+            use gix::object::tree::diff::Change as DC;
+            match change {
+                DC::Addition { location, .. } => out.push(NS::Added {
+                    path: location.to_string(),
+                }),
+                DC::Deletion { location, .. } => out.push(NS::Deleted {
+                    path: location.to_string(),
+                }),
+                DC::Modification { location, .. } => out.push(NS::Modified {
+                    path: location.to_string(),
+                }),
+                DC::Rewrite {
+                    source_location,
+                    location,
+                    copy,
+                    ..
+                } => {
+                    if copy {
+                        out.push(NS::Copied {
+                            from: source_location.to_string(),
+                            to: location.to_string(),
+                        });
+                    } else {
+                        out.push(NS::Renamed {
+                            from: source_location.to_string(),
+                            to: location.to_string(),
+                        });
+                    }
                 }
             }
-            Some('M') => {
-                if let Some(p) = parts.next() {
-                    out.push(NS::Modified { path: p.into() });
-                }
-            }
-            Some('D') => {
-                if let Some(p) = parts.next() {
-                    out.push(NS::Deleted { path: p.into() });
-                }
-            }
-            Some('R') => {
-                let from = parts.next().unwrap_or_default().into();
-                let to = parts.next().unwrap_or_default().into();
-                out.push(NS::Renamed { from, to });
-            }
-            Some('C') => {
-                let from = parts.next().unwrap_or_default().into();
-                let to = parts.next().unwrap_or_default().into();
-                out.push(NS::Copied { from, to });
-            }
-            _ => {}
-        }
-    }
+            Ok(std::ops::ControlFlow::Continue(()))
+        })
+        .map_err(|e| Error::Git(format!("tree diff: {e}")))?;
     Ok(out)
 }
 
-fn copy_detection_args(cd: CopyDetection) -> Vec<&'static str> {
-    match cd {
-        CopyDetection::Off => Vec::new(),
-        CopyDetection::SameCommit => vec!["-C"],
-        CopyDetection::AnyFileInCommit => vec!["-C", "-C"],
-        CopyDetection::AnyFileInRepo => vec!["-C", "-C", "-C"],
-    }
-}
-
 fn blame_culprit(
-    wd: &Path,
+    repo: &gix::Repository,
     path: &str,
     start: u32,
     anchored: &[&str],
@@ -501,26 +535,38 @@ fn blame_culprit(
     ignore_ws: bool,
 ) -> Result<Option<String>> {
     let lines = differing_lines(start, anchored, current, ignore_ws);
+    let head = match repo.head_id() {
+        Ok(h) => h.detach(),
+        Err(_) => return Ok(None),
+    };
+    // Compute one blame pass and cover all requested lines from its entries.
+    let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
+    let outcome = match repo.blame_file(path_bstr, head, Default::default()) {
+        Ok(o) => o,
+        Err(_) => return Ok(None),
+    };
     let mut newest: Option<(i64, String)> = None;
     for ln in lines {
-        let output = git_stdout(
-            wd,
-            [
-                "blame",
-                "--porcelain",
-                "-L",
-                &format!("{ln},{ln}"),
-                "HEAD",
-                "--",
-                path,
-            ],
-        );
-        let Ok(output) = output else { continue };
-        if let Some((ts, oid)) = parse_blame(&output) {
-            match &newest {
-                Some((t, _)) if *t >= ts => {}
-                _ => newest = Some((ts, oid)),
-            }
+        // gix blame entries use 0-based line ranges.
+        let target = ln.saturating_sub(1);
+        let Some(entry) = outcome.entries.iter().find(|e| {
+            target >= e.start_in_blamed_file && target < e.start_in_blamed_file + e.len.get()
+        }) else {
+            continue;
+        };
+        let oid = entry.commit_id.to_string();
+        let ts = match repo.find_commit(entry.commit_id) {
+            Ok(c) => c
+                .decode()
+                .ok()
+                .and_then(|d| d.committer().ok().and_then(|s| s.time().ok()))
+                .map(|t| t.seconds)
+                .unwrap_or(0),
+            Err(_) => 0,
+        };
+        match &newest {
+            Some((t, _)) if *t >= ts => {}
+            _ => newest = Some((ts, oid)),
         }
     }
     Ok(newest.map(|(_, oid)| oid))
@@ -552,21 +598,6 @@ fn normalize(s: &str, ignore_ws: bool) -> String {
     } else {
         s.to_string()
     }
-}
-
-fn parse_blame(output: &str) -> Option<(i64, String)> {
-    let mut lines = output.lines();
-    let oid = lines.next()?.split_whitespace().next()?.to_string();
-    let mut ts: Option<i64> = None;
-    for line in lines {
-        if let Some(v) = line.strip_prefix("committer-time ") {
-            ts = v.parse().ok();
-        }
-        if line.starts_with('\t') {
-            break;
-        }
-    }
-    Some((ts?, oid))
 }
 
 #[allow(dead_code)]

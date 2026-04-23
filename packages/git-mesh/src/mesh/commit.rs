@@ -1,8 +1,7 @@
 //! Mesh commit pipeline — §6.1, §6.2.
 
 use crate::git::{
-    RefUpdate, apply_ref_transaction, create_commit, git_stdout, git_with_input,
-    resolve_ref_oid_optional, work_dir,
+    self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
 use crate::mesh::read::{parse_config_blob, serialize_config_blob};
 use crate::range::{create_range, read_range};
@@ -10,6 +9,8 @@ use crate::staging::{self, StagedConfig, Staging};
 use crate::types::{Mesh, MeshConfig};
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
+use gix::objs::Tree;
+use gix::objs::tree::{Entry, EntryKind};
 use std::path::Path;
 
 fn mesh_ref(name: &str) -> String {
@@ -128,7 +129,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
 
     // Drift check and range creation for staged adds. All-or-nothing:
     // create range refs for each add; on any failure propagate.
-    let head_sha = git_stdout(wd, ["rev-parse", "HEAD"])?;
+    let head_sha = git::head_oid(repo)?;
     let mut new_range_ids: Vec<String> = Vec::new();
     // Pre-validate every add against its resolved anchor (prevent partial
     // writes) BEFORE creating any range refs.
@@ -180,12 +181,34 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             }
             s
         };
-        let ranges_blob = git_with_input(wd, ["hash-object", "-w", "--stdin"], &ranges_text)?;
+        let ranges_blob = git::write_blob_bytes(repo, ranges_text.as_bytes())?;
         let config_text = serialize_config_blob(&new_config);
-        let config_blob = git_with_input(wd, ["hash-object", "-w", "--stdin"], &config_text)?;
-        let tree_input =
-            format!("100644 blob {config_blob}\tconfig\n100644 blob {ranges_blob}\tranges\n");
-        let tree_oid = git_with_input(wd, ["mktree"], &tree_input)?;
+        let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
+        // Build a tree with `config` and `ranges` entries. `git mktree`
+        // sorts entries by name; gix expects them pre-sorted as well.
+        let tree = Tree {
+            entries: vec![
+                Entry {
+                    mode: EntryKind::Blob.into(),
+                    filename: "config".into(),
+                    oid: config_blob
+                        .parse()
+                        .map_err(|e| crate::Error::Git(format!("parse config blob oid: {e}")))?,
+                },
+                Entry {
+                    mode: EntryKind::Blob.into(),
+                    filename: "ranges".into(),
+                    oid: ranges_blob
+                        .parse()
+                        .map_err(|e| crate::Error::Git(format!("parse ranges blob oid: {e}")))?,
+                },
+            ],
+        };
+        let tree_oid = repo
+            .write_object(&tree)
+            .map_err(|e| crate::Error::Git(format!("write tree: {e}")))?
+            .detach()
+            .to_string();
 
         // Commit.
         let parents: Vec<String> = current_parent

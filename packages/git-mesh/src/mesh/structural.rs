@@ -1,7 +1,7 @@
 //! Structural mesh operations — §6.8.
 
 use crate::git::{
-    RefUpdate, apply_ref_transaction, create_commit, git_stdout, resolve_ref_oid_optional, work_dir,
+    self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
@@ -59,8 +59,8 @@ pub fn revert_mesh(repo: &gix::Repository, name: &str, commit_ish: &str) -> Resu
     let target = super::read::resolve_commit_ish(repo, name, commit_ish)?;
     let current =
         resolve_ref_oid_optional(wd, &ref_name)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
-    let tree_oid = git_stdout(wd, ["show", "-s", "--format=%T", &target])?;
-    let message = git_stdout(wd, ["show", "-s", "--format=%B", &target])?;
+    let tree_oid = git::commit_tree_oid(repo, &target)?;
+    let message = git::commit_meta(repo, &target)?.message;
     let new_commit = create_commit(repo, &tree_oid, &message, std::slice::from_ref(&current))?;
     apply_ref_transaction(
         wd,

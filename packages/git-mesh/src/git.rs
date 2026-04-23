@@ -1,13 +1,11 @@
 //! Git plumbing helpers.
 //!
-//! Thin wrappers around the `git` subprocess (and `gix` where applicable).
-//! These are the only place in the crate that talks to git directly; the
-//! rest of the crate stays on typed results via [`crate::Result`].
+//! Thin typed wrappers around `gix`. These are the only place in the
+//! crate that talks to git directly; the rest of the crate stays on
+//! typed results via [`crate::Result`].
 
 use crate::{Error, Result};
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::str::FromStr;
 
 use gix::ObjectId;
@@ -127,7 +125,7 @@ pub(crate) fn is_reference_transaction_conflict(err: &Error) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Primitive git subprocess helpers (ported).
+// Primitive gix helpers.
 // ---------------------------------------------------------------------------
 
 pub(crate) fn work_dir(repo: &gix::Repository) -> Result<&Path> {
@@ -135,76 +133,178 @@ pub(crate) fn work_dir(repo: &gix::Repository) -> Result<&Path> {
         .ok_or_else(|| Error::Git("bare repositories are not supported".into()))
 }
 
-pub(crate) fn git_stdout<I, S>(work_dir: &Path, args: I) -> Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let output = Command::new("git")
-        .current_dir(work_dir)
-        .args(args.into_iter().map(|arg| arg.as_ref().to_string()))
-        .output()?;
-    if !output.status.success() {
-        return Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-    String::from_utf8(output.stdout)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| Error::Parse(format!("git output not utf-8: {e}")))
+/// Write raw bytes as a blob and return its hex OID.
+pub(crate) fn write_blob_bytes(repo: &gix::Repository, bytes: &[u8]) -> Result<String> {
+    let id = repo
+        .write_blob(bytes)
+        .map_err(|e| Error::Git(format!("write blob: {e}")))?;
+    Ok(id.detach().to_string())
 }
 
-pub(crate) fn git_stdout_raw<I, S>(work_dir: &Path, args: I) -> Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let output = Command::new("git")
-        .current_dir(work_dir)
-        .args(args.into_iter().map(|arg| arg.as_ref().to_string()))
-        .output()?;
-    if !output.status.success() {
-        return Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+/// List ref names with a given prefix (e.g. `refs/meshes/v1/`), returning
+/// the basename component after the prefix.
+pub(crate) fn list_refs_stripped(repo: &gix::Repository, prefix: &str) -> Result<Vec<String>> {
+    let iter = repo
+        .references()
+        .map_err(|e| Error::Git(format!("refs: {e}")))?;
+    let full = if prefix.ends_with('/') {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/")
+    };
+    let platform = iter
+        .prefixed(full.as_str())
+        .map_err(|e| Error::Git(format!("refs prefix: {e}")))?;
+    let mut out = Vec::new();
+    for r in platform {
+        let r = r.map_err(|e| Error::Git(format!("ref iter: {e}")))?;
+        let full_name = r.name().as_bstr().to_string();
+        if let Some(rest) = full_name.strip_prefix(&full) {
+            out.push(rest.to_string());
+        }
     }
-    String::from_utf8(output.stdout).map_err(|e| Error::Parse(format!("git output not utf-8: {e}")))
+    Ok(out)
 }
 
-pub(crate) fn git_stdout_optional<I, S>(work_dir: &Path, args: I) -> Result<Option<String>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let output = Command::new("git")
-        .current_dir(work_dir)
-        .args(args.into_iter().map(|arg| arg.as_ref().to_string()))
-        .output()?;
-    match output.status.code() {
-        Some(0) => Ok(Some(
-            String::from_utf8(output.stdout)
-                .map_err(|e| Error::Parse(format!("git output not utf-8: {e}")))?
-                .trim()
-                .to_string(),
-        )),
-        Some(1) => Ok(None),
-        _ => Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        )),
-    }
+/// Resolve `HEAD` to a commit OID.
+pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
+    let id = repo
+        .head_id()
+        .map_err(|e| Error::Git(format!("resolve HEAD: {e}")))?;
+    Ok(id.detach().to_string())
 }
 
-pub(crate) fn git_stdout_lines<I, S>(work_dir: &Path, args: I) -> Result<Vec<String>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    Ok(git_stdout_optional(work_dir, args)?
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
+/// Return the tree OID of a commit.
+pub(crate) fn commit_tree_oid(repo: &gix::Repository, commit_oid: &str) -> Result<String> {
+    let oid = parse_oid(commit_oid)?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| Error::Git(format!("find commit `{commit_oid}`: {e}")))?;
+    Ok(commit
+        .tree_id()
+        .map_err(|e| Error::Git(format!("commit tree: {e}")))?
+        .detach()
+        .to_string())
+}
+
+/// Extracted commit metadata.
+#[derive(Clone, Debug)]
+pub(crate) struct CommitMeta {
+    pub author_name: String,
+    pub author_email: String,
+    pub author_date_rfc2822: String,
+    pub committer_time: i64,
+    pub summary: String,
+    pub message: String,
+}
+
+pub(crate) fn commit_meta(repo: &gix::Repository, commit_oid: &str) -> Result<CommitMeta> {
+    let oid = parse_oid(commit_oid)?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| Error::Git(format!("find commit `{commit_oid}`: {e}")))?;
+    let decoded = commit
+        .decode()
+        .map_err(|e| Error::Git(format!("decode commit: {e}")))?;
+    let author_sig = decoded
+        .author()
+        .map_err(|e| Error::Git(format!("author: {e}")))?;
+    let committer_sig = decoded
+        .committer()
+        .map_err(|e| Error::Git(format!("committer: {e}")))?;
+    let author_time = author_sig
+        .time()
+        .map_err(|e| Error::Git(format!("author time: {e}")))?;
+    let committer_time = committer_sig
+        .time()
+        .map_err(|e| Error::Git(format!("committer time: {e}")))?;
+    let message = decoded.message.to_string();
+    let summary = message.lines().next().unwrap_or("").to_string();
+    Ok(CommitMeta {
+        author_name: author_sig.name.to_string(),
+        author_email: author_sig.email.to_string(),
+        author_date_rfc2822: format_rfc2822(author_time),
+        committer_time: committer_time.seconds,
+        summary,
+        message,
+    })
+}
+
+fn format_rfc2822(t: gix::date::Time) -> String {
+    // Produce `Thu, 1 Jan 1970 00:00:00 +0000` style matching `git show --format=%aD`.
+    use chrono::{DateTime, FixedOffset};
+    let secs = t.seconds;
+    let offset_secs = t.offset;
+    let fixed =
+        FixedOffset::east_opt(offset_secs).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+    let dt_utc = DateTime::from_timestamp(secs, 0)
+        .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap());
+    let dt: DateTime<FixedOffset> = dt_utc.with_timezone(&fixed);
+    dt.format("%a, %-d %b %Y %H:%M:%S %z").to_string()
+}
+
+/// Walk commits reachable from `head` but not from any of `excludes`,
+/// returning hex OIDs in topological order (newest first), optionally capped.
+pub(crate) fn rev_walk_excluding(
+    repo: &gix::Repository,
+    heads: &[&str],
+    excludes: &[&str],
+    limit: Option<usize>,
+) -> Result<Vec<String>> {
+    let head_ids: Vec<ObjectId> = heads.iter().map(|h| parse_oid(h)).collect::<Result<_>>()?;
+    let exclude_ids: Vec<ObjectId> = excludes
+        .iter()
+        .map(|h| parse_oid(h))
+        .collect::<Result<_>>()?;
+    let mut walk = repo
+        .rev_walk(head_ids)
+        .with_hidden(exclude_ids)
+        .all()
+        .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
+    let mut out = Vec::new();
+    for info in walk.by_ref() {
+        let info = info.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
+        out.push(info.id.to_string());
+        if let Some(n) = limit
+            && out.len() >= n
+        {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Is `anchor` reachable from any reference in the repository?
+pub(crate) fn commit_reachable_from_any_ref(repo: &gix::Repository, anchor: &str) -> Result<bool> {
+    let anchor_id = match parse_oid(anchor) {
+        Ok(id) => id,
+        Err(_) => return Ok(false),
+    };
+    let refs = repo
+        .references()
+        .map_err(|e| Error::Git(format!("refs: {e}")))?;
+    let all = refs
+        .all()
+        .map_err(|e| Error::Git(format!("refs all: {e}")))?;
+    for r in all {
+        let mut r = match r {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let tip = match r.peel_to_id() {
+            Ok(id) => id.detach(),
+            Err(_) => continue,
+        };
+        if tip == anchor_id {
+            return Ok(true);
+        }
+        // merge_base(tip, anchor) == anchor → anchor is ancestor of tip
+        match repo.merge_base(tip, anchor_id) {
+            Ok(base) if base.detach() == anchor_id => return Ok(true),
+            _ => continue,
+        }
+    }
+    Ok(false)
 }
 
 /// Create a commit object (without updating any ref) and return its hex OID.
@@ -227,36 +327,6 @@ pub fn create_commit(
         .new_commit(message, tree, parent_ids)
         .map_err(|e| Error::Git(format!("create commit: {e}")))?;
     Ok(commit.id.to_string())
-}
-
-pub(crate) fn git_with_input<I, S>(work_dir: &Path, args: I, input: &str) -> Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut child = Command::new("git")
-        .current_dir(work_dir)
-        .args(args.into_iter().map(|arg| arg.as_ref().to_string()))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| Error::Git("missing stdin on child".into()))?;
-        stdin.write_all(input.as_bytes())?;
-    }
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-    String::from_utf8(output.stdout)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| Error::Parse(format!("git output not utf-8: {e}")))
 }
 
 pub(crate) fn resolve_ref_oid_optional(work_dir: &Path, ref_name: &str) -> Result<Option<String>> {
@@ -297,6 +367,10 @@ pub(crate) fn git_show_file_lines(
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect())
+}
+
+pub(crate) fn read_blob_bytes(repo: &gix::Repository, blob_oid: &str) -> Result<Vec<u8>> {
+    blob_data(repo, blob_oid)
 }
 
 fn blob_data(repo: &gix::Repository, blob_oid: &str) -> Result<Vec<u8>> {
