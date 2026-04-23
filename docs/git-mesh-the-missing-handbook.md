@@ -10,8 +10,8 @@ change together."
 The important mental model is simple:
 
 - A **range** is an immutable anchor to `path#Lstart-Lend` at one commit.
-- A **mesh** is a named, mutable set of ranges plus a message explaining
-  why those ranges belong together.
+- A **mesh** is a named, mutable set of ranges plus a **why** — the
+  durable text explaining why those ranges belong together.
 - A **stale check** recomputes whether each anchored range is still
   fresh at `HEAD`.
 
@@ -139,7 +139,7 @@ git mesh add frontend-backend-sync \
   src/Button.tsx#L42-L50 \
   server/routes.ts#L13-L34
 
-git mesh message frontend-backend-sync -m "ABC-123: Button charge request matches charge route
+git mesh why frontend-backend-sync -m "ABC-123: Button charge request matches charge route
 
 Owner: team-billing
 Review when either request body or response shape changes."
@@ -173,7 +173,7 @@ Ranges are 1-based and inclusive.
 
 1. Make the code change.
 2. Stage the mesh ranges with `git mesh add`.
-3. Write the mesh message with `git mesh message`.
+3. Record why the relationship exists with `git mesh why`.
 4. Commit the source change with `git commit`.
 5. Let the post-commit hook run `git mesh commit`, or run it manually.
 
@@ -184,11 +184,11 @@ git mesh add billing-contract \
   web/checkout.tsx#L88-L120 \
   api/charge.ts#L30-L76
 
-git mesh message billing-contract -m "Checkout request matches charge API contract"
+git mesh why billing-contract -m "Checkout request matches charge API contract"
 git status
-git mesh status billing-contract
+git mesh stale billing-contract
 git commit -m "Wire checkout to charge API"
-git mesh status billing-contract
+git mesh stale billing-contract
 ```
 
 `git mesh add` without `--at` snapshots the working tree and resolves the
@@ -205,7 +205,7 @@ git mesh add auth-token-contract --at HEAD \
   packages/auth/token.ts#L88-L104 \
   packages/auth/crypto.ts#L12-L40
 
-git mesh message auth-token-contract -m "Token verification depends on signature verification"
+git mesh why auth-token-contract -m "Token verification depends on signature verification"
 git mesh commit auth-token-contract
 ```
 
@@ -293,32 +293,38 @@ the later op supersedes any previous staged add for that location
 which acknowledges the drift in `git mesh stale` output until the mesh
 is committed. No explicit `rm` is required for re-anchoring.
 
-**The mesh message is the relationship, not a changelog.** Do not
-attach a new `git mesh message` to a routine re-anchor — the previous
-message is inherited automatically when you `git mesh commit` without
-staging a message. A re-anchor that merely follows a refactor leaves
-the relationship unchanged; the message should not be rewritten. Update
-the message only when the *relationship itself* changes (different
-partner ranges, different contract, different owner, different review
-trigger).
+**The why is the relationship, not a changelog.** Do not stage a new
+`git mesh why` for a routine re-anchor — the previous why is inherited
+automatically when you `git mesh commit` without staging a new one. A
+re-anchor that merely follows a refactor leaves the relationship
+unchanged; the why should not be rewritten. Update it only when the
+*relationship itself* changes (different partner ranges, different
+contract, different owner, different review trigger).
 
 Use `git mesh rm` only when you intend to remove a range from the mesh
 entirely, not as a prelude to re-adding it.
 
-### Changing only the message
+### Changing the relationship description
 
 ```bash
-git mesh message frontend-backend-sync -m "ABC-123: Button charge request matches charge route"
+git mesh why frontend-backend-sync -m "ABC-123: Button charge request matches charge route"
 git mesh commit frontend-backend-sync
 ```
 
 Do this only when the relationship's *description* needs to change —
 the partner ranges still describe the same thing, but the explanation
-is weak, stale, or missing context a reviewer needs. Mesh messages are
-not commit-log entries for mechanical updates; they are the durable
-answer to "what relationship does this mesh represent?"
+is weak, stale, or missing context a reviewer needs. A why is not a
+commit-log entry for mechanical updates; it is the durable answer to
+"what relationship does this mesh represent?"
 
-Write messages as if a reviewer will see them six months from now.
+Write as if a reviewer will see the text six months from now.
+
+Read the current why at any time:
+
+```bash
+git mesh why frontend-backend-sync              # prints current why
+git mesh why frontend-backend-sync --at HEAD~5  # prints historical why
+```
 
 ### Changing resolver settings
 
@@ -555,11 +561,12 @@ frontend
 One mesh should describe one relationship. If the ranges split into two
 different reasons to change together, create two meshes.
 
-### Write useful mesh messages
+### Write a useful why
 
-A mesh message describes the *relationship* — the durable reason these
-ranges belong together. It is not a commit-log entry for mechanical
-updates. A good message answers:
+The `git mesh why` text describes the *relationship* — the durable
+reason these ranges belong together. It is not a commit-log entry for
+mechanical updates. The subcommand name is a prompt: literally answer
+"why does this mesh exist?" A good answer covers:
 
 - What relationship does this mesh represent?
 - Why should a future reviewer care?
@@ -578,16 +585,15 @@ response status shape changes.
 Owner: team-billing
 ```
 
-Mesh commits inherit the previous mesh's message when none is staged, so
-routine re-anchors (range moved, file renamed, lines shifted) carry the
-relationship description forward without rewriting it. Update the
-message only when the relationship itself changes: different partner
-ranges, a different contract, a new owner, a new review trigger.
+Mesh commits inherit the previous why when none is staged, so routine
+re-anchors (range moved, file renamed, lines shifted) carry the
+relationship description forward without rewriting it. Update the why
+only when the relationship itself changes: different partner ranges, a
+different contract, a new owner, a new review trigger.
 
 This mirrors the "describe intent, not diff" rule from strong
 commit-message practice — but for git-mesh the rule is stricter: the
-diff has its own commit log; the mesh message is about the relationship
-alone.
+diff has its own commit log; the why is about the relationship alone.
 
 ### Keep branches short-lived
 
@@ -608,7 +614,7 @@ that justify them.
 When a PR changes code covered by a mesh, reviewers should ask:
 
 - Did `git mesh stale --since <merge-base>` run?
-- Does the mesh message still describe the relationship?
+- Does the why still describe the relationship?
 - Are changed ranges re-anchored after intentional drift?
 - Did a source change require adding a new range to an existing mesh?
 - Did a removed feature require deleting or reverting a mesh?
@@ -719,12 +725,12 @@ Pending staged ops appear in the trailing section of stale output. If
 there are none, you may have committed source code without staging mesh
 operations, or you may have cleared staging with `git mesh restore`.
 
-### First commit requires a message
+### First commit requires a why
 
-A new mesh has no parent message to inherit. Set one:
+A new mesh has no parent to inherit from. Set one:
 
 ```bash
-git mesh message <name> -m "Explain the relationship"
+git mesh why <name> -m "Explain the relationship"
 git mesh commit <name>
 ```
 
@@ -810,7 +816,9 @@ config
 ranges
 ```
 
-The commit message is the mesh message.
+The git commit message carries the mesh's why text. "Why" is the
+mesh-layer name for it; "commit message" is git's name for the same
+bytes. The two meet at the git handoff.
 
 This is why mesh history works with normal Git concepts. The mesh ref is
 the mutable name. The commit chain is the audit trail. The range blobs
@@ -822,7 +830,7 @@ Staged mesh operations live under `.git/mesh/staging/`:
 
 ```text
 <name>       pending add/remove/config operations
-<name>.msg   staged message
+<name>.why   staged why text
 <name>.<N>   sidecar bytes for staged add N (with normalization stamp)
 ```
 
@@ -917,7 +925,9 @@ Staging and committing:
 ```bash
 git mesh add <name> <range>... [--at <commit-ish>]
 git mesh rm <name> <range>...
-git mesh message <name> [-m <msg>|-F <file>|--edit]
+git mesh why <name>                             # print current why
+git mesh why <name> [--at <commit-ish>]         # print historical why
+git mesh why <name> [-m <text>|-F <file>|--edit]  # stage a new why
 git mesh commit [<name>]
 ```
 
@@ -948,8 +958,8 @@ git mesh doctor
 ```
 
 Reserved mesh names are command names. Do not name a mesh `add`, `rm`,
-`commit`, `message`, `restore`, `revert`, `delete`, `mv`, `stale`,
-`fetch`, `push`, `doctor`, `log`, `config`, `ls`, or `help`.
+`commit`, `why`, `restore`, `revert`, `delete`, `mv`, `stale`, `fetch`,
+`push`, `doctor`, `log`, `config`, `ls`, or `help`.
 
 ## Best-practice checklist
 
