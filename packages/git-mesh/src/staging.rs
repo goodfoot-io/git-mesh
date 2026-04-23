@@ -30,6 +30,15 @@ pub struct StagedAdd {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedAdd {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+    pub anchor: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StagedRemove {
     pub path: String,
     pub start: u32,
@@ -288,6 +297,39 @@ fn validate_add_target(
     Ok(bytes)
 }
 
+pub(crate) fn prepare_add(
+    repo: &gix::Repository,
+    path: &str,
+    start: u32,
+    end: u32,
+    anchor: Option<&str>,
+) -> Result<PreparedAdd> {
+    Ok(PreparedAdd {
+        path: path.to_string(),
+        start,
+        end,
+        anchor: anchor.map(str::to_string),
+        bytes: validate_add_target(repo, path, start, end, anchor)?,
+    })
+}
+
+pub(crate) fn append_prepared_add(
+    repo: &gix::Repository,
+    name: &str,
+    add: &PreparedAdd,
+) -> Result<()> {
+    let line = match add.anchor.as_deref() {
+        Some(sha) => format!(
+            "add {}#L{}-L{}{}{sha}",
+            add.path, add.start, add.end, ADD_ANCHOR_SEPARATOR
+        ),
+        None => format!("add {}#L{}-L{}", add.path, add.start, add.end),
+    };
+    let add_n = append_line(repo, name, &line)?;
+    fs::write(sidecar_path(repo, name, add_n)?, &add.bytes)?;
+    Ok(())
+}
+
 pub fn append_add(
     repo: &gix::Repository,
     name: &str,
@@ -296,14 +338,8 @@ pub fn append_add(
     end: u32,
     anchor: Option<&str>,
 ) -> Result<()> {
-    let bytes = validate_add_target(repo, path, start, end, anchor)?;
-    let line = match anchor {
-        Some(sha) => format!("add {path}#L{start}-L{end}{ADD_ANCHOR_SEPARATOR}{sha}"),
-        None => format!("add {path}#L{start}-L{end}"),
-    };
-    let add_n = append_line(repo, name, &line)?;
-    fs::write(sidecar_path(repo, name, add_n)?, bytes)?;
-    Ok(())
+    let add = prepare_add(repo, path, start, end, anchor)?;
+    append_prepared_add(repo, name, &add)
 }
 
 pub fn append_remove(

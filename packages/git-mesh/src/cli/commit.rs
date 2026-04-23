@@ -1,18 +1,22 @@
 //! Staging + commit handlers — §6.2, §6.3, §6.4, §10.5.
 
 use crate::cli::{parse_range_address, AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs, StatusArgs};
-use crate::staging::StagedConfig;
+use crate::staging::{append_prepared_add, prepare_add, StagedConfig};
 use crate::types::CopyDetection;
 use crate::{
-    append_add, append_config, append_remove, commit_mesh, read_mesh, set_message, status_view,
+    append_config, append_remove, commit_mesh, read_mesh, set_message, status_view,
 };
 use anyhow::{anyhow, Context, Result};
 
 pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
+    let mut adds = Vec::with_capacity(args.ranges.len());
     for addr in &args.ranges {
         let (path, s, e) = parse_range_address(addr)?;
-        append_add(repo, &args.name, &path, s, e, args.at.as_deref())?;
+        adds.push(prepare_add(repo, &path, s, e, args.at.as_deref())?);
+    }
+    for add in &adds {
+        append_prepared_add(repo, &args.name, add)?;
     }
     Ok(0)
 }

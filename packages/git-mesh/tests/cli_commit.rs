@@ -51,6 +51,26 @@ fn cli_add_rejects_end_past_eof() -> Result<()> {
 }
 
 #[test]
+fn cli_add_is_atomic_when_any_range_is_invalid() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["add", "m", "file1.txt#L1-L5", "file2.txt#L99-L100"])?;
+    assert!(!out.status.success());
+    let status = repo.mesh_stdout(["status", "m"])?;
+    assert!(!status.contains("file1.txt#L1-L5"), "status={status}");
+    Ok(())
+}
+
+#[test]
+fn cli_add_is_atomic_when_any_path_is_missing() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["add", "m", "file1.txt#L1-L5", "no/such.txt#L1-L2"])?;
+    assert!(!out.status.success());
+    let status = repo.mesh_stdout(["status", "m"])?;
+    assert!(!status.contains("file1.txt#L1-L5"), "status={status}");
+    Ok(())
+}
+
+#[test]
 fn cli_commit_accepts_paths_with_spaces() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.commit_file(
@@ -63,6 +83,26 @@ fn cli_commit_accepts_paths_with_spaces() -> Result<()> {
     repo.mesh_stdout(["commit", "spaced"])?;
     let out = repo.mesh_stdout(["show", "spaced", "--oneline"])?;
     assert!(out.contains("dir with spaces/file 3.txt#L1-L2"), "show={out}");
+    Ok(())
+}
+
+#[test]
+fn cli_add_accepts_paths_with_spaces_alongside_other_ranges() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.commit_file(
+        "dir with spaces/file 3.txt",
+        "line1\nline2\nline3\n",
+        "add spaced file",
+    )?;
+    repo.mesh_stdout([
+        "add",
+        "spaced",
+        "dir with spaces/file 3.txt#L1-L2",
+        "file1.txt#L1-L3",
+    ])?;
+    let status = repo.mesh_stdout(["status", "spaced"])?;
+    assert!(status.contains("dir with spaces/file 3.txt#L1-L2"), "status={status}");
+    assert!(status.contains("file1.txt#L1-L3"), "status={status}");
     Ok(())
 }
 
