@@ -2,17 +2,36 @@
 
 set -e
 
+CARGO_BIN="/home/node/.cargo/bin/cargo"
+RUSTUP_HOME="/home/node/.rustup"
+CARGO_HOME="/home/node/.cargo"
+
 # Make all scripts in utilities directory executable
 if [ -d "/workspace/.devcontainer/utilities" ]; then
     echo "Making scripts in /workspace/.devcontainer/utilities executable..."
     chmod +x /workspace/.devcontainer/utilities/*
 fi
 
+# /home/node is bind-mounted from the host in docker-compose, which hides any
+# Rust toolchain installed into the image at build time. Ensure the mounted
+# home directory has a working Rust install.
+if [ ! -x "$CARGO_BIN" ]; then
+    echo "Installing Rust toolchain into mounted /home/node..."
+    export RUSTUP_HOME
+    export CARGO_HOME
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+else
+    echo "Rust toolchain already available in mounted /home/node"
+fi
+
+echo "Ensuring required Rust components are installed..."
+"$CARGO_HOME/bin/rustup" component add clippy rustfmt
+
 # Create VSCode MCP Bridge directory with proper permissions
 echo "Setting up VSCode MCP Bridge directories..."
 mkdir -p /home/node/.local/share/yutengjing-vscode-mcp
 chmod 755 /home/node/.local/share/yutengjing-vscode-mcp
-chown -R node:node /home/node/.local
+chown -R node:node /home/node/.local "$CARGO_HOME" "$RUSTUP_HOME"
 echo "VSCode MCP Bridge directories created"
 
 # Start system dbus daemon if not already running
