@@ -140,7 +140,6 @@ fn head_only_mode_byte_identical_output_on_fixture() -> Result<()> {
 
 /// Plan bullet: Worktree-only drift → Changed, source=Worktree, current.blob = None, exit 1.
 #[test]
-#[ignore = "phase-1-pending: worktree layer reader not implemented"]
 fn worktree_only_drift_changed_source_worktree_no_blob_exit_one() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -168,7 +167,6 @@ fn worktree_only_drift_changed_source_worktree_no_blob_exit_one() -> Result<()> 
 /// Plan bullet: `git add` moves drift from Worktree to Index;
 /// current.blob = Some(staged_oid); exit still 1.
 #[test]
-#[ignore = "phase-1-pending: index layer reader not implemented"]
 fn git_add_moves_drift_worktree_to_index_with_staged_oid() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -281,7 +279,6 @@ fn sidecar_before_gitattributes_eol_change_still_acks() -> Result<()> {
 /// Plan bullet: `git add -p` partial staging: range straddles partial edit; both
 /// layers show drift with shifted locations.
 #[test]
-#[ignore = "phase-1-pending: per-layer hunk application pending engine slice"]
 fn git_add_p_partial_staging_shows_both_layer_drift() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -316,7 +313,6 @@ fn git_add_p_partial_staging_shows_both_layer_drift() -> Result<()> {
 
 /// Plan bullet: Merge-conflict path → MergeConflict, current.blob = None.
 #[test]
-#[ignore = "phase-1-pending: merge-conflict detection pending engine slice"]
 fn merge_conflict_path_surfaces_merge_conflict_no_blob() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -341,7 +337,7 @@ fn merge_conflict_path_surfaces_merge_conflict_no_blob() -> Result<()> {
     let r = &mr.ranges[0];
     assert_eq!(r.status, RangeStatus::MergeConflict);
     assert!(
-        r.current.as_ref().map_or(true, |c| c.blob.is_none()),
+        r.current.as_ref().is_none_or(|c| c.blob.is_none()),
         "MergeConflict carries path only, no blob"
     );
     Ok(())
@@ -349,7 +345,6 @@ fn merge_conflict_path_surfaces_merge_conflict_no_blob() -> Result<()> {
 
 /// Plan bullet: CRLF checkout of an LF blob → no false drift.
 #[test]
-#[ignore = "phase-1-pending: core-filter normalization pending readers slice"]
 fn crlf_checkout_of_lf_blob_no_false_drift() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -557,7 +552,6 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
 /// Plan bullet: `git mv` across a pinned file (one-layer rename): Moved with new
 /// path; mesh record's anchored path unchanged (re-anchor is a separate action).
 #[test]
-#[ignore = "phase-1-pending: rename detection surfacing Moved pending engine slice"]
 fn git_mv_across_pinned_file_reports_moved_new_path() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -580,7 +574,6 @@ fn git_mv_across_pinned_file_reports_moved_new_path() -> Result<()> {
 /// index entry; resolver treats as unstaged; new-file variant (no HEAD) falls back
 /// to worktree read.
 #[test]
-#[ignore = "phase-1-pending: intent-to-add handling pending engine slice"]
 fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Create a new file staged with -N — zero-OID index entry.
@@ -615,7 +608,7 @@ fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
 /// Plan bullet: Rename-heavy changeset (>1000 paths): `stale` completes without
 /// pairing blow-up; a note indicates rename detection was disabled.
 #[test]
-#[ignore = "phase-1-pending: rename-budget cap pending engine slice"]
+#[ignore = "phase-1-pending: rename-budget cap applies to diff-index/diff-files; this fixture's renames live in HEAD history"]
 fn rename_heavy_changeset_completes_with_note() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -640,7 +633,6 @@ fn rename_heavy_changeset_completes_with_note() -> Result<()> {
 /// Plan bullet: Index-file SHA-1 trailer changes mid-run: stderr warning printed;
 /// exit code unaffected.
 #[test]
-#[ignore = "phase-1-pending: concurrency guard (index SHA trailer) pending engine slice"]
 fn index_sha1_trailer_changes_mid_run_prints_warning() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;

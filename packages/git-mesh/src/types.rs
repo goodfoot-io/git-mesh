@@ -132,6 +132,11 @@ pub struct RangeResolved {
     pub anchored: RangeLocation,
     pub current: Option<RangeLocation>,
     pub status: RangeStatus,
+    /// Layer that produced the drift; `None` when `Fresh` or terminal.
+    /// Slice 2 of the layered-stale plan: this carries the same meaning as
+    /// `Finding::source` until the renderer slice migrates wholesale to
+    /// `Finding`.
+    pub source: Option<DriftSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

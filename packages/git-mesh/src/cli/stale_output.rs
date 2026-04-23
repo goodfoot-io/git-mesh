@@ -11,20 +11,24 @@
 use crate::cli::{StaleArgs, StaleFormat};
 use crate::stale::{resolve_mesh, stale_meshes};
 use crate::types::{
-    EngineOptions, LayerSet, MeshResolved, RangeExtent, RangeResolved, RangeStatus,
+    DriftSource, EngineOptions, LayerSet, MeshResolved, RangeExtent, RangeResolved, RangeStatus,
     UnavailableReason,
 };
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
-    // Slice 1: only HEAD-only mode is supported. The CLI flags
-    // `--no-worktree --no-index --no-staged-mesh` together collapse to
-    // `LayerSet::committed_only()`.
-    if !args.no_worktree || !args.no_index || !args.no_staged_mesh {
-        bail!("layered modes pending later slice; pass --no-worktree --no-index --no-staged-mesh");
-    }
+    // Slice 2: layered modes are wired. HEAD-only fast path applies when
+    // every additional layer is disabled. `--no-staged-mesh` is honored
+    // but the staged-mesh-layer engine plumbing lands in slice 3; for now
+    // the layer is a no-op on the engine side regardless of the flag.
+    let layers = LayerSet {
+        worktree: !args.no_worktree,
+        index: !args.no_index,
+        staged_mesh: !args.no_staged_mesh,
+    };
+    let show_src_column = layers.worktree || layers.index;
     let options = EngineOptions {
-        layers: LayerSet::committed_only(),
+        layers,
         ignore_unavailable: args.ignore_unavailable,
     };
 
@@ -45,7 +49,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
 
     match args.format {
         StaleFormat::Human => render_human(&meshes, &findings, args.oneline, args.stat)?,
-        StaleFormat::Porcelain => render_porcelain(&findings),
+        StaleFormat::Porcelain => render_porcelain(&findings, show_src_column),
         StaleFormat::Json => render_json(&meshes, &findings)?,
         StaleFormat::Junit => render_junit(&findings),
         StaleFormat::GithubActions => render_github(&findings),
@@ -124,7 +128,7 @@ fn render_human(
     Ok(())
 }
 
-fn render_porcelain(findings: &[(String, RangeResolved)]) {
+fn render_porcelain(findings: &[(String, RangeResolved)], show_src: bool) {
     if findings.is_empty() {
         return;
     }
@@ -132,15 +136,38 @@ fn render_porcelain(findings: &[(String, RangeResolved)]) {
     for (mesh, r) in findings {
         let (s, e) = extent_lines(r.anchored.extent);
         let anchor_short = r.anchor_sha.get(..8).unwrap_or(&r.anchor_sha);
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            status_str(&r.status),
-            mesh,
-            r.anchored.path.display(),
-            s,
-            e,
-            anchor_short
-        );
+        if show_src {
+            let src = source_marker(r.source);
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                status_str(&r.status),
+                src,
+                mesh,
+                r.anchored.path.display(),
+                s,
+                e,
+                anchor_short
+            );
+        } else {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                status_str(&r.status),
+                mesh,
+                r.anchored.path.display(),
+                s,
+                e,
+                anchor_short
+            );
+        }
+    }
+}
+
+fn source_marker(src: Option<DriftSource>) -> &'static str {
+    match src {
+        Some(DriftSource::Head) => "H",
+        Some(DriftSource::Index) => "I",
+        Some(DriftSource::Worktree) => "W",
+        None => "-",
     }
 }
 
