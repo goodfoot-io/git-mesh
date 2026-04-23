@@ -7,7 +7,7 @@
 //!
 //! Operation line format:
 //! ```text
-//! add <path>#L<start>-L<end> [<anchor-sha>]
+//! add <path>#L<start>-L<end>[\t<anchor-sha>]
 //! remove <path>#L<start>-L<end>
 //! config <key> <value>
 //! ```
@@ -17,6 +17,8 @@ use crate::types::{CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESP
 use crate::{Error, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const ADD_ANCHOR_SEPARATOR: char = '\t';
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StagedAdd {
@@ -100,9 +102,10 @@ fn parse_line(line: &str) -> Result<Option<ParsedLine>> {
         return Ok(None);
     }
     if let Some(rest) = line.strip_prefix("add ") {
-        let mut parts = rest.splitn(2, ' ');
-        let addr = parts.next().unwrap_or_default();
-        let anchor = parts.next().map(str::to_string);
+        let (addr, anchor) = match rest.split_once(ADD_ANCHOR_SEPARATOR) {
+            Some((addr, anchor)) => (addr, Some(anchor.to_string())),
+            None => (rest, None),
+        };
         let (path, start, end) = parse_range_address(addr)
             .ok_or_else(|| Error::ParseStaging { line: line.into() })?;
         return Ok(Some(ParsedLine::Add(StagedAdd {
@@ -240,6 +243,51 @@ fn append_line(repo: &gix::Repository, name: &str, line: &str) -> Result<u32> {
     Ok(new_add_count)
 }
 
+fn validate_staging_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error::Parse("range path must not be empty".into()));
+    }
+    if let Some(bad) = path.chars().find(|c| matches!(c, '\t' | '\n' | '\0')) {
+        return Err(Error::Parse(format!(
+            "range path contains unsupported control character `{}`",
+            bad.escape_debug()
+        )));
+    }
+    Ok(())
+}
+
+fn count_lines(bytes: &[u8]) -> u32 {
+    String::from_utf8_lossy(bytes).lines().count() as u32
+}
+
+fn validate_add_target(
+    repo: &gix::Repository,
+    path: &str,
+    start: u32,
+    end: u32,
+    anchor: Option<&str>,
+) -> Result<Vec<u8>> {
+    validate_staging_path(path)?;
+    if start < 1 || end < start {
+        return Err(Error::InvalidRange { start, end });
+    }
+
+    let bytes = match anchor {
+        Some(commit) => {
+            let blob = git::path_blob_at(repo, commit, path)?;
+            let wd = work_dir(repo)?;
+            crate::git::git_stdout_raw(wd, ["cat-file", "-p", &blob])?.into_bytes()
+        }
+        None => git::read_worktree_bytes(repo, path)?,
+    };
+
+    let line_count = count_lines(&bytes);
+    if end > line_count {
+        return Err(Error::InvalidRange { start, end });
+    }
+    Ok(bytes)
+}
+
 pub fn append_add(
     repo: &gix::Repository,
     name: &str,
@@ -248,32 +296,12 @@ pub fn append_add(
     end: u32,
     anchor: Option<&str>,
 ) -> Result<()> {
-    if start < 1 || end < start {
-        return Err(Error::InvalidRange { start, end });
-    }
+    let bytes = validate_add_target(repo, path, start, end, anchor)?;
     let line = match anchor {
-        Some(sha) => format!("add {path}#L{start}-L{end} {sha}"),
+        Some(sha) => format!("add {path}#L{start}-L{end}{ADD_ANCHOR_SEPARATOR}{sha}"),
         None => format!("add {path}#L{start}-L{end}"),
     };
     let add_n = append_line(repo, name, &line)?;
-
-    // Snapshot sidecar bytes:
-    //  - explicit anchor → read from that commit's blob at `path`
-    //  - no anchor       → read from the working tree
-    // Best-effort sidecar snapshot: if the path does not exist at stage
-    // time, record an empty sidecar and defer the hard failure to commit.
-    let bytes = match anchor {
-        Some(sha) => match git::path_blob_at(repo, sha, path) {
-            Ok(blob) => {
-                let wd = work_dir(repo)?;
-                crate::git::git_stdout_raw(wd, ["cat-file", "-p", &blob])
-                    .unwrap_or_default()
-                    .into_bytes()
-            }
-            Err(_) => Vec::new(),
-        },
-        None => git::read_worktree_bytes(repo, path).unwrap_or_default(),
-    };
     fs::write(sidecar_path(repo, name, add_n)?, bytes)?;
     Ok(())
 }
@@ -285,6 +313,7 @@ pub fn append_remove(
     start: u32,
     end: u32,
 ) -> Result<()> {
+    validate_staging_path(path)?;
     if start < 1 || end < start {
         return Err(Error::InvalidRange { start, end });
     }

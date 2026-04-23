@@ -146,7 +146,26 @@ fn commit_is_atomic_on_invalid_op() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "atomic", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "atomic", "no/such.txt", 1, 1, None)?;
+    std::fs::write(
+        repo.path().join(".git").join("mesh").join("staging").join("atomic"),
+        "add file1.txt#L1-L5\nadd no/such.txt#L1-L1\n",
+    )?;
+    std::fs::write(
+        repo.path()
+            .join(".git")
+            .join("mesh")
+            .join("staging")
+            .join("atomic.1"),
+        "line1\nline2\nline3\nline4\nline5\n",
+    )?;
+    std::fs::write(
+        repo.path()
+            .join(".git")
+            .join("mesh")
+            .join("staging")
+            .join("atomic.2"),
+        "",
+    )?;
     set_message(&gix, "atomic", "m")?;
     assert!(commit_mesh(&gix, "atomic").is_err());
     assert!(!repo.ref_exists("refs/meshes/v1/atomic"));

@@ -183,9 +183,10 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
             }
             if let Some(rest) = line.strip_prefix("add ") {
                 add_n += 1;
-                let mut parts = rest.splitn(2, ' ');
-                let addr = parts.next().unwrap_or_default();
-                let anchor = parts.next();
+                let (addr, anchor) = match rest.split_once('\t') {
+                    Some((addr, anchor)) => (addr, Some(anchor)),
+                    None => (rest, None),
+                };
                 if !is_valid_addr(addr) {
                     out.push(DoctorFinding {
                         code: DoctorCode::StagingCorrupt,

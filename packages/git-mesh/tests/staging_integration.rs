@@ -44,6 +44,36 @@ fn append_add_with_explicit_anchor_records_sha() -> Result<()> {
 }
 
 #[test]
+fn append_add_rejects_missing_worktree_path() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    let err = append_add(&gix, "m", "no/such.txt", 1, 1, None).unwrap_err();
+    assert!(matches!(err, git_mesh::Error::Io(_) | git_mesh::Error::PathNotInTree { .. }));
+    Ok(())
+}
+
+#[test]
+fn append_add_rejects_end_past_eof() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    let err = append_add(&gix, "m", "file1.txt", 1, 999, None).unwrap_err();
+    assert!(matches!(err, git_mesh::Error::InvalidRange { .. }));
+    Ok(())
+}
+
+#[test]
+fn append_add_round_trips_paths_with_spaces() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.write_file("dir with spaces/file 3.txt", "line1\nline2\nline3\n")?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "m", "dir with spaces/file 3.txt", 1, 2, None)?;
+    let s = read_staging(&gix, "m")?;
+    assert_eq!(s.adds.len(), 1);
+    assert_eq!(s.adds[0].path, "dir with spaces/file 3.txt");
+    Ok(())
+}
+
+#[test]
 
 fn append_remove_records_line() -> Result<()> {
     let repo = TestRepo::seeded()?;

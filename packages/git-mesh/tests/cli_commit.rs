@@ -35,6 +35,38 @@ fn cli_add_rejects_bad_address() -> Result<()> {
 }
 
 #[test]
+fn cli_add_rejects_missing_path() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["add", "m", "no/such.txt#L1-L2"])?;
+    assert!(!out.status.success());
+    Ok(())
+}
+
+#[test]
+fn cli_add_rejects_end_past_eof() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["add", "m", "file1.txt#L1-L99"])?;
+    assert!(!out.status.success());
+    Ok(())
+}
+
+#[test]
+fn cli_commit_accepts_paths_with_spaces() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.commit_file(
+        "dir with spaces/file 3.txt",
+        "line1\nline2\nline3\n",
+        "add spaced file",
+    )?;
+    repo.mesh_stdout(["add", "spaced", "dir with spaces/file 3.txt#L1-L2"])?;
+    repo.mesh_stdout(["message", "spaced", "-m", "Initial"])?;
+    repo.mesh_stdout(["commit", "spaced"])?;
+    let out = repo.mesh_stdout(["show", "spaced", "--oneline"])?;
+    assert!(out.contains("dir with spaces/file 3.txt#L1-L2"), "show={out}");
+    Ok(())
+}
+
+#[test]
 
 fn cli_rm_stages_remove() -> Result<()> {
     let repo = TestRepo::seeded()?;
