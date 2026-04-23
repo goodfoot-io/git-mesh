@@ -14,8 +14,8 @@ use crate::git;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::range::read_range;
 use crate::types::{
-    CopyDetection, DriftSource, EngineOptions, LayerSet, MeshConfig, MeshResolved, Range,
-    RangeExtent, RangeLocation, RangeResolved, RangeStatus,
+    self, CopyDetection, DriftSource, EngineOptions, LayerSet, MeshConfig, MeshResolved, Range,
+    RangeExtent, RangeLocation, RangeResolved, RangeStatus, UnavailableReason,
 };
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
@@ -212,6 +212,7 @@ fn orphaned_placeholder(range_id: &str) -> RangeResolved {
         current: None,
         status: RangeStatus::Orphaned,
         source: None,
+        acknowledged_by: None,
     }
 }
 
@@ -243,6 +244,7 @@ fn resolve_range_inner(
             current: None,
             status: RangeStatus::Orphaned,
             source: None,
+            acknowledged_by: None,
         });
     }
 
@@ -269,6 +271,7 @@ fn resolve_range_inner(
                 }),
                 status: RangeStatus::MergeConflict,
                 source: None,
+                acknowledged_by: None,
             });
         }
     }
@@ -330,11 +333,37 @@ fn resolve_range_inner(
         Some(t) => {
             // For the deepest enabled layer, read bytes appropriately.
             let (cur_text, cur_blob) = match deepest_layer {
-                DriftSource::Worktree => {
-                    let bytes = read_worktree_normalized(repo, &t.path)?;
-                    (string_from_utf8_lossy(&bytes), None)
-                }
+                DriftSource::Worktree => match read_worktree_normalized(repo, &t.path) {
+                    Ok(bytes) => (string_from_utf8_lossy(&bytes), None),
+                    Err(Error::FilterFailed { filter }) => {
+                        return Ok(RangeResolved {
+                            range_id: range_id.into(),
+                            anchor_sha: r.anchor_sha,
+                            anchored,
+                            current: None,
+                            status: RangeStatus::ContentUnavailable(
+                                UnavailableReason::FilterFailed { filter },
+                            ),
+                            source: None,
+                            acknowledged_by: None,
+                        });
+                    }
+                    Err(e) => return Err(e),
+                },
                 DriftSource::Index => {
+                    if let Some(filter) = filter_short_circuit(repo, &t.path)? {
+                        return Ok(RangeResolved {
+                            range_id: range_id.into(),
+                            anchor_sha: r.anchor_sha,
+                            anchored,
+                            current: None,
+                            status: RangeStatus::ContentUnavailable(
+                                UnavailableReason::FilterFailed { filter },
+                            ),
+                            source: None,
+                            acknowledged_by: None,
+                        });
+                    }
                     let oid = index_blob_oid.clone().or_else(|| {
                         // Path didn't appear in index diff — read from HEAD blob.
                         head_blob_for(repo, &t.path).ok()
@@ -348,6 +377,19 @@ fn resolve_range_inner(
                     }
                 }
                 DriftSource::Head => {
+                    if let Some(filter) = filter_short_circuit(repo, &t.path)? {
+                        return Ok(RangeResolved {
+                            range_id: range_id.into(),
+                            anchor_sha: r.anchor_sha,
+                            anchored,
+                            current: None,
+                            status: RangeStatus::ContentUnavailable(
+                                UnavailableReason::FilterFailed { filter },
+                            ),
+                            source: None,
+                            acknowledged_by: None,
+                        });
+                    }
                     let oid = head_blob_for(repo, &t.path).ok();
                     let txt = match &oid {
                         Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
@@ -444,6 +486,10 @@ fn resolve_range_inner(
         current: current_loc,
         status,
         source,
+        // Slice 3 scaffolding: ack matching is wired through types but
+        // remains disabled until slice 5 ships the sidecar freshness
+        // stamp. See `docs/stale-layers-slices.md`.
+        acknowledged_by: None,
     })
 }
 
@@ -504,6 +550,18 @@ fn infer_layer_source(
         return Ok(Some(DriftSource::Worktree));
     }
     Ok(None)
+}
+
+/// Probe `.gitattributes` for a custom `filter=<name>` driver on `path`.
+/// Returns `Some(name)` when the driver is outside the slice-2 core
+/// allowlist (fail-loud short-circuit); `None` when it's safe to read
+/// the blob's stored canonical bytes.
+fn filter_short_circuit(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
+    let workdir = git::work_dir(repo)?;
+    match types::path_filter_attribute(workdir, std::path::Path::new(path))? {
+        Some(name) if !types::is_core_filter(&name) => Ok(Some(name)),
+        _ => Ok(None),
+    }
 }
 
 fn head_blob_for(repo: &gix::Repository, path: &str) -> Result<String> {
@@ -1111,8 +1169,20 @@ fn read_index_trailer(repo: &gix::Repository) -> Result<[u8; 20]> {
 }
 
 /// Read a worktree file, applying git's clean filter where possible.
+///
+/// Fail-loud per `docs/stale-layers-slices.md`: paths whose
+/// `.gitattributes` resolve to a `filter=<name>` outside the slice-2
+/// core-filter allowlist (currently empty for the `filter` attribute —
+/// see `types::is_core_filter`) raise `Error::FilterFailed`, which the
+/// engine surfaces as `RangeStatus::ContentUnavailable(FilterFailed)`.
 fn read_worktree_normalized(repo: &gix::Repository, rel_path: &str) -> Result<Vec<u8>> {
     let workdir = git::work_dir(repo)?;
+    if let Some(name) =
+        types::path_filter_attribute(workdir, std::path::Path::new(rel_path))?
+        && !types::is_core_filter(&name)
+    {
+        return Err(Error::FilterFailed { filter: name });
+    }
     let abs = workdir.join(rel_path);
     let md = match std::fs::symlink_metadata(&abs) {
         Ok(m) => m,

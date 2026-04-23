@@ -44,6 +44,40 @@ and `convert_to_worktree`) is the supported in-tree implementation of:
 This matches the plan's "core filters" group. No targeted subprocess
 fallback is required for the slice-1 acceptance test.
 
+## Fail-loud short-circuit (corrective slice after slice 2)
+
+The slice-2-bundled `WorktreeFile` reader and the engine's index/HEAD
+blob read sites originally fell through to `gix_filter`'s default
+driver dispatch silently. The corrective slice intercepts before the
+filter pipeline runs:
+
+- A new `Error::FilterFailed { filter }` variant is the typed
+  short-circuit signal raised from `types::ContentRef::read_normalized`
+  (`WorktreeFile` arm) and from `stale::read_worktree_normalized`. The
+  engine catches it at the per-layer read site and surfaces
+  `RangeStatus::ContentUnavailable(UnavailableReason::FilterFailed
+  { filter })`. We chose a typed `Error` variant (rather than a
+  `Result<Bytes, FilterShortCircuit>` shape) because the existing
+  reader signature is already `Result<Vec<u8>>` and the engine site
+  was the only caller — adding a variant kept the plumbing tight.
+- Probe is `git check-attr filter -- <path>`, run from the worktree.
+  Any non-`unspecified` / non-`unset` / non-`set` value short-circuits.
+
+### Allowlist
+
+The `filter` `.gitattributes` attribute is reserved for
+`filter=<name>` driver dispatch. Core normalization (`text`,
+`text=auto`, `eol`, `ident`, `working-tree-encoding`, `core.autocrlf`,
+`core.eol`) is driven via *separate* attributes / config values that
+never set the `filter` attribute. As a result the slice-2 allowlist
+for the `filter` attribute itself is intentionally **empty**: any
+explicit `filter=<name>` resolves to a non-core driver (LFS, custom
+process filter, git-crypt, …) and short-circuits. See
+`types::is_core_filter`.
+
+When slice 6 (LFS) and slice 7 (custom filter-process) land each
+allowlisted driver name will be added here.
+
 ## Deferred
 
 The following are **not** implemented in slice 1. The reader returns
@@ -71,14 +105,15 @@ to invoke them; the engine slice will surface those as
 
 ## Honest gaps
 
-- I did not write a fixture comparing `convert_to_git` output against
-  `git cat-file --filters` byte-for-byte. The plan's Phase 0 acceptance
-  asks for that. Slice 1's acceptance test (HEAD-only, `--no-worktree
-  --no-index --no-staged-mesh`) doesn't reach the worktree reader, so
-  the fixture comparison remains a pre-requisite for the readers slice
-  rather than a slice-1 blocker.
-- Slice 1's `WorktreeFile` reader will silently use the default
-  `gix_filter` handling for `filter=<name>` drivers — for slice-1 tests
-  that never enable the worktree layer this is unreachable, but a
-  follow-up slice must intercept before `convert_to_git` to honor the
-  managed-subprocess design.
+- **Outstanding (not closed by this slice).** A byte-identical fixture
+  comparing `convert_to_git` output against `git cat-file --filters`
+  for each core filter (`core.autocrlf=true|input`, `text=auto`,
+  `eol=crlf|lf`, `ident`, `working-tree-encoding`) is still owed.
+  The CRLF acceptance test
+  (`crlf_checkout_of_lf_blob_no_false_drift`) exercises one slice of
+  this and passes, but it is not the byte-for-byte fixture the Phase 0
+  plan calls for. Tracked as debt for a follow-up; the corrective
+  slice did not land it.
+- ~~Slice 1's `WorktreeFile` reader will silently use the default
+  `gix_filter` handling for `filter=<name>` drivers~~ — closed by the
+  corrective slice's fail-loud short-circuit (see above).

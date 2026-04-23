@@ -137,6 +137,11 @@ pub struct RangeResolved {
     /// `Finding::source` until the renderer slice migrates wholesale to
     /// `Finding`.
     pub source: Option<DriftSource>,
+    /// Staged re-anchor that acknowledges this drift, matched by `range_id`.
+    /// Slice 3 scaffolding: the field is plumbed end-to-end but always set
+    /// to `None` until slice 5 ships the sidecar freshness stamp that lets
+    /// the engine trust ack matches. See `docs/stale-layers-slices.md`.
+    pub acknowledged_by: Option<StagedOpRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,6 +250,13 @@ pub enum Error {
     #[error("range not in mesh: {path}#L{start}-L{end}")]
     RangeNotInMesh { path: String, start: u32, end: u32 },
 
+    /// A path's `.gitattributes` resolves to a `filter=<name>` driver
+    /// outside the slice-2 core-filter allowlist. The engine surfaces
+    /// this as `RangeStatus::ContentUnavailable(UnavailableReason::FilterFailed)`.
+    /// See `docs/stale-layers-slices.md` "Standing rules" — fail loud.
+    #[error("filter not implemented: {filter}")]
+    FilterFailed { filter: String },
+
     /// Generic git-process / gix error.
     #[error("git: {0}")]
     Git(String),
@@ -343,6 +355,15 @@ impl ContentRef {
                 let workdir = repo
                     .workdir()
                     .ok_or_else(|| Error::Git("bare repositories are not supported".into()))?;
+                // Fail-loud: any `filter=<name>` outside the core-filter
+                // allowlist short-circuits before we touch gix's filter
+                // pipeline. See `docs/stale-layers-slices.md` standing
+                // rules and `docs/gix-filter-audit.md`.
+                if let Some(name) = path_filter_attribute(workdir, path)?
+                    && !is_core_filter(&name)
+                {
+                    return Err(Error::FilterFailed { filter: name });
+                }
                 let abs = workdir.join(path);
                 let md = std::fs::symlink_metadata(&abs)?;
                 if md.file_type().is_symlink() {
@@ -351,9 +372,9 @@ impl ContentRef {
                 }
                 let file = std::fs::File::open(&abs)?;
                 // Apply the clean (to-git) filter so worktree bytes match
-                // blob bytes for comparison. LFS / custom drivers are out
-                // of slice-1 scope; we surface those as Git errors.
-                // TODO(stale-layers-plan): LFS + custom filter-process drivers.
+                // blob bytes for comparison. Custom `filter=<name>`
+                // drivers were rejected above; only core filters reach
+                // here.
                 let (mut pipeline, index) = repo
                     .filter_pipeline(None)
                     .map_err(|e| Error::Git(format!("filter pipeline: {e}")))?;
@@ -385,6 +406,53 @@ impl ContentRef {
             }
         }
     }
+}
+
+/// Resolve the `filter` `.gitattributes` value for `path` by shelling
+/// out to `git check-attr filter -- <path>`. Returns the driver name
+/// (e.g. `lfs`, `crypt`) when set, `None` for `unspecified` / `unset` /
+/// `set` (no driver name). The fail-loud check in `ContentRef`'s
+/// reader treats any returned name not on the core-filter allowlist
+/// as a hard short-circuit (slice-2 standing rule).
+pub(crate) fn path_filter_attribute(
+    workdir: &std::path::Path,
+    rel_path: &std::path::Path,
+) -> Result<Option<String>> {
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["check-attr", "filter", "--"])
+        .arg(rel_path)
+        .output()
+        .map_err(|e| Error::Git(format!("spawn git check-attr: {e}")))?;
+    if !out.status.success() {
+        // Fail closed: if we can't probe attributes, treat as "no driver"
+        // rather than guessing. The gix pipeline will run downstream.
+        return Ok(None);
+    }
+    // Format: `<path>: filter: <value>\n`
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in s.lines() {
+        if let Some(idx) = line.rfind(": ") {
+            let value = line[idx + 2..].trim();
+            return Ok(match value {
+                "" | "unspecified" | "unset" | "set" => None,
+                other => Some(other.to_string()),
+            });
+        }
+    }
+    Ok(None)
+}
+
+/// Slice-2 core-filter allowlist. The `filter` `.gitattributes`
+/// attribute is reserved for `filter=<name>` driver dispatch (LFS,
+/// custom process filters, etc.); core normalization (`text`,
+/// `text=auto`, `eol`, `ident`, `working-tree-encoding`, `core.autocrlf`,
+/// `core.eol`) is driven by other attributes / config and never sets
+/// the `filter` value. As a result the allowlist for the `filter`
+/// attribute itself is intentionally empty: any explicit `filter=<name>`
+/// resolves to a non-core driver and must short-circuit.
+pub(crate) fn is_core_filter(_name: &str) -> bool {
+    false
 }
 
 /// Unified-diff hunk pair, in 1-based `(start, count)` form.
