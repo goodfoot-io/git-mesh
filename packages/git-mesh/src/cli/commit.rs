@@ -4,7 +4,7 @@ use crate::cli::{
     AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs, StatusArgs, parse_range_address,
 };
 use crate::staging::{StagedConfig, append_prepared_add, prepare_add};
-use crate::types::CopyDetection;
+use crate::types::{CopyDetection, RangeExtent};
 use crate::{append_config, append_remove, commit_mesh, read_mesh, set_message, status_view};
 use anyhow::{Context, Result, anyhow};
 
@@ -80,7 +80,11 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
         Ok(mesh) => {
             for id in &mesh.ranges {
                 let r = crate::range::read_range(repo, id)?;
-                present.push((r.path, r.start, r.end));
+                let (start, end) = match r.extent {
+                    RangeExtent::Lines { start, end } => (start, end),
+                    RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+                };
+                present.push((r.path, start, end));
             }
         }
         Err(crate::Error::MeshNotFound(_)) => {

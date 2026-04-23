@@ -4,7 +4,7 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::types::Range;
+use git_mesh::types::{Range, RangeExtent};
 use git_mesh::{create_range, parse_range, range_ref_path, read_range, serialize_range};
 use support::TestRepo;
 
@@ -24,8 +24,7 @@ fn parse_serialize_round_trip() -> Result<()> {
         anchor_sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into(),
         created_at: "2026-01-01T00:00:00Z".into(),
         path: "src/auth.ts".into(),
-        start: 13,
-        end: 34,
+        extent: RangeExtent::Lines { start: 13, end: 34 },
         blob: "cafebabecafebabecafebabecafebabecafebabe".into(),
     };
     let text = serialize_range(&original);
@@ -41,7 +40,7 @@ fn parse_tolerates_unknown_headers() -> Result<()> {
     let text = "anchor deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\ncreated 2026-01-01T00:00:00Z\nfuture some-value\nrange 1 10 cafebabecafebabecafebabecafebabecafebabe\tsrc/x.rs\n";
     let r = parse_range(text)?;
     assert_eq!(r.path, "src/x.rs");
-    assert_eq!((r.start, r.end), (1, 10));
+    assert_eq!(r.extent, RangeExtent::Lines { start: 1, end: 10 });
     Ok(())
 }
 
@@ -63,7 +62,7 @@ fn create_range_writes_blob_and_ref() -> Result<()> {
     assert!(repo.ref_exists(&range_ref_path(&id)));
     let r = read_range(&repo.gix_repo()?, &id)?;
     assert_eq!(r.path, "file1.txt");
-    assert_eq!((r.start, r.end), (1, 5));
+    assert_eq!(r.extent, RangeExtent::Lines { start: 1, end: 5 });
     assert_eq!(r.anchor_sha, head);
     Ok(())
 }

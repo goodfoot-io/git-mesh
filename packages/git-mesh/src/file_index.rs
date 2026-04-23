@@ -3,6 +3,7 @@
 use crate::git::work_dir;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::range::read_range;
+use crate::types::RangeExtent;
 use crate::{Error, Result};
 use std::fs;
 use std::path::PathBuf;
@@ -54,12 +55,16 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
         let mesh = read_mesh(repo, &name)?;
         for id in mesh.ranges {
             let r = read_range(repo, &id)?;
+            let (start, end) = match r.extent {
+                RangeExtent::Lines { start, end } => (start, end),
+                RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+            };
             out.push(IndexEntry {
                 path: r.path,
                 mesh_name: name.clone(),
                 range_id: id,
-                start: r.start,
-                end: r.end,
+                start,
+                end,
                 anchor_short: short(&r.anchor_sha),
             });
         }

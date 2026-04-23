@@ -14,6 +14,16 @@
 //! matching, which is the idiomatic Rust public-API choice.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// The extent of a pinned range: either the whole file, or an inclusive
+/// 1-based line range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RangeExtent {
+    Whole,
+    Lines { start: u32, end: u32 },
+}
 
 /// In-memory representation of the Range record stored at
 /// `refs/ranges/v1/<rangeId>`. The id itself is the ref name suffix and
@@ -26,10 +36,8 @@ pub struct Range {
     pub created_at: String,
     /// File path at the anchor commit.
     pub path: String,
-    /// 1-based, inclusive start line.
-    pub start: u32,
-    /// 1-based, inclusive end line.
-    pub end: u32,
+    /// Extent (whole-file or line-range) pinned by this range.
+    pub extent: RangeExtent,
     /// Blob OID of `path` at `anchor_sha`.
     pub blob: String,
 }
@@ -71,27 +79,50 @@ pub struct Mesh {
     pub config: MeshConfig,
 }
 
+/// Reason content should exist but is not readable locally without
+/// a network call. See docs/stale-layers-plan.md §D4.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UnavailableReason {
+    LfsNotFetched,
+    LfsNotInstalled,
+    /// Partial clone, blob not fetched.
+    PromisorMissing,
+    /// Sparse-checkout excluded path.
+    SparseExcluded,
+    FilterFailed { filter: String },
+    IoError { message: String },
+}
+
 /// Declaration order is best → worst; `Ord` derives a total order so
 /// callers that want a one-line summary can reduce via `.max()`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RangeStatus {
     /// Current bytes equal anchored bytes.
     Fresh,
-    /// Bytes equal; `(path, start, end)` changed.
+    /// Bytes equal; `(path, extent)` changed.
     Moved,
     /// Anchored bytes differ from current bytes, including complete deletion.
     Changed,
     /// `anchor_sha` is not reachable from any ref.
     Orphaned,
+    /// No stage-0 index entry for the path.
+    MergeConflict,
+    /// Path is a gitlink; rejected at `add`, surfaces if legacy.
+    Submodule,
+    /// Content should exist but isn't readable locally.
+    ContentUnavailable(UnavailableReason),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RangeLocation {
-    pub path: String,
-    pub start: u32,
-    pub end: u32,
-    pub blob: String,
+    pub path: PathBuf,
+    pub extent: RangeExtent,
+    /// Present when the path has a blob at the resolved layer; `None` for
+    /// worktree-only reads, submodule gitlinks, and terminal statuses where
+    /// no blob resolves.
+    pub blob: Option<gix::ObjectId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,3 +249,182 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// ---------------------------------------------------------------------------
+// Phase 1 scaffold types — layered engine / renderers / prechecks.
+//
+// These types are introduced ahead of the engine and renderer slices so the
+// public boundary exists when those slices land. See
+// `docs/stale-layers-plan.md` §"Key types" and §D1–D6. Only derives and
+// constructors / a stubbed `ContentRef::read_normalized` live here — runtime
+// logic lands in later slices.
+// ---------------------------------------------------------------------------
+
+/// Which drift layers participate in a `stale` run. HEAD is always on;
+/// these toggles select additional layers on top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerSet {
+    pub worktree: bool,
+    pub index: bool,
+    pub staged_mesh: bool,
+}
+
+impl LayerSet {
+    /// All three layers enabled (HEAD + Index + Worktree + Staged-mesh).
+    pub fn full() -> Self {
+        Self {
+            worktree: true,
+            index: true,
+            staged_mesh: true,
+        }
+    }
+
+    /// HEAD-only fast path (CI invariant). All additional layers off.
+    pub fn committed_only() -> Self {
+        Self {
+            worktree: false,
+            index: false,
+            staged_mesh: false,
+        }
+    }
+}
+
+/// Scope of a single engine invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Mesh(String),
+    Range(String),
+}
+
+/// Layer that produced drift for a `Finding`. There is no `StagedMesh`
+/// variant: staged-mesh-layer disagreement rides on `PendingFinding::drift`
+/// (see plan §"Key types" comment).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriftSource {
+    Head,
+    Index,
+    Worktree,
+}
+
+/// Reference to content readable through git's attribute + filter pipeline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContentRef {
+    /// HEAD or index blob; reader dispatched by `.gitattributes` filter.
+    Blob(gix::ObjectId),
+    /// On-disk worktree file; clean filter applied to match blob form.
+    WorktreeFile(PathBuf),
+    /// `.git/mesh/staging/<mesh>.<N>`; re-normalized on read against
+    /// current filters.
+    Sidecar(PathBuf),
+}
+
+impl ContentRef {
+    /// Read the content through the normalization pipeline (D3) and
+    /// return canonical bytes. Callers slice into `&[&str]` on demand.
+    ///
+    /// Stubbed at the Phase 1 types slice; the engine/readers slice
+    /// implements it.
+    pub fn read_normalized(&self) -> Result<Vec<u8>> {
+        todo!("ContentRef::read_normalized lands with the readers slice")
+    }
+}
+
+/// Unified-diff hunk pair, in 1-based `(start, count)` form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hunk {
+    /// `(start, count)` in the source blob.
+    pub old: (u32, u32),
+    /// `(start, count)` in the destination blob.
+    pub new: (u32, u32),
+}
+
+/// The commit blamed for the current divergence (HEAD layer only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Culprit {
+    pub commit: gix::ObjectId,
+    pub author: String,
+    pub summary: String,
+}
+
+/// Back-pointer from a `Finding` to the staged mesh op that acknowledges
+/// its drift.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedOpRef {
+    pub mesh: String,
+    /// Index into `PendingState.mesh_ops`.
+    pub index: usize,
+}
+
+/// Drift observed on a staged mesh op's sidecar vs. the blob it claims
+/// to anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingDrift {
+    /// Sidecar bytes disagree with the claimed blob under current filters.
+    SidecarMismatch,
+}
+
+/// Staged mesh operation surfaced by the engine alongside `Finding`s.
+///
+/// `Add` and `Remove` carry a possible `drift: Option<PendingDrift>`;
+/// `Message` and `ConfigChange` are informational and never drive exit
+/// code (see plan B3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingFinding {
+    Add {
+        mesh: String,
+        range_id: String,
+        op: crate::staging::StagedAdd,
+        drift: Option<PendingDrift>,
+    },
+    Remove {
+        mesh: String,
+        range_id: String,
+        op: crate::staging::StagedRemove,
+        drift: Option<PendingDrift>,
+    },
+    Message {
+        mesh: String,
+        body: String,
+    },
+    ConfigChange {
+        mesh: String,
+        change: crate::staging::StagedConfig,
+    },
+}
+
+/// A single drift observation produced by the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finding {
+    pub mesh: String,
+    pub range_id: String,
+    pub status: RangeStatus,
+    /// `None` when `Fresh` or when `status` is terminal.
+    pub source: Option<DriftSource>,
+    /// Always populated from the pinned `Range` record.
+    pub anchored: RangeLocation,
+    /// `None` when `Orphaned` / `Submodule` / `ContentUnavailable`;
+    /// populated with best-effort path for `MergeConflict`.
+    pub current: Option<RangeLocation>,
+    /// Staged re-anchor matched by `range_id`.
+    pub acknowledged_by: Option<StagedOpRef>,
+    /// Only when `source == Some(Head)`.
+    pub culprit: Option<Culprit>,
+}
+
+/// Index-layer entry for a single stage-0 path. Conflicted paths are
+/// omitted; the engine surfaces `MergeConflict` for those.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedIndexEntry {
+    pub blob: gix::ObjectId,
+    /// Hunks from `git diff-index --cached -U0 -M HEAD`.
+    pub hunks: Vec<Hunk>,
+}
+
+/// All "pending" inputs to the engine — the git index plus the on-disk
+/// `.git/mesh/staging/` operations.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PendingState {
+    pub index: HashMap<PathBuf, StagedIndexEntry>,
+    pub mesh_ops: Vec<crate::staging::StagedOp>,
+}

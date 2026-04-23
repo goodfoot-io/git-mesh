@@ -275,6 +275,9 @@ pub(crate) fn rev_walk_excluding(
 }
 
 /// Is `anchor` reachable from any reference in the repository?
+// Unused while the resolver is stubbed in the Phase 1 types slice; the
+// engine slice re-wires it through the new `resolver::Engine`.
+#[allow(dead_code)]
 pub(crate) fn commit_reachable_from_any_ref(repo: &gix::Repository, anchor: &str) -> Result<bool> {
     let anchor_id = match parse_oid(anchor) {
         Ok(id) => id,

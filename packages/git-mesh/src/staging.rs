@@ -51,6 +51,19 @@ pub enum StagedConfig {
     IgnoreWhitespace(bool),
 }
 
+/// A single staged mesh operation in `.git/mesh/staging/<mesh>`.
+///
+/// Phase 1 scaffold type: `PendingState.mesh_ops` is the canonical ordered
+/// view of staged operations the engine will consume. Real population
+/// lands with the engine slice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StagedOp {
+    Add(StagedAdd),
+    Remove(StagedRemove),
+    Config(StagedConfig),
+    Message(String),
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Staging {
     pub adds: Vec<StagedAdd>,

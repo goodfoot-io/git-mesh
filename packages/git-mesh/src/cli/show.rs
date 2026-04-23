@@ -2,6 +2,7 @@
 
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::range::read_range;
+use crate::types::RangeExtent;
 use crate::{
     list_mesh_names, ls_all, ls_by_path, ls_by_path_range, mesh_commit_info, mesh_commit_info_at,
     mesh_log, read_mesh, read_mesh_at,
@@ -60,7 +61,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
             } else {
                 short(&r.anchor_sha).into()
             };
-            println!("{sha}  {}#L{}-L{}", r.path, r.start, r.end);
+            let (start, end) = match r.extent {
+                RangeExtent::Lines { start, end } => (start, end),
+                RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+            };
+            println!("{sha}  {}#L{}-L{}", r.path, start, end);
         }
         return Ok(0);
     }
@@ -82,7 +87,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         } else {
             short(&r.anchor_sha).into()
         };
-        println!("    {sha}  {}#L{}-L{}", r.path, r.start, r.end);
+        let (start, end) = match r.extent {
+            RangeExtent::Lines { start, end } => (start, end),
+            RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+        };
+        println!("    {sha}  {}#L{}-L{}", r.path, start, end);
     }
 
     // Consume unused field warning via bind.
@@ -230,7 +239,13 @@ fn evaluate_mesh_token(
                         } else {
                             short(&r.anchor_sha).to_string()
                         };
-                        lines.push(format!("{sha}  {}#L{}-L{}", r.path, r.start, r.end));
+                        let (start, end) = match r.extent {
+                            RangeExtent::Lines { start, end } => (start, end),
+                            RangeExtent::Whole => {
+                                todo!("whole-file support lands in a later slice")
+                            }
+                        };
+                        lines.push(format!("{sha}  {}#L{}-L{}", r.path, start, end));
                     }
                     Err(_) => lines.push(format!("<missing>  <{id}>")),
                 }

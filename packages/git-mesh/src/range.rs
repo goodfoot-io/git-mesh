@@ -10,7 +10,7 @@
 //! ```
 
 use crate::git::{self, work_dir};
-use crate::types::Range;
+use crate::types::{Range, RangeExtent};
 use crate::{Error, Result};
 use chrono::Utc;
 use uuid::Uuid;
@@ -61,8 +61,7 @@ pub fn create_range(
         anchor_sha: anchor_sha.to_string(),
         created_at: Utc::now().to_rfc3339(),
         path: path.to_string(),
-        start,
-        end,
+        extent: RangeExtent::Lines { start, end },
         blob,
     };
     let blob_oid = git::write_blob_bytes(repo, serialize_range(&range).as_bytes())?;
@@ -164,15 +163,18 @@ pub fn parse_range(text: &str) -> Result<Range> {
         anchor_sha: anchor.ok_or_else(|| Error::Parse("missing `anchor` header".into()))?,
         created_at: created.ok_or_else(|| Error::Parse("missing `created` header".into()))?,
         path,
-        start,
-        end,
+        extent: RangeExtent::Lines { start, end },
         blob,
     })
 }
 
 pub fn serialize_range(range: &Range) -> String {
+    let (start, end) = match range.extent {
+        RangeExtent::Lines { start, end } => (start, end),
+        RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+    };
     format!(
         "anchor {}\ncreated {}\nrange {} {} {}\t{}\n",
-        range.anchor_sha, range.created_at, range.start, range.end, range.blob, range.path
+        range.anchor_sha, range.created_at, start, end, range.blob, range.path
     )
 }

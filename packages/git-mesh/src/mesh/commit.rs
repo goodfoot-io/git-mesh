@@ -6,7 +6,7 @@ use crate::git::{
 use crate::mesh::read::{parse_config_blob, serialize_config_blob};
 use crate::range::{create_range, read_range};
 use crate::staging::{self, StagedConfig, Staging};
-use crate::types::{Mesh, MeshConfig};
+use crate::types::{Mesh, MeshConfig, RangeExtent};
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
 use gix::objs::Tree;
@@ -59,7 +59,11 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let mut snapshots: Vec<(String, String, u32, u32)> = Vec::with_capacity(range_ids.len());
     for id in &range_ids {
         let r = read_range(repo, id)?;
-        snapshots.push((id.clone(), r.path, r.start, r.end));
+        let (start, end) = match r.extent {
+            RangeExtent::Lines { start, end } => (start, end),
+            RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+        };
+        snapshots.push((id.clone(), r.path, start, end));
     }
     for rem in &staging.removes {
         let idx = snapshots
@@ -167,7 +171,11 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         let mut combined: Vec<(String, String, u32, u32)> = current_snapshots.clone();
         for id in &new_range_ids {
             let r = read_range(repo, id)?;
-            combined.push((id.clone(), r.path, r.start, r.end));
+            let (start, end) = match r.extent {
+                RangeExtent::Lines { start, end } => (start, end),
+                RangeExtent::Whole => todo!("whole-file support lands in a later slice"),
+            };
+            combined.push((id.clone(), r.path, start, end));
         }
         combined.sort_by(|a, b| (a.1.as_str(), a.2, a.3).cmp(&(b.1.as_str(), b.2, b.3)));
         let final_ids: Vec<String> = combined.iter().map(|(id, _, _, _)| id.clone()).collect();
@@ -257,7 +265,13 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                         let mut out = Vec::with_capacity(m.ranges.len());
                         for id in &m.ranges {
                             let r = read_range(repo, id)?;
-                            out.push((id.clone(), r.path, r.start, r.end));
+                            let (start, end) = match r.extent {
+                                RangeExtent::Lines { start, end } => (start, end),
+                                RangeExtent::Whole => {
+                                    todo!("whole-file support lands in a later slice")
+                                }
+                            };
+                            out.push((id.clone(), r.path, start, end));
                         }
                         out
                     }
