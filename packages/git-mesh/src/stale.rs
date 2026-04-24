@@ -71,6 +71,22 @@ struct EngineState {
     index_trailer_start: Option<[u8; 20]>,
     /// Collected warnings flushed to stderr at end of run.
     warnings: Vec<String>,
+    /// Lazily spawned `git-lfs filter-process` subprocess, reused across
+    /// every LFS read in a single `stale` run. `None` until the first
+    /// LFS read; `Some(Err(_))` if a previous spawn attempt already
+    /// failed (cached so we don't retry — it's deterministic per run).
+    lfs: Option<std::result::Result<LfsProcess, LfsSpawnError>>,
+}
+
+/// Why a `git-lfs filter-process` spawn failed. Cached on the engine so
+/// subsequent LFS reads in the same run return the same terminal state
+/// without re-attempting the spawn.
+#[derive(Clone, Debug)]
+enum LfsSpawnError {
+    /// `git-lfs` not on PATH (ENOENT) or otherwise unspawnable.
+    NotInstalled,
+    /// Spawn succeeded but the handshake failed.
+    HandshakeFailed,
 }
 
 impl EngineState {
@@ -83,6 +99,7 @@ impl EngineState {
             conflicted_paths: HashSet::new(),
             index_trailer_start,
             warnings: Vec::new(),
+            lfs: None,
         };
         if layers.index || layers.worktree {
             // Need conflicted-path set whenever any non-HEAD layer is on.
@@ -391,6 +408,26 @@ fn resolve_range_inner(
             }
         }
         deepest_layer = DriftSource::Worktree;
+    }
+
+    // 3b. LFS short-circuit (slice 6). If the deepest-layer path is
+    // `filter=lfs`, route through `git-lfs filter-process`. Compares
+    // pointer OIDs first; on a miss probes the local LFS object cache;
+    // failure modes surface as `ContentUnavailable`.
+    if let Some(t) = tracked.as_ref()
+        && is_lfs_path(repo, &t.path)
+    {
+        return Ok(resolve_lfs_range(
+            repo,
+            state,
+            range_id,
+            &r,
+            anchored,
+            t,
+            deepest_layer,
+            index_blob_oid.as_deref(),
+            worktree_changed,
+        ));
     }
 
     // 4. Read content at deepest enabled layer.
@@ -1037,8 +1074,23 @@ fn read_worktree_layer(repo: &gix::Repository, warnings: &mut Vec<String>) -> Re
 }
 
 fn run_git_diff(workdir: &std::path::Path, args: &[&str]) -> Result<String> {
+    // Suppress the LFS filter-process driver for diff-time path-resolution.
+    // The engine routes LFS reads through its own managed subprocess
+    // (slice 6); we do not want diff-files / diff-index to spawn its
+    // own `git-lfs` (which would also fail loudly on hosts without
+    // `git-lfs` installed).
     let out = Command::new("git")
         .current_dir(workdir)
+        .args([
+            "-c",
+            "filter.lfs.process=",
+            "-c",
+            "filter.lfs.smudge=cat",
+            "-c",
+            "filter.lfs.clean=cat",
+            "-c",
+            "filter.lfs.required=false",
+        ])
         .args(args)
         .output()
         .map_err(|e| Error::Git(format!("spawn git {args:?}: {e}")))?;
@@ -1755,4 +1807,487 @@ fn pending_add_drift(
         }
     };
     if equal { None } else { Some(PendingDrift::SidecarMismatch) }
+}
+
+// ---------------------------------------------------------------------------
+// Slice 6: LFS first-class reader.
+//
+// The plan (`docs/stale-layers-plan.md` §D3) routes `filter=lfs` paths
+// through a managed `git-lfs filter-process` subprocess instead of the
+// fail-loud short-circuit. Spawn is lazy on first LFS read in a `stale`
+// run; the process is reused for every subsequent read and torn down on
+// `Drop`.
+//
+// Cache-probe semantics distinguish:
+//   - both sides cached → run subprocess, return smudged bytes (with
+//     `GIT_LFS_SKIP_SMUDGE=1` this is the pointer text round-trip — the
+//     comparator-equivalence is preserved; the subprocess exists so we
+//     respect any environment-driven driver override),
+//   - either side missing → `LfsNotFetched`,
+//   - subprocess spawn fails → `LfsNotInstalled`.
+// ---------------------------------------------------------------------------
+
+use std::io::{BufReader, Read, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+
+/// Owned `git-lfs filter-process` subprocess, plus the pkt-line streams
+/// used to drive the long-running protocol. Kept on `EngineState` so a
+/// single process serves every LFS read in the run.
+struct LfsProcess {
+    child: Child,
+    /// `Option` so `Drop` can take + drop the write-end *before*
+    /// `child.wait()`. Without an explicit drop the subprocess never
+    /// sees EOF on stdin and we deadlock at end of run.
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl LfsProcess {
+    fn stdin_mut(&mut self) -> &mut ChildStdin {
+        self.stdin.as_mut().expect("stdin only None during Drop")
+    }
+}
+
+impl Drop for LfsProcess {
+    fn drop(&mut self) {
+        if let Some(mut s) = self.stdin.take() {
+            let _ = s.flush();
+            // s drops here — closing the write-end of the pipe.
+        }
+        let _ = self.child.wait();
+    }
+}
+
+/// Spawn `git-lfs filter-process` in the repo's worktree and complete
+/// the long-running-process handshake. On any spawn / handshake failure
+/// the caller maps to `LfsSpawnError` and the engine surfaces a
+/// terminal `ContentUnavailable` finding.
+fn spawn_lfs_process(workdir: &std::path::Path) -> std::result::Result<LfsProcess, LfsSpawnError> {
+    let mut child = std::process::Command::new("git-lfs")
+        .arg("filter-process")
+        .current_dir(workdir)
+        .env("GIT_LFS_SKIP_SMUDGE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| LfsSpawnError::NotInstalled)?;
+    let stdin = child.stdin.take().ok_or(LfsSpawnError::HandshakeFailed)?;
+    let stdout = BufReader::new(child.stdout.take().ok_or(LfsSpawnError::HandshakeFailed)?);
+    let mut p = LfsProcess { child, stdin: Some(stdin), stdout };
+    if lfs_handshake(&mut p).is_err() {
+        return Err(LfsSpawnError::HandshakeFailed);
+    }
+    Ok(p)
+}
+
+/// Long-running filter-process handshake (see `git help long-running-process`):
+/// client sends `git-filter-client`, version pkts, then capabilities; server
+/// echoes welcome, a version, and capabilities. We negotiate `smudge` only.
+fn lfs_handshake(p: &mut LfsProcess) -> std::io::Result<()> {
+    pkt_write_text(p.stdin_mut(), "git-filter-client\n")?;
+    pkt_write_text(p.stdin_mut(), "version=2\n")?;
+    pkt_flush(p.stdin_mut())?;
+    p.stdin_mut().flush()?;
+    // Read welcome.
+    let welcome = pkt_read_text(&mut p.stdout)?;
+    if !welcome.starts_with("git-filter-server") {
+        return Err(std::io::Error::other(format!("bad welcome: {welcome:?}")));
+    }
+    // Drain until flush: server announces its version pkts.
+    while pkt_read(&mut p.stdout)?.is_some() {}
+    pkt_write_text(p.stdin_mut(), "capability=clean\n")?;
+    pkt_write_text(p.stdin_mut(), "capability=smudge\n")?;
+    pkt_flush(p.stdin_mut())?;
+    p.stdin_mut().flush()?;
+    // Drain server's capability list until flush.
+    while pkt_read(&mut p.stdout)?.is_some() {}
+    Ok(())
+}
+
+/// Run a single `command=smudge` round-trip against the LFS subprocess
+/// for `pathname`, sending `pointer_bytes` as the input payload.
+/// Returns the smudged output bytes on success.
+fn lfs_smudge(p: &mut LfsProcess, pathname: &str, pointer_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    pkt_write_text(p.stdin_mut(), "command=smudge\n")?;
+    pkt_write_text(p.stdin_mut(), &format!("pathname={pathname}\n"))?;
+    pkt_flush(p.stdin_mut())?;
+    p.stdin_mut().flush()?;
+    // Payload pkt-lines, then a flush.
+    for chunk in pointer_bytes.chunks(65516) {
+        pkt_write_bytes(p.stdin_mut(), chunk)?;
+    }
+    pkt_flush(p.stdin_mut())?;
+    p.stdin_mut().flush()?;
+    // Read status pkt-line list (until flush). Then the response payload
+    // (until flush). Then a final status list (until flush).
+    let status1 = read_status_block(&mut p.stdout)?;
+    if !status1.iter().any(|s| s.starts_with("status=success")) {
+        return Err(std::io::Error::other(format!("smudge status: {status1:?}")));
+    }
+    let mut out = Vec::new();
+    loop {
+        match pkt_read(&mut p.stdout)? {
+            None => break,
+            Some(b) => out.extend_from_slice(&b),
+        }
+    }
+    let _final = read_status_block(&mut p.stdout)?;
+    Ok(out)
+}
+
+fn read_status_block(r: &mut BufReader<ChildStdout>) -> std::io::Result<Vec<String>> {
+    let mut out = Vec::new();
+    loop {
+        match pkt_read(r)? {
+            None => return Ok(out),
+            Some(b) => out.push(String::from_utf8_lossy(&b).into_owned()),
+        }
+    }
+}
+
+// ---- pkt-line framing ----------------------------------------------------
+
+fn pkt_write_text(w: &mut ChildStdin, s: &str) -> std::io::Result<()> {
+    pkt_write_bytes(w, s.as_bytes())
+}
+
+fn pkt_write_bytes(w: &mut ChildStdin, bytes: &[u8]) -> std::io::Result<()> {
+    let len = bytes.len() + 4;
+    if len > 65520 {
+        return Err(std::io::Error::other("pkt too large"));
+    }
+    let hdr = format!("{len:04x}");
+    w.write_all(hdr.as_bytes())?;
+    w.write_all(bytes)?;
+    Ok(())
+}
+
+fn pkt_flush(w: &mut ChildStdin) -> std::io::Result<()> {
+    w.write_all(b"0000")
+}
+
+/// Read one pkt-line. Returns `Ok(None)` for a flush pkt (`0000`),
+/// `Ok(Some(bytes))` for a data pkt.
+fn pkt_read(r: &mut BufReader<ChildStdout>) -> std::io::Result<Option<Vec<u8>>> {
+    let mut hdr = [0u8; 4];
+    r.read_exact(&mut hdr)?;
+    let hex = std::str::from_utf8(&hdr).map_err(|e| std::io::Error::other(format!("hdr: {e}")))?;
+    let len = u32::from_str_radix(hex, 16)
+        .map_err(|e| std::io::Error::other(format!("hdr len: {e}")))?;
+    if len == 0 {
+        return Ok(None);
+    }
+    if len < 4 {
+        return Err(std::io::Error::other(format!("bad pkt len: {len}")));
+    }
+    let body_len = (len - 4) as usize;
+    let mut buf = vec![0u8; body_len];
+    r.read_exact(&mut buf)?;
+    Ok(Some(buf))
+}
+
+fn pkt_read_text(r: &mut BufReader<ChildStdout>) -> std::io::Result<String> {
+    match pkt_read(r)? {
+        None => Ok(String::new()),
+        Some(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+    }
+}
+
+// ---- LFS dispatch helpers ------------------------------------------------
+
+/// True if `path` resolves to `filter=lfs` per `.gitattributes`.
+fn is_lfs_path(repo: &gix::Repository, path: &str) -> bool {
+    let Ok(workdir) = git::work_dir(repo) else {
+        return false;
+    };
+    matches!(
+        types::path_filter_attribute(workdir, std::path::Path::new(path)),
+        Ok(Some(ref n)) if n == "lfs"
+    )
+}
+
+/// Parse the LFS pointer's referenced object id (sha256 hex) from
+/// canonical pointer text. Returns `None` if `bytes` is not a pointer.
+fn lfs_pointer_oid(bytes: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    if !s.starts_with("version https://git-lfs.github.com/spec/") {
+        return None;
+    }
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("oid sha256:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// `.git/lfs/objects/<oid[..2]>/<oid[2..4]>/<oid>` exists.
+fn lfs_object_cached(workdir: &std::path::Path, oid: &str) -> bool {
+    if oid.len() < 4 {
+        return false;
+    }
+    workdir
+        .join(".git")
+        .join("lfs")
+        .join("objects")
+        .join(&oid[..2])
+        .join(&oid[2..4])
+        .join(oid)
+        .exists()
+}
+
+/// Outcome of an LFS-routed read for a single side.
+enum LfsReadOutcome {
+    /// Smudged bytes (with `GIT_LFS_SKIP_SMUDGE=1` this is pointer text).
+    Bytes(Vec<u8>),
+    /// Pointer references an LFS object not in the local cache.
+    NotFetched,
+    /// `git-lfs` is not installed / unspawnable.
+    NotInstalled,
+}
+
+/// Read an LFS-managed blob or worktree file through the managed
+/// subprocess. Caller passes the raw pointer bytes (already in canonical
+/// form, since LFS pointer text is stored verbatim in the blob and on
+/// disk pre-smudge). Lazily spawns the LFS process on first call.
+fn lfs_read(
+    state: &mut EngineState,
+    workdir: &std::path::Path,
+    path: &str,
+    pointer_bytes: &[u8],
+) -> LfsReadOutcome {
+    // Cache probe: missing object → NotFetched without touching the
+    // subprocess (saves a spawn when the answer is already terminal).
+    let Some(oid) = lfs_pointer_oid(pointer_bytes) else {
+        // Not a pointer (e.g., already-smudged content, or not LFS) —
+        // return bytes verbatim.
+        return LfsReadOutcome::Bytes(pointer_bytes.to_vec());
+    };
+    if !lfs_object_cached(workdir, &oid) {
+        return LfsReadOutcome::NotFetched;
+    }
+    // Lazily spawn.
+    if state.lfs.is_none() {
+        state.lfs = Some(spawn_lfs_process(workdir));
+    }
+    match state.lfs.as_mut().expect("just set") {
+        Err(LfsSpawnError::NotInstalled) => LfsReadOutcome::NotInstalled,
+        Err(LfsSpawnError::HandshakeFailed) => LfsReadOutcome::NotInstalled,
+        Ok(p) => match lfs_smudge(p, path, pointer_bytes) {
+            Ok(b) => LfsReadOutcome::Bytes(b),
+            Err(_) => LfsReadOutcome::NotInstalled,
+        },
+    }
+}
+
+/// Resolve a single line-range LFS pin against the deepest enabled
+/// layer. Returns the appropriate `RangeResolved` directly: never falls
+/// through to the generic comparator. See `lfs_read` for the cache /
+/// subprocess semantics.
+#[allow(clippy::too_many_arguments)]
+fn resolve_lfs_range(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    range_id: &str,
+    r: &Range,
+    anchored: RangeLocation,
+    tracked: &Tracked,
+    deepest_layer: DriftSource,
+    index_blob_oid: Option<&str>,
+    worktree_changed: bool,
+) -> RangeResolved {
+    let workdir = match git::work_dir(repo) {
+        Ok(w) => w,
+        Err(_) => return lfs_terminal(range_id, r, anchored, UnavailableReason::IoError {
+            message: "no workdir".into(),
+        }),
+    };
+
+    // Anchored side: the pinned blob OID is always present (read_range
+    // populates it). It points at the canonical pointer-text blob.
+    let anchored_pointer = match git::read_blob_bytes(repo, &r.blob) {
+        Ok(b) => b,
+        Err(_) => return lfs_terminal(range_id, r, anchored, UnavailableReason::IoError {
+            message: format!("cannot read anchored blob {}", r.blob),
+        }),
+    };
+
+    // Current side: pull the pointer bytes per layer. Worktree → file on
+    // disk (pre-smudge with skip-smudge active); Index → the staged blob
+    // OID; HEAD → the path's blob at HEAD.
+    let current_pointer: Vec<u8> = match deepest_layer {
+        DriftSource::Worktree => {
+            // If worktree is enabled but didn't change, fall back to
+            // index/HEAD blob for the OID-fast-path comparison.
+            if worktree_changed {
+                std::fs::read(workdir.join(&tracked.path)).unwrap_or_default()
+            } else if let Some(o) = index_blob_oid.map(|s| s.to_string()) {
+                git::read_blob_bytes(repo, &o).unwrap_or_default()
+            } else if let Ok(o) = head_blob_for(repo, &tracked.path) {
+                git::read_blob_bytes(repo, &o).unwrap_or_default()
+            } else {
+                std::fs::read(workdir.join(&tracked.path)).unwrap_or_default()
+            }
+        }
+        DriftSource::Index => {
+            let oid = index_blob_oid
+                .map(|s| s.to_string())
+                .or_else(|| head_blob_for(repo, &tracked.path).ok());
+            match oid {
+                Some(o) => git::read_blob_bytes(repo, &o).unwrap_or_default(),
+                None => Vec::new(),
+            }
+        }
+        DriftSource::Head => {
+            let oid = head_blob_for(repo, &tracked.path).ok();
+            match oid {
+                Some(o) => git::read_blob_bytes(repo, &o).unwrap_or_default(),
+                None => Vec::new(),
+            }
+        }
+    };
+
+    // Pointer-OID fast path: identical pointer bytes across both sides
+    // implies LFS object identity (pointer is the only thing git stores).
+    let anchored_oid = lfs_pointer_oid(&anchored_pointer);
+    let current_oid = lfs_pointer_oid(&current_pointer);
+    let same_path_extent = tracked.path == r.path
+        && matches!(r.extent, RangeExtent::Lines { start, end } if start == tracked.start && end == tracked.end);
+    if anchored_oid.is_some() && anchored_oid == current_oid {
+        let status = if same_path_extent {
+            RangeStatus::Fresh
+        } else {
+            RangeStatus::Moved
+        };
+        let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
+        return RangeResolved {
+            range_id: range_id.into(),
+            anchor_sha: r.anchor_sha.clone(),
+            anchored,
+            current: Some(RangeLocation {
+                path: PathBuf::from(&tracked.path),
+                extent: RangeExtent::Lines {
+                    start: tracked.start,
+                    end: tracked.end,
+                },
+                blob: oid_from_hex(&r.blob).ok(),
+            }),
+            status,
+            source,
+            acknowledged_by: None,
+            culprit: None,
+        };
+    }
+
+    // Smudge both sides through the managed subprocess.
+    let anchored_smudged = match lfs_read(state, workdir, &r.path, &anchored_pointer) {
+        LfsReadOutcome::Bytes(b) => b,
+        LfsReadOutcome::NotFetched => {
+            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotFetched);
+        }
+        LfsReadOutcome::NotInstalled => {
+            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotInstalled);
+        }
+    };
+    let current_smudged = match lfs_read(state, workdir, &tracked.path, &current_pointer) {
+        LfsReadOutcome::Bytes(b) => b,
+        LfsReadOutcome::NotFetched => {
+            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotFetched);
+        }
+        LfsReadOutcome::NotInstalled => {
+            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotInstalled);
+        }
+    };
+
+    // If both smudged outputs are themselves still LFS pointer text
+    // (the operating mode under `GIT_LFS_SKIP_SMUDGE=1`), arbitrary
+    // line slicing returns the wrong answer because the pointer header
+    // line is identical across every LFS object. Fall back to OID-level
+    // comparison: different pointer OIDs imply different binary
+    // content, so the pin is `Changed`. (The pointer-OID fast path
+    // above handled `Fresh`/`Moved` when OIDs matched.)
+    let a_smudged_oid = lfs_pointer_oid(&anchored_smudged);
+    let c_smudged_oid = lfs_pointer_oid(&current_smudged);
+    if a_smudged_oid.is_some() || c_smudged_oid.is_some() {
+        let status = if a_smudged_oid == c_smudged_oid {
+            if same_path_extent { RangeStatus::Fresh } else { RangeStatus::Moved }
+        } else {
+            RangeStatus::Changed
+        };
+        let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
+        return RangeResolved {
+            range_id: range_id.into(),
+            anchor_sha: r.anchor_sha.clone(),
+            anchored,
+            current: Some(RangeLocation {
+                path: PathBuf::from(&tracked.path),
+                extent: RangeExtent::Lines { start: tracked.start, end: tracked.end },
+                blob: None,
+            }),
+            status,
+            source,
+            acknowledged_by: None,
+            culprit: None,
+        };
+    }
+
+    // Compare on the line-range slice (real smudged content path —
+    // reached only when the operator disabled `SKIP_SMUDGE`).
+    let (a_start, a_end) = match r.extent {
+        RangeExtent::Lines { start, end } => (start, end),
+        RangeExtent::Whole => (1, 1),
+    };
+    let a_text = String::from_utf8_lossy(&anchored_smudged);
+    let c_text = String::from_utf8_lossy(&current_smudged);
+    let a_lines: Vec<&str> = a_text.lines().collect();
+    let c_lines: Vec<&str> = c_text.lines().collect();
+    let a_lo = (a_start as usize).saturating_sub(1);
+    let a_hi = (a_end as usize).min(a_lines.len());
+    let c_lo = (tracked.start as usize).saturating_sub(1);
+    let c_hi = (tracked.end as usize).min(c_lines.len());
+    let a_slice = if a_lo <= a_hi { &a_lines[a_lo..a_hi] } else { &[][..] };
+    let c_slice = if c_lo <= c_hi { &c_lines[c_lo..c_hi] } else { &[][..] };
+    let equal = a_slice == c_slice;
+    let status = if equal {
+        if same_path_extent { RangeStatus::Fresh } else { RangeStatus::Moved }
+    } else {
+        RangeStatus::Changed
+    };
+    let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
+    RangeResolved {
+        range_id: range_id.into(),
+        anchor_sha: r.anchor_sha.clone(),
+        anchored,
+        current: Some(RangeLocation {
+            path: PathBuf::from(&tracked.path),
+            extent: RangeExtent::Lines {
+                start: tracked.start,
+                end: tracked.end,
+            },
+            blob: None,
+        }),
+        status,
+        source,
+        acknowledged_by: None,
+        culprit: None,
+    }
+}
+
+fn lfs_terminal(
+    range_id: &str,
+    r: &Range,
+    anchored: RangeLocation,
+    reason: UnavailableReason,
+) -> RangeResolved {
+    RangeResolved {
+        range_id: range_id.into(),
+        anchor_sha: r.anchor_sha.clone(),
+        anchored,
+        current: None,
+        status: RangeStatus::ContentUnavailable(reason),
+        source: None,
+        acknowledged_by: None,
+        culprit: None,
+    }
 }

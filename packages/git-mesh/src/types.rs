@@ -445,16 +445,22 @@ pub(crate) fn path_filter_attribute(
     Ok(None)
 }
 
-/// Slice-2 core-filter allowlist. The `filter` `.gitattributes`
-/// attribute is reserved for `filter=<name>` driver dispatch (LFS,
-/// custom process filters, etc.); core normalization (`text`,
-/// `text=auto`, `eol`, `ident`, `working-tree-encoding`, `core.autocrlf`,
-/// `core.eol`) is driven by other attributes / config and never sets
-/// the `filter` value. As a result the allowlist for the `filter`
-/// attribute itself is intentionally empty: any explicit `filter=<name>`
-/// resolves to a non-core driver and must short-circuit.
-pub(crate) fn is_core_filter(_name: &str) -> bool {
-    false
+/// Filter-driver allowlist for the engine's reader dispatch.
+///
+/// The `filter` `.gitattributes` attribute is reserved for
+/// `filter=<name>` driver dispatch (LFS, custom process filters, etc.);
+/// core normalization (`text`, `text=auto`, `eol`, `ident`,
+/// `working-tree-encoding`, `core.autocrlf`, `core.eol`) is driven by
+/// other attributes / config and never sets the `filter` value.
+///
+/// Slice 6 added `lfs`: `filter=lfs` is no longer a fail-loud
+/// short-circuit; the engine routes to a managed
+/// `git-lfs filter-process` subprocess (with cache-probe semantics for
+/// `LfsNotFetched` / `LfsNotInstalled`). All other `filter=<name>`
+/// values still short-circuit as `FilterFailed` until slice 7 lands the
+/// generic custom-filter reader.
+pub(crate) fn is_core_filter(name: &str) -> bool {
+    name == "lfs"
 }
 
 /// Unified-diff hunk pair, in 1-based `(start, count)` form.

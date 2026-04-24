@@ -64,6 +64,22 @@ fn write_lfs_pointer(repo: &TestRepo, rel: &str, oid_hex_64: &str, size: usize) 
     repo.write_file(rel, &pointer)
 }
 
+/// Seed a fake LFS object cache file at `.git/lfs/objects/<oid[..2]>/<oid[2..4]>/<oid>`
+/// containing arbitrary `bytes`. Slice 6's reader probes this layout to
+/// distinguish "pointer changed and content cached" from `LfsNotFetched`.
+fn seed_lfs_cache(repo: &TestRepo, oid_hex_64: &str, bytes: &[u8]) -> Result<()> {
+    let dir = repo
+        .path()
+        .join(".git")
+        .join("lfs")
+        .join("objects")
+        .join(&oid_hex_64[..2])
+        .join(&oid_hex_64[2..4]);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(oid_hex_64), bytes)?;
+    Ok(())
+}
+
 /// Make a submodule gitlink at `sub/` pointing at a second scratch repo.
 /// Returns the bare-like path of the inner repo so the caller can advance
 /// its tip and re-stage the gitlink.
@@ -449,18 +465,21 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
 /// Plan bullet: LFS text file, content cached: slice-level Changed/Moved equivalent
 /// to non-LFS.
 #[test]
-#[ignore = "phase-1-pending: LFS reader pending readers slice"]
 fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     let repo = TestRepo::seeded()?;
     write_gitattributes(&repo, "*.bigtxt filter=lfs diff=lfs merge=lfs -text\n")?;
-    write_lfs_pointer(&repo, "doc.bigtxt", &"a".repeat(64), 42)?;
+    let oid_a = "a".repeat(64);
+    let oid_b = "b".repeat(64);
+    // Seed cache for both pointer OIDs so the LFS reader treats both
+    // sides as fetched and runs the comparator on smudged bytes.
+    seed_lfs_cache(&repo, &oid_a, b"alpha content\n")?;
+    seed_lfs_cache(&repo, &oid_b, b"beta content\n")?;
+    write_lfs_pointer(&repo, "doc.bigtxt", &oid_a, 42)?;
     repo.commit_all("lfs text")?;
-    // A slice-level pin proceeds identically once content is cached.
-    // (Fixture does not exercise the subprocess; only the attribute state.)
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["message", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
-    write_lfs_pointer(&repo, "doc.bigtxt", &"b".repeat(64), 42)?;
+    write_lfs_pointer(&repo, "doc.bigtxt", &oid_b, 42)?;
     repo.commit_all("mutate pointer")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
@@ -470,17 +489,22 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
 /// Plan bullet: LFS text file, content missing: ContentUnavailable(LfsNotFetched),
 /// exit 1; exit 0 with --ignore-unavailable.
 #[test]
-#[ignore = "phase-1-pending: LFS unavailability surfacing pending readers slice"]
 fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     let repo = TestRepo::seeded()?;
     write_gitattributes(&repo, "*.bigtxt filter=lfs diff=lfs merge=lfs -text\n")?;
-    write_lfs_pointer(&repo, "doc.bigtxt", &"c".repeat(64), 42)?;
+    let oid_c = "c".repeat(64);
+    let oid_d = "d".repeat(64);
+    // Seed cache only for the anchored pointer; the post-mutation
+    // pointer's cache is intentionally absent so the LFS reader
+    // surfaces `LfsNotFetched`.
+    seed_lfs_cache(&repo, &oid_c, b"gamma content\n")?;
+    write_lfs_pointer(&repo, "doc.bigtxt", &oid_c, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["message", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
-    // Pointer changes, cache missing.
-    write_lfs_pointer(&repo, "doc.bigtxt", &"d".repeat(64), 42)?;
+    // Pointer changes, cache missing for new oid.
+    write_lfs_pointer(&repo, "doc.bigtxt", &oid_d, 42)?;
     repo.commit_all("mutate pointer")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(
@@ -497,29 +521,42 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
 /// Plan bullet: LFS repo with no `git-lfs` binary on PATH:
 /// ContentUnavailable(LfsNotInstalled).
 #[test]
-#[ignore = "phase-1-pending: LFS binary detection pending readers slice"]
 fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     write_gitattributes(&repo, "*.bigtxt filter=lfs diff=lfs merge=lfs -text\n")?;
-    write_lfs_pointer(&repo, "doc.bigtxt", &"e".repeat(64), 42)?;
+    let oid_e = "e".repeat(64);
+    let oid_f = "f".repeat(64);
+    // Seed both pointer caches — the reader must still surface
+    // `LfsNotInstalled` because the subprocess spawn fails before any
+    // cache probe matters.
+    seed_lfs_cache(&repo, &oid_e, b"epsilon\n")?;
+    seed_lfs_cache(&repo, &oid_f, b"phi\n")?;
+    write_lfs_pointer(&repo, "doc.bigtxt", &oid_e, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
     repo.run_mesh(["message", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
-    // Simulate "no git-lfs on PATH" — the engine detects this via the
-    // reader's attempt to spawn the filter-process subprocess.
-    write_lfs_pointer(&repo, "doc.bigtxt", &"f".repeat(64), 42)?;
+    write_lfs_pointer(&repo, "doc.bigtxt", &oid_f, 42)?;
     repo.commit_all("mutate pointer")?;
-    // We run the CLI with a PATH that excludes git-lfs:
+    // Build a sandbox PATH that contains `git` (the engine shells out to
+    // git for many things) but excludes `git-lfs`, so the filter-process
+    // spawn fails with ENOENT.
+    let sandbox = tempfile::tempdir()?;
+    let git_src = std::process::Command::new("which")
+        .arg("git")
+        .output()?;
+    let git_path = String::from_utf8_lossy(&git_src.stdout).trim().to_string();
+    std::os::unix::fs::symlink(&git_path, sandbox.path().join("git"))?;
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(repo.path())
-        .env("PATH", "/nonexistent")
+        .env("PATH", sandbox.path())
         .args(["stale", "m", "--format=porcelain"])
         .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stdout.contains("LFS_NOT_INSTALLED") || stdout.contains("LfsNotInstalled"),
-        "stdout={stdout}"
+        "stdout={stdout} stderr={stderr}"
     );
     Ok(())
 }

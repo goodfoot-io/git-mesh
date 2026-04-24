@@ -70,13 +70,22 @@ The `filter` `.gitattributes` attribute is reserved for
 `text=auto`, `eol`, `ident`, `working-tree-encoding`, `core.autocrlf`,
 `core.eol`) is driven via *separate* attributes / config values that
 never set the `filter` attribute. As a result the slice-2 allowlist
-for the `filter` attribute itself is intentionally **empty**: any
-explicit `filter=<name>` resolves to a non-core driver (LFS, custom
-process filter, git-crypt, …) and short-circuits. See
+for the `filter` attribute itself was intentionally **empty**: any
+explicit `filter=<name>` resolved to a non-core driver (LFS, custom
+process filter, git-crypt, …) and short-circuited. See
 `types::is_core_filter`.
 
-When slice 6 (LFS) and slice 7 (custom filter-process) land each
-allowlisted driver name will be added here.
+**Slice 6** added `lfs` to the allowlist. `filter=lfs` paths are now
+routed through a managed `git-lfs filter-process` subprocess (lazy,
+reused across a `stale` run, `GIT_LFS_SKIP_SMUDGE=1` in env). Pointer
+OIDs are compared first as a fast-path; cache misses surface as
+`ContentUnavailable(LfsNotFetched)`; spawn failures surface as
+`ContentUnavailable(LfsNotInstalled)`. See `stale::resolve_lfs_range`
+and the LFS subprocess block at the bottom of `stale.rs`.
+
+When slice 7 (custom filter-process) lands the allowlist will widen
+again to admit any configured `filter.<name>.process` driver via the
+same orchestrator pattern.
 
 ## Deferred
 

@@ -46,10 +46,22 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         }
     }
     // Plan §B3: an acknowledged finding does not drive exit code.
-    // It still renders so the user sees it.
+    // It still renders so the user sees it. `--ignore-unavailable`
+    // additionally downgrades `ContentUnavailable` findings off the
+    // exit-driving count.
     let unacked_findings: usize = findings
         .iter()
-        .filter(|(_, r)| r.acknowledged_by.is_none())
+        .filter(|(_, r)| {
+            if r.acknowledged_by.is_some() {
+                return false;
+            }
+            if args.ignore_unavailable
+                && matches!(r.status, RangeStatus::ContentUnavailable(_))
+            {
+                return false;
+            }
+            true
+        })
         .count();
     // Pending Add/Remove with `SidecarMismatch` drift drive exit too;
     // Message/ConfigChange never do.
@@ -95,7 +107,14 @@ fn status_str(s: &RangeStatus) -> &'static str {
         RangeStatus::Orphaned => "ORPHANED",
         RangeStatus::MergeConflict => "MERGE_CONFLICT",
         RangeStatus::Submodule => "SUBMODULE",
-        RangeStatus::ContentUnavailable(_) => "CONTENT_UNAVAILABLE",
+        RangeStatus::ContentUnavailable(reason) => match reason {
+            UnavailableReason::LfsNotFetched => "LFS_NOT_FETCHED",
+            UnavailableReason::LfsNotInstalled => "LFS_NOT_INSTALLED",
+            UnavailableReason::PromisorMissing => "PROMISOR_MISSING",
+            UnavailableReason::SparseExcluded => "SPARSE_EXCLUDED",
+            UnavailableReason::FilterFailed { .. } => "FILTER_FAILED",
+            UnavailableReason::IoError { .. } => "IO_ERROR",
+        },
     }
 }
 
