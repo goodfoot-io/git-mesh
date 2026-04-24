@@ -1,9 +1,9 @@
 //! Staging + commit handlers — §6.2, §6.3, §6.4, §10.5.
 
-use crate::cli::{AddArgs, CommitArgs, ConfigArgs, MessageArgs, RmArgs};
+use crate::cli::{AddArgs, CommitArgs, ConfigArgs, RmArgs, WhyArgs};
 use crate::staging::{StagedConfig, append_prepared_add, parse_address, prepare_add};
 use crate::types::{validate_add_target, CopyDetection, RangeExtent};
-use crate::{append_config, append_remove, commit_mesh, read_mesh, set_message};
+use crate::{append_config, append_remove, commit_mesh, read_mesh, set_why};
 use anyhow::{Context, Result, anyhow};
 
 pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
@@ -165,42 +165,66 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
     Ok(0)
 }
 
-pub fn run_message(repo: &gix::Repository, args: MessageArgs) -> Result<i32> {
-    // Per §10.2, bare `git mesh message <name>` (no flag) behaves like
-    // `--edit`. `-m` / `-F` short-circuit the editor path.
+pub fn run_why(repo: &gix::Repository, args: WhyArgs) -> Result<i32> {
+    // Reader vs. writer disambiguation per `docs/why-plan.md` §B2:
+    // any of `-m`/`-F`/`--edit` ⇒ writer; otherwise reader (which
+    // optionally accepts `--at <commit>` for historical reads).
+    let writer = args.m.is_some() || args.file.is_some() || args.edit;
+    if !writer {
+        return run_why_reader(repo, &args.name, args.at.as_deref());
+    }
     if let Some(m) = args.m {
-        set_message(repo, &args.name, &m)?;
+        set_why(repo, &args.name, &m)?;
         return Ok(0);
     }
     if let Some(f) = args.file {
         let body = std::fs::read_to_string(&f).with_context(|| format!("failed to read {f}"))?;
-        set_message(repo, &args.name, &body)?;
+        set_why(repo, &args.name, &body)?;
         return Ok(0);
     }
-    // Editor flow (--edit or bare).
-    run_message_editor(repo, &args.name)
+    // Editor flow (--edit).
+    run_why_editor(repo, &args.name)
 }
 
-fn run_message_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
+fn run_why_reader(
+    repo: &gix::Repository,
+    name: &str,
+    at: Option<&str>,
+) -> Result<i32> {
+    crate::validation::validate_mesh_name(name)?;
+    // Resolution path: read the mesh commit at HEAD (or `--at <commit-ish>`)
+    // on `refs/meshes/v1/<name>` and print its commit message — the
+    // git-layer carrier of the mesh-layer why text.
+    let info = crate::mesh::mesh_commit_info_at(repo, name, at)?;
+    let body = info.message.trim_end_matches('\n');
+    if body.is_empty() {
+        println!();
+    } else {
+        println!("{body}");
+    }
+    Ok(0)
+}
+
+fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
     crate::validation::validate_mesh_name(name)?;
     let wd = crate::git::work_dir(repo)?;
     let staging_dir = wd.join(".git").join("mesh").join("staging");
     std::fs::create_dir_all(&staging_dir)?;
 
     // Determine template content (§6.3):
-    //   1. existing `<name>.msg` wins
-    //   2. else parent mesh commit's message
+    //   1. existing `<name>.why` wins
+    //   2. else parent mesh commit's message (the prior why)
     //   3. else blank buffer with a commented hint
-    let msg_path = staging_dir.join(format!("{name}.msg"));
-    let template: String = if msg_path.exists() {
-        std::fs::read_to_string(&msg_path)?
+    let why_path = staging_dir.join(format!("{name}.why"));
+    let template: String = if why_path.exists() {
+        std::fs::read_to_string(&why_path)?
     } else if let Ok(info) = crate::mesh::mesh_commit_info(repo, name) {
         info.message
     } else {
-        String::from("\n# Write the relationship description. Empty message aborts.\n")
+        String::from("\n# Write the relationship description. Empty why aborts.\n")
     };
 
-    let edit_path = staging_dir.join(format!("{name}.msg.EDITMSG"));
+    let edit_path = staging_dir.join(format!("{name}.why.EDITMSG"));
     std::fs::write(&edit_path, &template)?;
 
     // Resolve editor — same lookup as `git commit`.
@@ -235,9 +259,9 @@ fn run_message_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
     let _ = std::fs::remove_file(&edit_path);
 
     if body.is_empty() {
-        return Err(anyhow!("aborting mesh message due to empty message"));
+        return Err(anyhow!("aborting mesh why due to empty body"));
     }
-    set_message(repo, name, &body)?;
+    set_why(repo, name, &body)?;
     Ok(0)
 }
 
@@ -261,21 +285,21 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
             let entry = entry?;
             let fname = entry.file_name();
             let fn_str = fname.to_string_lossy().into_owned();
-            // Ops files have no extension; `.msg` and `.<N>` are sidecars.
+            // Ops files have no extension; `.why` and `.<N>` are sidecars.
             if !fn_str.contains('.') {
                 candidates.insert(fn_str);
             }
         }
     }
 
-    // Filter to meshes that actually have something staged (ops or message).
+    // Filter to meshes that actually have something staged (ops or why).
     let mut staged: Vec<String> = Vec::new();
     for name in candidates {
         let s = crate::staging::read_staging(repo, &name).unwrap_or_default();
         let has_anything = !s.adds.is_empty()
             || !s.removes.is_empty()
             || !s.configs.is_empty()
-            || s.message.is_some();
+            || s.why.is_some();
         if has_anything {
             staged.push(name);
         }

@@ -209,9 +209,9 @@ pub enum Error {
     #[error("nothing staged for mesh: {0}")]
     StagingEmpty(String),
 
-    /// First commit on a new mesh requires a staged message (§6.2, §10.2).
-    #[error("message required for first commit on mesh: {0}")]
-    MessageRequired(String),
+    /// First commit on a new mesh requires a staged why (§6.2, §10.2).
+    #[error("why required for first commit on mesh `{0}`: stage one with `git mesh why {0} -m \"…\"`")]
+    WhyRequired(String),
 
     /// `anchor_sha` is not reachable; resolver classifies the range as
     /// `Orphaned` rather than erroring, but callers writing new ranges
@@ -490,7 +490,7 @@ pub enum PendingDrift {
 /// Staged mesh operation surfaced by the engine alongside `Finding`s.
 ///
 /// `Add` and `Remove` carry a possible `drift: Option<PendingDrift>`;
-/// `Message` and `ConfigChange` are informational and never drive exit
+/// `Why` and `ConfigChange` are informational and never drive exit
 /// code (see plan B3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PendingFinding {
@@ -506,7 +506,7 @@ pub enum PendingFinding {
         op: crate::staging::StagedRemove,
         drift: Option<PendingDrift>,
     },
-    Message {
+    Why {
         mesh: String,
         body: String,
     },

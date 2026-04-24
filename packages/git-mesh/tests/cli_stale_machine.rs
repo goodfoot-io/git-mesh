@@ -8,7 +8,7 @@ use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.mesh_stdout(["message", name, "-m", "seed"])?;
+    repo.mesh_stdout(["why", name, "-m", "seed"])?;
     repo.mesh_stdout(["commit", name])?;
     Ok(())
 }
@@ -178,7 +178,7 @@ fn since_filters_by_anchor_age() -> Result<()> {
     let mid = repo.head_sha()?;
     // Stage range anchored at mid, not early.
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "--at", &mid])?;
-    repo.mesh_stdout(["message", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
     repo.mesh_stdout(["commit", "m"])?;
     drift(&repo)?;
     // --since mid => our range is in scope; exit 1.

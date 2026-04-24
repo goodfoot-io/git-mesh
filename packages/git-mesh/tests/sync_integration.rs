@@ -5,7 +5,7 @@ mod support;
 use anyhow::Result;
 use git_mesh::{
     append_add, commit_mesh, default_remote, ensure_refspec_configured, fetch_mesh_refs,
-    push_mesh_refs, set_message,
+    push_mesh_refs, set_why,
 };
 use support::{BareRepo, TestRepo};
 
@@ -71,7 +71,7 @@ fn push_bootstraps_refspec_on_first_call() -> Result<()> {
     repo.add_remote("origin", bare.path())?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "m", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "m", "seed")?;
+    set_why(&gix, "m", "seed")?;
     commit_mesh(&gix, "m")?;
     push_mesh_refs(&gix, "origin")?;
     // Upstream should now have the mesh ref.
@@ -94,7 +94,7 @@ fn fetch_round_trips_from_upstream() -> Result<()> {
     writer.add_remote("origin", upstream_bare.path())?;
     let wg = writer.gix_repo()?;
     append_add(&wg, "shared", "file1.txt", 1, 5, None)?;
-    set_message(&wg, "shared", "seed")?;
+    set_why(&wg, "shared", "seed")?;
     commit_mesh(&wg, "shared")?;
     push_mesh_refs(&wg, "origin")?;
 

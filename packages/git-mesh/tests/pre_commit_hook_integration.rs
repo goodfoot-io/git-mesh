@@ -9,13 +9,13 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::{append_add, commit_mesh, set_message};
+use git_mesh::{append_add, commit_mesh, set_why};
 use support::TestRepo;
 
 fn seed_line_range_mesh(repo: &TestRepo, mesh: &str) -> Result<()> {
     let gix = repo.gix_repo()?;
     append_add(&gix, mesh, "file1.txt", 1, 5, None)?;
-    set_message(&gix, mesh, "seed")?;
+    set_why(&gix, mesh, "seed")?;
     commit_mesh(&gix, mesh)?;
     Ok(())
 }
@@ -93,7 +93,7 @@ fn pending_add_sidecar_mismatch_fails_commit() -> Result<()> {
 fn pending_message_only_does_not_fail_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
-    let _ = repo.run_mesh(["message", "m", "-m", "informational note"])?;
+    let _ = repo.run_mesh(["why", "m", "-m", "informational note"])?;
     // Touch an unrelated path so there is *something* staged (otherwise
     // the in-flight commit is empty and the kept-set is empty for any
     // reason).

@@ -8,7 +8,7 @@ use support::{BareRepo, TestRepo};
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.mesh_stdout(["message", name, "-m", "seed"])?;
+    repo.mesh_stdout(["why", name, "-m", "seed"])?;
     repo.mesh_stdout(["commit", name])?;
     Ok(())
 }
@@ -31,7 +31,7 @@ fn revert_creates_new_tip() -> Result<()> {
     seed(&repo, "rev")?;
     let first_oid = repo.git_stdout(["rev-parse", "refs/meshes/v1/rev"])?;
     repo.mesh_stdout(["add", "rev", "file2.txt#L1-L3"])?;
-    repo.mesh_stdout(["message", "rev", "-m", "v2"])?;
+    repo.mesh_stdout(["why", "rev", "-m", "v2"])?;
     repo.mesh_stdout(["commit", "rev"])?;
     repo.mesh_stdout(["revert", "rev", &first_oid])?;
     let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/rev"])?;

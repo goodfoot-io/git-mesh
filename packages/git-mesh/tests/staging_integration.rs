@@ -6,7 +6,7 @@ use anyhow::Result;
 use git_mesh::staging::StagedConfig;
 use git_mesh::types::CopyDetection;
 use git_mesh::{
-    append_add, append_config, append_remove, clear_staging, read_staging, set_message,
+    append_add, append_config, append_remove, clear_staging, read_staging, set_why,
 };
 use support::TestRepo;
 
@@ -108,12 +108,12 @@ fn append_config_records_entries() -> Result<()> {
 
 #[test]
 
-fn set_message_persists_file() -> Result<()> {
+fn set_why_persists_file() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
-    set_message(&gix, "m", "Subject\n\nBody\n")?;
+    set_why(&gix, "m", "Subject\n\nBody\n")?;
     let s = read_staging(&gix, "m")?;
-    assert_eq!(s.message.as_deref(), Some("Subject\n\nBody\n"));
+    assert_eq!(s.why.as_deref(), Some("Subject\n\nBody\n"));
     Ok(())
 }
 
@@ -123,10 +123,10 @@ fn clear_staging_removes_all_files() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "m", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "m", "msg")?;
+    set_why(&gix, "m", "msg")?;
     clear_staging(&gix, "m")?;
     let s = read_staging(&gix, "m")?;
-    assert!(s.adds.is_empty() && s.message.is_none());
+    assert!(s.adds.is_empty() && s.why.is_none());
     Ok(())
 }
 
@@ -138,7 +138,7 @@ fn read_staging_empty_when_no_file() -> Result<()> {
     assert!(s.adds.is_empty());
     assert!(s.removes.is_empty());
     assert!(s.configs.is_empty());
-    assert!(s.message.is_none());
+    assert!(s.why.is_none());
     Ok(())
 }
 

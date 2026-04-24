@@ -8,7 +8,7 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
     "add",
     "rm",
     "commit",
-    "message",
+    "why",
     "restore",
     "revert",
     "delete",

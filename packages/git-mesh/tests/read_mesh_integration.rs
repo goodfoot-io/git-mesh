@@ -5,17 +5,17 @@ mod support;
 use anyhow::Result;
 use git_mesh::{
     append_add, commit_mesh, list_mesh_names, mesh_commit_info, mesh_commit_info_at, mesh_log,
-    read_mesh, read_mesh_at, resolve_commit_ish, set_message, show_mesh,
+    read_mesh, read_mesh_at, resolve_commit_ish, set_why, show_mesh,
 };
 use support::TestRepo;
 
 fn seed_two_meshes(repo: &TestRepo) -> Result<()> {
     let gix = repo.gix_repo()?;
     append_add(&gix, "alpha", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "alpha", "alpha init")?;
+    set_why(&gix, "alpha", "alpha init")?;
     commit_mesh(&gix, "alpha")?;
     append_add(&gix, "beta", "file2.txt", 2, 6, None)?;
-    set_message(&gix, "beta", "beta init")?;
+    set_why(&gix, "beta", "beta init")?;
     commit_mesh(&gix, "beta")?;
     Ok(())
 }
@@ -75,10 +75,10 @@ fn read_mesh_at_walks_history() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "hist", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "hist", "v1")?;
+    set_why(&gix, "hist", "v1")?;
     let first = commit_mesh(&gix, "hist")?;
     append_add(&gix, "hist", "file2.txt", 3, 7, None)?;
-    set_message(&gix, "hist", "v2")?;
+    set_why(&gix, "hist", "v2")?;
     commit_mesh(&gix, "hist")?;
     let old = read_mesh_at(&gix, "hist", Some(&first))?;
     assert_eq!(old.ranges.len(), 1);
@@ -106,10 +106,10 @@ fn mesh_commit_info_at_past_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "h", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "h", "v1")?;
+    set_why(&gix, "h", "v1")?;
     let first = commit_mesh(&gix, "h")?;
     append_add(&gix, "h", "file2.txt", 2, 4, None)?;
-    set_message(&gix, "h", "v2")?;
+    set_why(&gix, "h", "v2")?;
     commit_mesh(&gix, "h")?;
     let past = mesh_commit_info_at(&gix, "h", Some(&first))?;
     assert!(past.summary.contains("v1"));
@@ -122,10 +122,10 @@ fn mesh_log_newest_first() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "h", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "h", "v1")?;
+    set_why(&gix, "h", "v1")?;
     commit_mesh(&gix, "h")?;
     append_add(&gix, "h", "file2.txt", 2, 4, None)?;
-    set_message(&gix, "h", "v2")?;
+    set_why(&gix, "h", "v2")?;
     commit_mesh(&gix, "h")?;
     let log = mesh_log(&gix, "h", None)?;
     assert_eq!(log.len(), 2);
@@ -141,7 +141,7 @@ fn mesh_log_respects_limit() -> Result<()> {
     let gix = repo.gix_repo()?;
     for i in 1..=3u32 {
         append_add(&gix, "h", "file1.txt", i, i + 1, None)?;
-        set_message(&gix, "h", &format!("v{i}"))?;
+        set_why(&gix, "h", &format!("v{i}"))?;
         commit_mesh(&gix, "h")?;
     }
     let log = mesh_log(&gix, "h", Some(2))?;
@@ -155,10 +155,10 @@ fn resolve_commit_ish_returns_oid_on_ancestor() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "h", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "h", "v1")?;
+    set_why(&gix, "h", "v1")?;
     let first = commit_mesh(&gix, "h")?;
     append_add(&gix, "h", "file2.txt", 2, 4, None)?;
-    set_message(&gix, "h", "v2")?;
+    set_why(&gix, "h", "v2")?;
     commit_mesh(&gix, "h")?;
     let oid = resolve_commit_ish(&gix, "h", &first)?;
     assert_eq!(oid, first);

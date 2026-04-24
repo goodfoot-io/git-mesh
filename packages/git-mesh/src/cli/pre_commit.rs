@@ -113,7 +113,7 @@ pub fn run_pre_commit_check(repo: &gix::Repository) -> Result<i32> {
             PendingFinding::Remove { op, .. } => {
                 staged_paths.contains(std::path::Path::new(&op.path))
             }
-            PendingFinding::Message { .. } | PendingFinding::ConfigChange { .. } => false,
+            PendingFinding::Why { .. } | PendingFinding::ConfigChange { .. } => false,
         })
         .collect();
 
@@ -267,7 +267,7 @@ fn pending_mesh(p: &PendingFinding) -> &str {
     match p {
         PendingFinding::Add { mesh, .. }
         | PendingFinding::Remove { mesh, .. }
-        | PendingFinding::Message { mesh, .. }
+        | PendingFinding::Why { mesh, .. }
         | PendingFinding::ConfigChange { mesh, .. } => mesh,
     }
 }

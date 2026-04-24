@@ -88,9 +88,9 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let config_changed = new_config != base_config;
     let meaningful_adds = !staging.adds.is_empty();
     let meaningful_removes = !staging.removes.is_empty();
-    let meaningful_message = staging.message.is_some();
+    let meaningful_why = staging.why.is_some();
 
-    if !meaningful_adds && !meaningful_removes && !config_changed && !meaningful_message {
+    if !meaningful_adds && !meaningful_removes && !config_changed && !meaningful_why {
         if staging.configs.is_empty() && staging.adds.is_empty() && staging.removes.is_empty() {
             return Err(Error::StagingEmpty(name.into()));
         }
@@ -111,11 +111,14 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         return Err(Error::StagingEmpty(name.into()));
     }
 
-    // Determine the commit message.
-    let message = match (&staging.message, &base_message) {
+    // Determine the git commit message: staged why wins, else inherit
+    // the parent mesh commit's message, else hard-fail with `WhyRequired`.
+    // The `message` variable below is git-layer vocabulary — it is the
+    // bytes handed to `gix::commit` as the commit message.
+    let message = match (&staging.why, &base_message) {
         (Some(m), _) => m.clone(),
         (None, Some(prior)) => prior.clone(),
-        (None, None) => return Err(Error::MessageRequired(name.into())),
+        (None, None) => return Err(Error::WhyRequired(name.into())),
     };
 
     // Drift check and range creation for staged adds. All-or-nothing:

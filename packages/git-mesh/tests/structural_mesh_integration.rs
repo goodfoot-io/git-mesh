@@ -5,14 +5,14 @@ mod support;
 use anyhow::Result;
 use git_mesh::{
     append_add, commit_mesh, delete_mesh, list_mesh_names, read_mesh, rename_mesh, restore_mesh,
-    revert_mesh, set_message,
+    revert_mesh, set_why,
 };
 use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str, msg: &str) -> Result<String> {
     let gix = repo.gix_repo()?;
     append_add(&gix, name, "file1.txt", 1, 5, None)?;
-    set_message(&gix, name, msg)?;
+    set_why(&gix, name, msg)?;
     Ok(commit_mesh(&gix, name)?)
 }
 
@@ -73,7 +73,7 @@ fn restore_mesh_clears_staging() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "pending", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "pending", "draft")?;
+    set_why(&gix, "pending", "draft")?;
     restore_mesh(&gix, "pending")?;
     // After restore, commit with empty staging should error.
     let err = commit_mesh(&gix, "pending").unwrap_err();
@@ -87,10 +87,10 @@ fn revert_mesh_fast_forwards_to_past_tree() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "rev", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "rev", "v1")?;
+    set_why(&gix, "rev", "v1")?;
     let v1 = commit_mesh(&gix, "rev")?;
     append_add(&gix, "rev", "file2.txt", 2, 4, None)?;
-    set_message(&gix, "rev", "v2")?;
+    set_why(&gix, "rev", "v2")?;
     commit_mesh(&gix, "rev")?;
     let new_tip = revert_mesh(&gix, "rev", &v1)?;
     assert_ne!(new_tip, v1, "§6.6: revert is fast-forward, not rewind");

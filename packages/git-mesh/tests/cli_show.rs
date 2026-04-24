@@ -7,7 +7,7 @@ use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.mesh_stdout(["message", name, "-m", "seed"])?;
+    repo.mesh_stdout(["why", name, "-m", "seed"])?;
     repo.mesh_stdout(["commit", name])?;
     Ok(())
 }
@@ -73,7 +73,7 @@ fn show_at_walks_history() -> Result<()> {
     seed(&repo, "h")?;
     // Second commit adds a second range.
     repo.mesh_stdout(["add", "h", "file2.txt#L1-L3"])?;
-    repo.mesh_stdout(["message", "h", "-m", "v2"])?;
+    repo.mesh_stdout(["why", "h", "-m", "v2"])?;
     repo.mesh_stdout(["commit", "h"])?;
     let tip_oid = repo.git_stdout(["rev-parse", "refs/meshes/v1/h~1"])?;
     let out = repo.mesh_stdout(["h", "--at", &tip_oid])?;
@@ -88,7 +88,7 @@ fn show_log_walks_newest_first() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "h")?;
     repo.mesh_stdout(["add", "h", "file2.txt#L1-L3"])?;
-    repo.mesh_stdout(["message", "h", "-m", "v2"])?;
+    repo.mesh_stdout(["why", "h", "-m", "v2"])?;
     repo.mesh_stdout(["commit", "h"])?;
     let out = repo.mesh_stdout(["h", "--log"])?;
     let v2_pos = out.find("v2").expect("v2 in log");
@@ -103,7 +103,7 @@ fn show_log_limit_caps_output() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "h")?;
     repo.mesh_stdout(["add", "h", "file2.txt#L1-L3"])?;
-    repo.mesh_stdout(["message", "h", "-m", "v2"])?;
+    repo.mesh_stdout(["why", "h", "-m", "v2"])?;
     repo.mesh_stdout(["commit", "h"])?;
     let out = repo.mesh_stdout(["h", "--log", "--limit", "1"])?;
     assert!(out.contains("v2"));

@@ -491,7 +491,7 @@ Non-zero iff any of:
 - a staged `add`/`remove` op has a sidecar whose bytes disagree with the
   blob it anchors.
 
-`PendingFinding::Message` and `PendingFinding::ConfigChange` print but
+`PendingFinding::Why` and `PendingFinding::ConfigChange` print but
 never drive exit code. Modifiers:
 
 - `--no-exit-code` forces exit 0 regardless of findings.

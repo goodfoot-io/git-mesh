@@ -27,7 +27,7 @@ use git_mesh::types::{
     Scope, UnavailableReason,
 };
 use git_mesh::{
-    append_add, commit_mesh, resolve_mesh, resolve_range, set_message, stale_meshes,
+    append_add, commit_mesh, resolve_mesh, resolve_range, set_why, stale_meshes,
 };
 use std::path::PathBuf;
 use support::TestRepo;
@@ -42,7 +42,7 @@ use support::TestRepo;
 fn seed_line_range_mesh(repo: &TestRepo, mesh: &str) -> Result<()> {
     let gix = repo.gix_repo()?;
     append_add(&gix, mesh, "file1.txt", 1, 5, None)?;
-    set_message(&gix, mesh, "seed")?;
+    set_why(&gix, mesh, "seed")?;
     commit_mesh(&gix, mesh)?;
     Ok(())
 }
@@ -386,7 +386,7 @@ fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
     repo.commit_all("add binary")?;
     // Pin the whole file (CLI omits `#L...` for whole-file per D2).
     let _ = repo.run_mesh(["add", "m", "hero.png"])?;
-    repo.run_mesh(["message", "m", "-m", "seed"])?;
+    repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
     // Mutate the binary, exit 1.
     std::fs::write(repo.path().join("hero.png"), [9u8, 9, 9, 9])?;
@@ -410,7 +410,7 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
     let inner = add_submodule_gitlink(&repo, "sub")?;
     // Pin the gitlink path itself (whole-file allowed per D2).
     let _ = repo.run_mesh(["add", "m", "sub"])?;
-    repo.run_mesh(["message", "m", "-m", "seed"])?;
+    repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
     // Advance inner repo and stage the bump in outer repo.
     std::fs::write(inner.join("inner.txt"), "hello 2\n")?;
@@ -448,7 +448,7 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     repo.commit_all("add symlink")?;
     // Whole-file pin allowed.
     let _ = repo.run_mesh(["add", "m", "link"])?;
-    repo.run_mesh(["message", "m", "-m", "seed"])?;
+    repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
     // Retarget the symlink.
     std::fs::remove_file(repo.path().join("link"))?;
@@ -477,7 +477,7 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_a, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
-    repo.run_mesh(["message", "m", "-m", "seed"])?;
+    repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_b, 42)?;
     repo.commit_all("mutate pointer")?;
@@ -501,7 +501,7 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_c, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
-    repo.run_mesh(["message", "m", "-m", "seed"])?;
+    repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
     // Pointer changes, cache missing for new oid.
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_d, 42)?;
@@ -534,7 +534,7 @@ fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()>
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_e, 42)?;
     repo.commit_all("lfs text")?;
     let _ = repo.run_mesh(["add", "m", "doc.bigtxt#L1-L1"])?;
-    repo.run_mesh(["message", "m", "-m", "seed"])?;
+    repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_f, 42)?;
     repo.commit_all("mutate pointer")?;
@@ -578,7 +578,7 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     repo.write_file("config.secret", "secret payload\n")?;
     repo.commit_all("add filtered file")?;
     let _ = repo.run_mesh(["add", "m", "config.secret#L1-L1"])?;
-    repo.run_mesh(["message", "m", "-m", "seed"])?;
+    repo.run_mesh(["why", "m", "-m", "seed"])?;
     repo.run_mesh(["commit", "m"])?;
     repo.write_file("config.secret", "new payload\n")?;
     repo.commit_all("mutate")?;

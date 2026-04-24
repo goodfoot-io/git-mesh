@@ -43,7 +43,7 @@ Non-zero iff any of the following is true:
 2. A `Finding` has a terminal status (`Orphaned`, `MergeConflict`, `Submodule`, `ContentUnavailable`) that isn't otherwise suppressed.
 3. A `PendingFinding` has `drift: Some(SidecarMismatch)` — the sidecar's normalized bytes disagree with the blob it claims to anchor.
 
-`PendingFinding::Message` and `PendingFinding::ConfigChange` **never** drive exit code; they are informational and render in their own section. Only `Add`/`Remove` ops carry a sidecar and thus a possible mismatch.
+`PendingFinding::Why` and `PendingFinding::ConfigChange` **never** drive exit code; they are informational and render in their own section. Only `Add`/`Remove` ops carry a sidecar and thus a possible mismatch.
 
 Modifiers:
 
@@ -218,7 +218,7 @@ pub enum PendingDrift {
 pub enum PendingFinding {
     Add          { mesh: String, range_id: String, op: StagedAdd,    drift: Option<PendingDrift> },
     Remove       { mesh: String, range_id: String, op: StagedRemove, drift: Option<PendingDrift> },
-    Message      { mesh: String, body: String },          // no drift field; never drives exit code
+    Why          { mesh: String, body: String },          // no drift field; never drives exit code
     ConfigChange { mesh: String, change: StagedConfig },  // no drift field; never drives exit code
 }
 
@@ -332,7 +332,7 @@ source   := first layer (shallowest) where content diverges; None if Fresh
 
 **Renderers.** Rewrite `cli/stale_output.rs` around `Finding` and `PendingFinding`:
 
-- **Human** (default): existing columns plus a `src` column (`H`/`I`/`W`) and an `ack` marker when `acknowledged_by` is populated. `PendingFinding::Message` and `::ConfigChange` render in their own trailing section; `Add`/`Remove` render with a `drift` note when set.
+- **Human** (default): existing columns plus a `src` column (`H`/`I`/`W`) and an `ack` marker when `acknowledged_by` is populated. `PendingFinding::Why` and `::ConfigChange` render in their own trailing section; `Add`/`Remove` render with a `drift` note when set.
 - **Porcelain / JSON / JUnit / GitHub Actions** match today's `--format` list. JSON carries full `Finding` / `PendingFinding` structure under a top-level `{ "schema_version": 1, ... }` envelope; schema documented in `docs/`.
 
 HEAD-only mode's `src` column only ever contains `H` — scripts that don't parse it are unaffected.

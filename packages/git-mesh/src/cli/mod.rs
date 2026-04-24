@@ -58,8 +58,10 @@ pub enum Commands {
     /// Stage ranges to remove on the next mesh commit (§6.3).
     Rm(RmArgs),
 
-    /// Set the staged commit message (§6.3, §10.2).
-    Message(MessageArgs),
+    /// Read or stage the mesh's why text (§6.3, §10.2; plan
+    /// `docs/why-plan.md`). Bare `git mesh why <name>` prints the current
+    /// why; the writer flags `-m`/`-F`/`--edit` stage a new one.
+    Why(WhyArgs),
 
     /// Resolve staged operations and write a mesh commit (§6.2).
     Commit(CommitArgs),
@@ -215,21 +217,25 @@ pub struct RmArgs {
         .required(false)
         .multiple(false)
 ))]
-pub struct MessageArgs {
+pub struct WhyArgs {
     pub name: String,
 
-    /// Inline message body (`-m "..."`).
+    /// Inline why text (`-m "..."`). Writer flag.
     #[arg(short = 'm', value_name = "MSG")]
     pub m: Option<String>,
 
-    /// Read message from file (`-F <file>`).
+    /// Read why text from a file (`-F <file>`). Writer flag.
     #[arg(short = 'F', value_name = "FILE")]
     pub file: Option<String>,
 
-    /// Open `$EDITOR` on a pre-populated template. Bare `git mesh
-    /// message <name>` with no other flags also triggers this (§10.2).
-    #[arg(long)]
+    /// Open `$EDITOR` on a pre-populated template. Writer flag.
+    #[arg(long, conflicts_with = "at")]
     pub edit: bool,
+
+    /// Reader-only: print the why text at a historical commit on the
+    /// mesh ref. Requires no writer flag (`-m`/`-F`/`--edit`).
+    #[arg(long, value_name = "COMMIT-ISH", conflicts_with_all = ["m", "file", "edit"])]
+    pub at: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -320,7 +326,7 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         Commands::Stale(args) => stale_output::run_stale(repo, args),
         Commands::Add(args) => commit::run_add(repo, args),
         Commands::Rm(args) => commit::run_rm(repo, args),
-        Commands::Message(args) => commit::run_message(repo, args),
+        Commands::Why(args) => commit::run_why(repo, args),
         Commands::Commit(args) => commit::run_commit(repo, args),
         Commands::Config(args) => commit::run_config(repo, args),
         Commands::Restore(args) => structural::run_restore(repo, args),

@@ -141,7 +141,7 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
     if !dir.exists() {
         return;
     }
-    // Group files: ops files (no dot) vs. sidecars (<name>.<N>) vs. .msg
+    // Group files: ops files (no dot) vs. sidecars (<name>.<N>) vs. .why
     let mut ops_files: Vec<(String, std::path::PathBuf)> = Vec::new();
     let mut sidecars: Vec<(String, u32, std::path::PathBuf)> = Vec::new();
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -153,7 +153,7 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
             continue;
         };
         if let Some((base, rest)) = fn_str.rsplit_once('.') {
-            if rest == "msg" {
+            if rest == "why" {
                 continue;
             }
             if let Ok(n) = rest.parse::<u32>() {

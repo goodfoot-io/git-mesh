@@ -152,7 +152,7 @@ pub fn build_pending_findings(
                 mesh: mesh_name.to_string(),
                 change: c,
             }),
-            crate::staging::StagedOp::Message(body) => out.push(PendingFinding::Message {
+            crate::staging::StagedOp::Why(body) => out.push(PendingFinding::Why {
                 mesh: mesh_name.to_string(),
                 body,
             }),

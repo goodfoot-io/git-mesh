@@ -7,7 +7,7 @@ use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
-    repo.mesh_stdout(["message", name, "-m", "seed"])?;
+    repo.mesh_stdout(["why", name, "-m", "seed"])?;
     repo.mesh_stdout(["commit", name])?;
     Ok(())
 }

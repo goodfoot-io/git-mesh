@@ -2,7 +2,7 @@
 //!
 //! Transient local state under `.git/mesh/staging/` per mesh:
 //! - `<name>`           — pending operations, one per line
-//! - `<name>.msg`       — staged commit message (optional)
+//! - `<name>.why`       — staged why text (optional)
 //! - `<name>.<N>`       — full-file sidecar bytes per staged `add` line
 //! - `<name>.<N>.meta`  — JSON sidecar metadata (freshness stamp +
 //!   acknowledged `range_id`); see plan §B2 / §D3.
@@ -95,7 +95,7 @@ pub enum StagedOp {
     Add(StagedAdd),
     Remove(StagedRemove),
     Config(StagedConfig),
-    Message(String),
+    Why(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -103,7 +103,7 @@ pub struct Staging {
     pub adds: Vec<StagedAdd>,
     pub removes: Vec<StagedRemove>,
     pub configs: Vec<StagedConfig>,
-    pub message: Option<String>,
+    pub why: Option<String>,
 }
 
 /// JSON sidecar for `<mesh>.<N>` capturing the normalization-version
@@ -133,8 +133,8 @@ fn ops_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
     Ok(staging_dir(repo)?.join(name))
 }
 
-fn msg_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
-    Ok(staging_dir(repo)?.join(format!("{name}.msg")))
+fn why_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
+    Ok(staging_dir(repo)?.join(format!("{name}.why")))
 }
 
 pub(crate) fn sidecar_path(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {
@@ -274,7 +274,7 @@ fn format_address(path: &str, extent: RangeExtent) -> String {
 
 pub fn read_staging(repo: &gix::Repository, name: &str) -> Result<Staging> {
     let ops_p = ops_path(repo, name)?;
-    let msg_p = msg_path(repo, name)?;
+    let why_p = why_path(repo, name)?;
     let mut staging = Staging::default();
     if ops_p.exists() {
         let text = fs::read_to_string(&ops_p)?;
@@ -293,8 +293,8 @@ pub fn read_staging(repo: &gix::Repository, name: &str) -> Result<Staging> {
             }
         }
     }
-    if msg_p.exists() {
-        staging.message = Some(fs::read_to_string(&msg_p)?);
+    if why_p.exists() {
+        staging.why = Some(fs::read_to_string(&why_p)?);
     }
     Ok(staging)
 }
@@ -321,10 +321,10 @@ pub fn read_staged_ops(repo: &gix::Repository, name: &str) -> Result<Vec<StagedO
             }
         }
     }
-    let msg_p = msg_path(repo, name)?;
-    if msg_p.exists() {
-        let body = fs::read_to_string(&msg_p)?;
-        out.push(StagedOp::Message(body));
+    let why_p = why_path(repo, name)?;
+    if why_p.exists() {
+        let body = fs::read_to_string(&why_p)?;
+        out.push(StagedOp::Why(body));
     }
     Ok(out)
 }
@@ -506,16 +506,16 @@ pub fn append_config(repo: &gix::Repository, name: &str, entry: &StagedConfig) -
     Ok(())
 }
 
-pub fn set_message(repo: &gix::Repository, name: &str, message: &str) -> Result<()> {
-    let p = msg_path(repo, name)?;
+pub fn set_why(repo: &gix::Repository, name: &str, why: &str) -> Result<()> {
+    let p = why_path(repo, name)?;
     ensure_dir(p.parent().unwrap())?;
-    if message.is_empty() {
+    if why.is_empty() {
         if p.exists() {
             fs::remove_file(&p)?;
         }
         return Ok(());
     }
-    fs::write(&p, message)?;
+    fs::write(&p, why)?;
     Ok(())
 }
 
@@ -531,7 +531,7 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
             continue;
         };
         let matches = fname == name
-            || fname == format!("{name}.msg")
+            || fname == format!("{name}.why")
             || fname.strip_prefix(&format!("{name}.")).is_some_and(|rest| {
                 // `<N>` (sidecar) or `<N>.meta` (sidecar metadata).
                 let stripped = rest.strip_suffix(".meta").unwrap_or(rest);

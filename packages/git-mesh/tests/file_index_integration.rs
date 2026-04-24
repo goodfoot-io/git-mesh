@@ -5,18 +5,18 @@ mod support;
 use anyhow::Result;
 use git_mesh::{
     append_add, commit_mesh, ls_all, ls_by_path, ls_by_path_range, read_index, rebuild_index,
-    set_message,
+    set_why,
 };
 use support::TestRepo;
 
 fn seed_two_meshes(repo: &TestRepo) -> Result<()> {
     let gix = repo.gix_repo()?;
     append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
-    set_message(&gix, "m1", "seed")?;
+    set_why(&gix, "m1", "seed")?;
     commit_mesh(&gix, "m1")?;
     append_add(&gix, "m2", "file1.txt", 8, 10, None)?;
     append_add(&gix, "m2", "file2.txt", 1, 3, None)?;
-    set_message(&gix, "m2", "seed")?;
+    set_why(&gix, "m2", "seed")?;
     commit_mesh(&gix, "m2")?;
     Ok(())
 }

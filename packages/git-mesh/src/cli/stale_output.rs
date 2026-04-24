@@ -264,13 +264,13 @@ fn render_human(
                 }
             }
         }
-        // Informational pending (Message / ConfigChange) — never drives exit.
+        // Informational pending (Why / ConfigChange) — never drives exit.
         let info: Vec<&&PendingFinding> = mesh_pending
             .iter()
             .filter(|p| {
                 matches!(
                     p,
-                    PendingFinding::Message { .. } | PendingFinding::ConfigChange { .. }
+                    PendingFinding::Why { .. } | PendingFinding::ConfigChange { .. }
                 )
             })
             .collect();
@@ -279,8 +279,8 @@ fn render_human(
             println!("Pending mesh metadata:");
             for p in &info {
                 match p {
-                    PendingFinding::Message { body, .. } => {
-                        println!("  message: {body}");
+                    PendingFinding::Why { body, .. } => {
+                        println!("  why: {body}");
                     }
                     PendingFinding::ConfigChange { change, .. } => {
                         println!("  config:  {}", config_str(change));
@@ -312,7 +312,7 @@ fn pending_mesh(p: &PendingFinding) -> &str {
     match p {
         PendingFinding::Add { mesh, .. }
         | PendingFinding::Remove { mesh, .. }
-        | PendingFinding::Message { mesh, .. }
+        | PendingFinding::Why { mesh, .. }
         | PendingFinding::ConfigChange { mesh, .. } => mesh,
     }
 }
@@ -503,8 +503,8 @@ fn pending_json(p: &PendingFinding) -> Value {
             "op": staged_remove_json(op),
             "drift": drift_json(drift.as_ref()),
         }),
-        PendingFinding::Message { mesh, body } => json!({
-            "kind": "message",
+        PendingFinding::Why { mesh, body } => json!({
+            "kind": "why",
             "mesh": mesh,
             "body": body,
         }),
