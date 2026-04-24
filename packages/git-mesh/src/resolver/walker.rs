@@ -243,6 +243,7 @@ pub(crate) fn apply_hunks_to_range(
     (s, e)
 }
 
+#[derive(Clone)]
 pub(crate) enum NS {
     Added { path: String },
     Modified { path: String },
@@ -289,7 +290,274 @@ pub(crate) fn name_status(
         ));
         return Ok(raw);
     }
-    collect_changes(&parent_tree, &new_tree, copy_detection, true)
+
+    // Second pass: rewrite-tracked diff-pair results.
+    let mut entries = collect_changes(&parent_tree, &new_tree, copy_detection, true)?;
+
+    // For AnyFileInCommit and AnyFileInRepo, run a widened similarity
+    // search for added paths that were not already paired by the first pass.
+    // Clone entries snapshot for use as first_pass so the mutable borrow is
+    // separate from the snapshot borrow.
+    match copy_detection {
+        CopyDetection::Off | CopyDetection::SameCommit => {}
+        CopyDetection::AnyFileInCommit => {
+            let snapshot = entries.clone();
+            widen_copies_in_commit(repo, &new_tree, &snapshot, &mut entries, commit, parent)?;
+        }
+        CopyDetection::AnyFileInRepo => {
+            let snapshot = entries.clone();
+            let _ = widen_copies_any_ref(
+                repo,
+                &new_tree,
+                &snapshot,
+                &mut entries,
+                commit,
+                parent,
+                warnings,
+            )?;
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Result of the AnyFileInRepo widening attempt.
+enum WidenResult {
+    Done,
+    FellBack,
+}
+
+/// Collect all blob paths from `tree` into a `Vec<(path, blob_oid_string)>`.
+fn tree_blob_paths(tree: &gix::Tree<'_>) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    tree.traverse()
+        .breadthfirst
+        .files()
+        .map_err(|e| Error::Git(format!("tree traverse: {e}")))?
+        .into_iter()
+        .for_each(|entry| {
+            let path = entry.filepath.to_string();
+            let oid = entry.oid.to_string();
+            out.push((path, oid));
+        });
+    Ok(out)
+}
+
+/// Collect all blob paths from every ref's tree, deduped by blob OID.
+/// Returns `(path, blob_oid)` pairs with unique blob OIDs.
+fn all_ref_blob_paths(repo: &gix::Repository) -> Result<Vec<(String, String)>> {
+    use std::collections::HashSet;
+    let mut seen_oids: HashSet<String> = HashSet::new();
+    let mut out: Vec<(String, String)> = Vec::new();
+
+    let refs = repo
+        .references()
+        .map_err(|e| Error::Git(format!("refs: {e}")))?;
+    let all = refs
+        .all()
+        .map_err(|e| Error::Git(format!("refs all: {e}")))?;
+
+    for r in all {
+        let mut r = match r {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let tip_id = match r.peel_to_id() {
+            Ok(id) => id.detach(),
+            Err(_) => continue,
+        };
+        // Try to peel to a tree (works for commit refs, skips tags to blobs etc.)
+        let obj = match repo.find_object(tip_id) {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let tree = match obj.peel_to_tree() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let entries = tree_blob_paths(&tree).unwrap_or_default();
+        for (path, oid) in entries {
+            if seen_oids.insert(oid.clone()) {
+                out.push((path, oid));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Compute line-based Jaccard similarity between two text blobs.
+/// Returns a value in [0.0, 1.0]. Uses multiset intersection/union of lines.
+fn line_similarity(a: &str, b: &str) -> f64 {
+    use std::collections::HashMap;
+    let mut counts_a: HashMap<&str, i32> = HashMap::new();
+    let mut counts_b: HashMap<&str, i32> = HashMap::new();
+    for line in a.lines() {
+        *counts_a.entry(line).or_default() += 1;
+    }
+    for line in b.lines() {
+        *counts_b.entry(line).or_default() += 1;
+    }
+    let mut intersection = 0i32;
+    let mut union = 0i32;
+    for (line, &ca) in &counts_a {
+        let cb = counts_b.get(line).copied().unwrap_or(0);
+        intersection += ca.min(cb);
+        union += ca.max(cb);
+    }
+    for (line, &cb) in &counts_b {
+        if !counts_a.contains_key(line) {
+            union += cb;
+        }
+    }
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
+}
+
+/// Read a blob OID as text, returning empty string on failure.
+fn blob_text(repo: &gix::Repository, blob_oid: &str) -> String {
+    use std::str::FromStr;
+    let Ok(oid) = gix::ObjectId::from_str(blob_oid) else {
+        return String::new();
+    };
+    let Ok(obj) = repo.find_object(oid) else {
+        return String::new();
+    };
+    String::from_utf8(obj.into_blob().detach().data).unwrap_or_default()
+}
+
+/// Collect paths that are "added" in `entries` but not paired as a copy/rename source.
+fn unpaired_added_paths(entries: &[NS]) -> Vec<String> {
+    let mut paired: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in entries {
+        match e {
+            NS::Renamed { to, .. } | NS::Copied { to, .. } => {
+                paired.insert(to.clone());
+            }
+            _ => {}
+        }
+    }
+    entries
+        .iter()
+        .filter_map(|e| match e {
+            NS::Added { path } if !paired.contains(path) => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// For each unpaired added path in the diff, search `candidates` for a source
+/// blob with similarity >= 50%. If found, push a `NS::Copied` entry.
+fn match_copies_from_pool(
+    repo: &gix::Repository,
+    commit: &str,
+    added_paths: &[String],
+    candidates: &[(String, String)], // (path, blob_oid)
+    out: &mut Vec<NS>,
+) -> Result<()> {
+    // Build the blob OIDs for each added path in the new commit.
+    let added_blobs: Vec<(String, String)> = added_paths
+        .iter()
+        .filter_map(|p| {
+            git::path_blob_at(repo, commit, p).ok().map(|oid| (p.clone(), oid))
+        })
+        .collect();
+
+    // For each candidate, read text once; then compare against each added.
+    // Greedy: first candidate that beats threshold wins (stable ordering from pool).
+    for (added_path, added_blob_oid) in &added_blobs {
+        let added_text = blob_text(repo, added_blob_oid);
+        if added_text.is_empty() {
+            continue;
+        }
+        let mut best_sim = 0.0f64;
+        let mut best_src: Option<String> = None;
+        for (cand_path, cand_blob_oid) in candidates {
+            // Skip if candidate is the same path as the added file.
+            // (Identical blob OIDs from different paths are valid copy sources.)
+            if cand_path == added_path {
+                continue;
+            }
+            let cand_text = blob_text(repo, cand_blob_oid);
+            if cand_text.is_empty() {
+                continue;
+            }
+            let sim = line_similarity(&cand_text, &added_text);
+            if sim >= 0.5 && sim > best_sim {
+                best_sim = sim;
+                best_src = Some(cand_path.clone());
+            }
+        }
+        if let Some(src) = best_src {
+            out.push(NS::Copied {
+                from: src,
+                to: added_path.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Widen copy detection to every path in `new_tree` (AnyFileInCommit).
+fn widen_copies_in_commit(
+    repo: &gix::Repository,
+    new_tree: &gix::Tree<'_>,
+    first_pass: &[NS],
+    out: &mut Vec<NS>,
+    commit: &str,
+    _parent: &str,
+) -> Result<()> {
+    let added_paths = unpaired_added_paths(first_pass);
+    if added_paths.is_empty() {
+        return Ok(());
+    }
+    // Pool: all blobs in new_tree not already in the added set.
+    let added_set: std::collections::HashSet<&str> =
+        added_paths.iter().map(|s| s.as_str()).collect();
+    let pool: Vec<(String, String)> = tree_blob_paths(new_tree)?
+        .into_iter()
+        .filter(|(path, _)| !added_set.contains(path.as_str()))
+        .collect();
+    match_copies_from_pool(repo, commit, &added_paths, &pool, out)
+}
+
+/// Widen copy detection to every blob in any ref (AnyFileInRepo).
+/// Falls back to AnyFileInCommit if the pool exceeds the budget.
+fn widen_copies_any_ref(
+    repo: &gix::Repository,
+    new_tree: &gix::Tree<'_>,
+    first_pass: &[NS],
+    out: &mut Vec<NS>,
+    commit: &str,
+    parent: &str,
+    warnings: &mut Vec<String>,
+) -> Result<WidenResult> {
+    let added_paths = unpaired_added_paths(first_pass);
+    if added_paths.is_empty() {
+        return Ok(WidenResult::Done);
+    }
+    let budget = rename_budget();
+    let pool = all_ref_blob_paths(repo)?;
+    if pool.len() > budget {
+        warnings.push(format!(
+            "warning: AnyFileInRepo copy pool ({} blobs) exceeds GIT_MESH_RENAME_BUDGET={}; falling back to AnyFileInCommit for HEAD walk {}..{}",
+            pool.len(),
+            budget,
+            &parent[..parent.len().min(8)],
+            &commit[..commit.len().min(8)],
+        ));
+        widen_copies_in_commit(repo, new_tree, first_pass, out, commit, parent)?;
+        return Ok(WidenResult::FellBack);
+    }
+    let added_set: std::collections::HashSet<&str> =
+        added_paths.iter().map(|s| s.as_str()).collect();
+    let pool_filtered: Vec<(String, String)> = pool
+        .into_iter()
+        .filter(|(path, _)| !added_set.contains(path.as_str()))
+        .collect();
+    match_copies_from_pool(repo, commit, &added_paths, &pool_filtered, out)?;
+    Ok(WidenResult::Done)
 }
 
 fn collect_changes<'a>(
@@ -355,4 +623,64 @@ fn collect_changes<'a>(
 #[allow(dead_code)]
 fn _keep(_: fn(&gix::Repository, &str) -> Result<crate::types::Range>) {
     let _ = _read_range;
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// Unit test: verifies that `name_status` with `AnyFileInCommit` produces a
+    /// `NS::Copied` entry when b.ts copies content from an unmodified a.ts.
+    #[test]
+    fn widen_any_file_in_commit_produces_copied_entry() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        
+        let content: String = (1..=20).map(|i| format!("content_line_{i}\n")).collect();
+        std::fs::write(dir.join("a.ts"), &content).unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let parent = String::from_utf8(
+            Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout
+        ).unwrap().trim().to_string();
+        
+        std::fs::write(dir.join("b.ts"), &content).unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "add b.ts"]);
+        let commit = String::from_utf8(
+            Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout
+        ).unwrap().trim().to_string();
+        
+        let repo = gix::open(dir).unwrap();
+        let mut warnings = Vec::new();
+        let entries = name_status(
+            &repo,
+            &parent,
+            &commit,
+            crate::types::CopyDetection::AnyFileInCommit,
+            &mut warnings,
+        )
+        .unwrap();
+
+        let has_copied = entries
+            .iter()
+            .any(|e| matches!(e, NS::Copied { from, to } if from == "a.ts" && to == "b.ts"));
+        assert!(
+            has_copied,
+            "Expected Copied{{from=a.ts,to=b.ts}}; entries count={}, warnings={:?}",
+            entries.len(),
+            warnings
+        );
+    }
 }
