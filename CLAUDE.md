@@ -62,6 +62,30 @@ Project documentation lives in `README.md` and `docs/`. Keep documentation focus
 
 </documentation>
 
+<bash-tool-env-var-bug>
+A bug prevents env var expansion when followed by a "|" character pipe.
+
+This fails:
+
+```bash
+echo $HOME | cat # returns ''
+```
+
+Do this instead:
+
+```bash
+echo $(printenv HOME) | cat # returns '/home/user'
+
+# or no pipe:
+
+echo $HOME # returns '/home/user'
+
+# or with a redirect:
+
+echo $HOME 2>&1 # returns '/home/user'
+```
+</bash-tool-env-var-bug>
+
 <git-mesh>
 
 **A lightweight contract for agreements that no schema, type, or test already enforces.** A mesh anchors line ranges (or whole files) across the repo and carries a durable "why" defining the subsystem they collectively form.
