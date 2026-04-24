@@ -517,6 +517,131 @@ pub fn culprit_commit(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Slice 1: shared gix helpers (replacements for `Command::new("git")`).
+// ---------------------------------------------------------------------------
+
+/// Resolve `commit_ish`, peel to its tree, and look up `path` within it.
+///
+/// Returns `Ok(None)` when `path` isn't present in the tree (matches the
+/// "no row" semantics of `git ls-tree <sha> -- <path>` we are replacing).
+/// Returns `Err` only for plumbing failures (bad commit-ish, unreadable
+/// objects, ill-formed UTF-8 path components).
+pub fn tree_entry_at(
+    repo: &gix::Repository,
+    commit_ish: &str,
+    path: &Path,
+) -> Result<Option<(gix::objs::tree::EntryMode, ObjectId)>> {
+    let id = match repo.rev_parse_single(commit_ish) {
+        Ok(id) => id,
+        Err(_) => return Ok(None),
+    };
+    let object = id
+        .object()
+        .map_err(|e| Error::Git(format!("find object `{commit_ish}`: {e}")))?;
+    let tree = object
+        .peel_to_tree()
+        .map_err(|e| Error::Git(format!("peel `{commit_ish}` to tree: {e}")))?;
+    let entry = tree
+        .lookup_entry_by_path(path)
+        .map_err(|e| Error::Git(format!("lookup entry `{}`: {e}", path.display())))?;
+    Ok(entry.map(|e| (e.mode(), e.object_id())))
+}
+
+/// Snapshot of an index entry used by callers that previously parsed
+/// `git ls-files --stage` / `git ls-files -u -z` lines.
+#[derive(Clone, Debug)]
+pub struct IndexEntrySnapshot {
+    pub mode: gix::objs::tree::EntryMode,
+    pub oid: ObjectId,
+    pub stage: gix::index::entry::Stage,
+    pub path: String,
+}
+
+/// Load the worktree index (or synthesize it from `HEAD^{tree}` if there
+/// is no on-disk index yet) and return one snapshot per entry.
+///
+/// Returning owned snapshots keeps the borrow shape simple at call sites
+/// that want to filter / collect without keeping the index file alive.
+pub fn index_entries(repo: &gix::Repository) -> Result<Vec<IndexEntrySnapshot>> {
+    let idx = repo
+        .index_or_load_from_head()
+        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let state = &*idx;
+    let mut out = Vec::with_capacity(state.entries().len());
+    for entry in state.entries() {
+        let mode = match gix::objs::tree::EntryMode::try_from(entry.mode.bits()) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let path = entry.path(state).to_string();
+        out.push(IndexEntrySnapshot {
+            mode,
+            oid: entry.id,
+            stage: entry.stage(),
+            path,
+        });
+    }
+    Ok(out)
+}
+
+/// Compute the SHA-1 a blob with `bytes` would have, without writing it
+/// (replaces `git hash-object [--stdin] <…>`).
+pub fn hash_blob(bytes: &[u8]) -> Result<ObjectId> {
+    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
+        .map_err(|e| Error::Git(format!("hash-object: {e}")))
+}
+
+/// Resolve a single `.gitattributes` attribute for `rel_path` relative to
+/// the repo's worktree root. Returns:
+///
+/// * `Ok(None)` when the attribute is unset / unspecified.
+/// * `Ok(Some("set"))` for boolean-set attributes (`<attr>` or `<attr>=true`).
+/// * `Ok(Some("<value>"))` for valued attributes.
+///
+/// The `binary` macro is expanded by `gix_attributes` automatically;
+/// callers that need the macro itself should query `"binary"` directly.
+pub fn attr_for(
+    repo: &gix::Repository,
+    rel_path: &Path,
+    name: &str,
+) -> Result<Option<gix::bstr::BString>> {
+    let index = repo
+        .index_or_load_from_head()
+        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let mut stack = repo
+        .attributes(
+            &index,
+            gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+            gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+            None,
+        )
+        .map_err(|e| Error::Git(format!("attribute stack: {e}")))?;
+    let mut outcome = stack.selected_attribute_matches([name]);
+    let platform = stack
+        .at_entry(rel_path, None)
+        .map_err(|e| Error::Git(format!("attr at_entry `{}`: {e}", rel_path.display())))?;
+    if !platform.matching_attributes(&mut outcome) {
+        return Ok(None);
+    }
+    if let Some(m) = outcome.iter_selected().next() {
+        return Ok(match m.assignment.state {
+            gix::attrs::StateRef::Set => Some("set".into()),
+            gix::attrs::StateRef::Unset => None,
+            gix::attrs::StateRef::Value(v) => Some(v.as_bstr().to_owned()),
+            gix::attrs::StateRef::Unspecified => None,
+        });
+    }
+    Ok(None)
+}
+
+/// Read a single config string by full key (e.g. `"filter.lfs.process"`).
+pub fn config_string(repo: &gix::Repository, key: &str) -> Option<String> {
+    repo.config_snapshot()
+        .string(key)
+        .map(|v| v.to_string())
+}
+
 pub fn update_ref_cas(
     repo: &gix::Repository,
     ref_name: &str,
@@ -549,4 +674,104 @@ pub fn delete_ref(repo: &gix::Repository, ref_name: &str) -> Result<()> {
             expected_old_oid: current,
         }],
     )
+}
+
+#[cfg(test)]
+mod gix_helper_tests {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn seed_repo() -> (tempfile::TempDir, gix::Repository, String) {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.join(".gitattributes"), "*.bin binary\n*.tx filter=foo\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let head = String::from_utf8(
+            Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout,
+        ).unwrap().trim().to_string();
+        let repo = gix::open(dir).unwrap();
+        (td, repo, head)
+    }
+
+    #[test]
+    fn tree_entry_at_finds_blob() {
+        let (_td, repo, head) = seed_repo();
+        let entry = tree_entry_at(&repo, &head, Path::new("a.txt")).unwrap();
+        let (_mode, oid) = entry.expect("a.txt should exist at HEAD");
+        assert_eq!(oid.to_string().len(), 40);
+    }
+
+    #[test]
+    fn tree_entry_at_missing_returns_none() {
+        let (_td, repo, head) = seed_repo();
+        let out = tree_entry_at(&repo, &head, Path::new("nope.txt")).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn index_entries_returns_committed_files() {
+        let (_td, repo, _head) = seed_repo();
+        let entries = index_entries(&repo).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"a.txt"));
+        assert!(paths.contains(&".gitattributes"));
+        assert!(entries.iter().all(|e| e.stage == gix::index::entry::Stage::Unconflicted));
+    }
+
+    #[test]
+    fn hash_blob_matches_git() {
+        let (td, _repo, _head) = seed_repo();
+        let bytes = b"hello world\n";
+        let oid = hash_blob(bytes).unwrap();
+        use std::io::Write;
+        let mut child = Command::new("git")
+            .current_dir(td.path())
+            .args(["hash-object", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.as_mut().unwrap().write_all(bytes).unwrap();
+        let res = child.wait_with_output().unwrap();
+        let expected = String::from_utf8(res.stdout).unwrap().trim().to_string();
+        assert_eq!(oid.to_string(), expected);
+    }
+
+    #[test]
+    fn attr_for_reads_filter_and_binary() {
+        let (_td, repo, _head) = seed_repo();
+        std::fs::write(_td.path().join("x.tx"), "y").unwrap();
+        std::fs::write(_td.path().join("y.bin"), &[0u8, 1u8]).unwrap();
+        let f = attr_for(&repo, Path::new("x.tx"), "filter").unwrap();
+        assert_eq!(f.as_ref().map(|b| b.to_string()), Some("foo".to_string()));
+        let b = attr_for(&repo, Path::new("y.bin"), "binary").unwrap();
+        // `binary` is a macro; resolves as Set when it matches.
+        assert_eq!(b.as_ref().map(|s| s.to_string()), Some("set".to_string()));
+        let none = attr_for(&repo, Path::new("a.txt"), "filter").unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn config_string_reads_value() {
+        let (td, repo, _head) = seed_repo();
+        run_git(td.path(), &["config", "filter.lfs.process", "git-lfs filter-process"]);
+        let repo = gix::open(repo.path()).unwrap();
+        assert_eq!(
+            config_string(&repo, "filter.lfs.process").as_deref(),
+            Some("git-lfs filter-process"),
+        );
+        assert!(config_string(&repo, "no.such.key").is_none());
+    }
 }

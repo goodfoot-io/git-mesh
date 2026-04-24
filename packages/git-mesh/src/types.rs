@@ -410,29 +410,20 @@ pub(crate) fn path_filter_attribute(
     workdir: &std::path::Path,
     rel_path: &std::path::Path,
 ) -> Result<Option<String>> {
-    let out = std::process::Command::new("git")
-        .current_dir(workdir)
-        .args(["check-attr", "filter", "--"])
-        .arg(rel_path)
-        .output()
-        .map_err(|e| Error::Git(format!("spawn git check-attr: {e}")))?;
-    if !out.status.success() {
-        // Fail closed: if we can't probe attributes, treat as "no driver"
-        // rather than guessing. The gix pipeline will run downstream.
-        return Ok(None);
-    }
-    // Format: `<path>: filter: <value>\n`
-    let s = String::from_utf8_lossy(&out.stdout);
-    for line in s.lines() {
-        if let Some(idx) = line.rfind(": ") {
-            let value = line[idx + 2..].trim();
-            return Ok(match value {
-                "" | "unspecified" | "unset" | "set" => None,
-                other => Some(other.to_string()),
-            });
-        }
-    }
-    Ok(None)
+    let repo = gix::open(workdir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
+    // Fail closed on any plumbing error: treat as "no driver" rather than
+    // guessing — the gix pipeline runs downstream.
+    let value = match crate::git::attr_for(&repo, rel_path, "filter") {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    // `attr_for` returns `Some("set")` for boolean-set attributes, which
+    // for `filter` is meaningless (no driver name) — collapse to `None`.
+    Ok(match value {
+        None => None,
+        Some(v) if v.as_slice() == b"set" => None,
+        Some(v) => Some(v.to_string()),
+    })
 }
 
 /// Filter-driver allowlist for the engine's reader dispatch.
@@ -716,23 +707,18 @@ fn submodule_classify(
     path: &str,
 ) -> std::result::Result<SubmoduleKind, AddPrecheckError> {
     // Read all gitlinks once.
-    let out = std::process::Command::new("git")
-        .current_dir(workdir)
-        .args(["ls-files", "--stage"])
-        .output()
-        .map_err(|e| AddPrecheckError::Io(std::io::Error::other(format!("ls-files: {e}"))))?;
-    if !out.status.success() {
-        return Ok(SubmoduleKind::None);
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
+    let repo = gix::open(workdir).map_err(|e| {
+        AddPrecheckError::Io(std::io::Error::other(format!("open repo: {e}")))
+    })?;
+    let entries = match crate::git::index_entries(&repo) {
+        Ok(e) => e,
+        Err(_) => return Ok(SubmoduleKind::None),
+    };
     let mut gitlinks: Vec<String> = Vec::new();
-    for line in s.lines() {
-        // <mode> <oid> <stage>\t<path>
-        let Some((meta, p)) = line.split_once('\t') else {
-            continue;
-        };
-        if meta.starts_with("160000") {
-            gitlinks.push(p.to_string());
+    for entry in entries {
+        // Submodule gitlinks are mode 0o160000 (Commit).
+        if entry.mode.is_commit() {
+            gitlinks.push(entry.path);
         }
     }
     for g in &gitlinks {
@@ -751,22 +737,14 @@ fn check_binary_attribute(
     workdir: &std::path::Path,
     path: &std::path::Path,
 ) -> std::result::Result<bool, std::io::Error> {
-    let out = std::process::Command::new("git")
-        .current_dir(workdir)
-        .args(["check-attr", "binary", "--"])
-        .arg(path)
-        .output()?;
-    if !out.status.success() {
-        return Ok(false);
+    let repo = gix::open(workdir).map_err(std::io::Error::other)?;
+    // gix_attributes expands the built-in `binary` macro automatically:
+    // when `binary` matches, the outcome reports it as Set.
+    match crate::git::attr_for(&repo, path, "binary") {
+        Ok(Some(v)) => Ok(v.as_slice() == b"set" || v.as_slice() == b"true"),
+        Ok(None) => Ok(false),
+        Err(_) => Ok(false),
     }
-    let s = String::from_utf8_lossy(&out.stdout);
-    for line in s.lines() {
-        if let Some(idx) = line.rfind(": ") {
-            let value = line[idx + 2..].trim();
-            return Ok(value == "set" || value == "true");
-        }
-    }
-    Ok(false)
 }
 
 fn parse_lfs_pointer_oid(bytes: &[u8]) -> Option<String> {
@@ -822,19 +800,44 @@ fn stamp_gitattributes_sha1(workdir: &std::path::Path) -> String {
 }
 
 fn stamp_filter_drivers_sha1(workdir: &std::path::Path) -> String {
-    // Snapshot the configured filter-driver names + their command lines
-    // by listing `git config --get-regexp '^filter\.'`.
-    let out = std::process::Command::new("git")
-        .current_dir(workdir)
-        .args(["config", "--get-regexp", "^filter\\."])
-        .output();
-    let Ok(out) = out else {
+    // Snapshot the configured filter-driver names + their command lines.
+    // Walk every `[filter "<sub>"]` section across all config sources via
+    // `config_snapshot()` and emit a deterministic
+    // `filter.<sub>.<key> <value>\n` line per value, mirroring the
+    // multi-valued behavior of `git config --get-regexp '^filter\.'`.
+    let Ok(repo) = gix::open(workdir) else {
         return String::new();
     };
-    if !out.status.success() {
-        return String::new();
+    let snap = repo.config_snapshot();
+    let file = snap.plumbing();
+    let mut lines: Vec<String> = Vec::new();
+    let Some(sections) = file.sections_by_name("filter") else {
+        return sha1_hex(b"");
+    };
+    for section in sections {
+        let header = section.header();
+        let sub = header
+            .subsection_name()
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        let body = section.body();
+        // Stable order: walk events in file order via `value_names`.
+        // `value_names` yields each name once per occurrence, but value
+        // lookup must call `values()` to enumerate all multi-valued
+        // entries — so dedupe names first.
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for name in body.value_names() {
+            seen.insert(name.as_ref().to_string());
+        }
+        for name in seen {
+            for v in body.values(&name) {
+                lines.push(format!("filter.{sub}.{name} {v}\n"));
+            }
+        }
     }
-    sha1_hex(&out.stdout)
+    lines.sort();
+    let joined: String = lines.concat();
+    sha1_hex(joined.as_bytes())
 }
 
 /// Lowercase hex SHA-1 of `bytes`. We avoid pulling in another crate by

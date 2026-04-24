@@ -218,26 +218,11 @@ fn parse_hunk_loc(s: &str) -> (u32, u32) {
 }
 
 pub(crate) fn read_conflicted_paths(repo: &gix::Repository) -> Result<HashSet<String>> {
-    let workdir = git::work_dir(repo)?;
-    let out = Command::new("git")
-        .current_dir(workdir)
-        .args(["ls-files", "-u", "-z"])
-        .output()
-        .map_err(|e| Error::Git(format!("spawn git ls-files -u: {e}")))?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "git ls-files -u failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )));
-    }
+    let entries = git::index_entries(repo)?;
     let mut set = HashSet::new();
-    for chunk in out.stdout.split(|b| *b == 0) {
-        if chunk.is_empty() {
-            continue;
-        }
-        if let Some(tab) = chunk.iter().position(|b| *b == b'\t') {
-            let path = String::from_utf8_lossy(&chunk[tab + 1..]).into_owned();
-            set.insert(path);
+    for entry in entries {
+        if entry.stage != gix::index::entry::Stage::Unconflicted {
+            set.insert(entry.path);
         }
     }
     Ok(set)

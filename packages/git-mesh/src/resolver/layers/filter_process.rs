@@ -196,16 +196,14 @@ fn lookup_custom_filter_process_command(
     name: &str,
 ) -> Option<String> {
     let key = format!("filter.{name}.process");
-    let out = std::process::Command::new("git")
-        .current_dir(workdir)
-        .args(["config", "--get", &key])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+    let repo = gix::open(workdir).ok()?;
+    let v = git::config_string(&repo, &key)?;
+    let trimmed = v.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
 }
 
 pub(crate) fn is_custom_filter_configured(repo: &gix::Repository, name: &str) -> bool {

@@ -171,31 +171,51 @@ fn mesh_names_with_staging(repo: &gix::Repository) -> Result<Vec<String>> {
 }
 
 fn staged_paths(repo: &gix::Repository) -> Result<HashSet<PathBuf>> {
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| anyhow::anyhow!("bare repository"))?;
-    // `git diff --cached --name-only -z` against HEAD. If HEAD doesn't
-    // resolve (initial commit), fall back to `git diff --cached
-    // --name-only -z` which compares against the empty tree.
-    let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(workdir);
-    cmd.args(["diff", "--cached", "--name-only", "-z"]);
-    let out = cmd.output()?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "git diff --cached failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+    if repo.workdir().is_none() {
+        anyhow::bail!("bare repository");
     }
-    let mut set = HashSet::new();
-    for raw in out.stdout.split(|&b| b == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let s = std::str::from_utf8(raw)
-            .map_err(|e| anyhow::anyhow!("non-utf8 staged path: {e}"))?;
-        set.insert(PathBuf::from(s));
-    }
+    // Equivalent to `git diff --cached --name-only -z` against HEAD —
+    // diff HEAD^{tree} vs the worktree index. If HEAD is unborn, compare
+    // against the empty tree. Rename tracking is disabled so renames
+    // decompose into deletion + addition; the union of emitted paths
+    // matches what the previous subprocess produced (and ASCII paths
+    // skip the `core.quotepath` quoting concern entirely).
+    let head_tree = repo
+        .head_tree_id_or_empty()
+        .map_err(|e| anyhow::anyhow!("resolve HEAD tree: {e}"))?;
+    let worktree_index = repo
+        .index_or_load_from_head_or_empty()
+        .map_err(|e| anyhow::anyhow!("load index: {e}"))?;
+    let mut set: HashSet<PathBuf> = HashSet::new();
+    repo.tree_index_status::<std::io::Error>(
+        &head_tree,
+        &worktree_index,
+        None,
+        gix::status::tree_index::TrackRenames::Disabled,
+        |change, _tree_idx, _wt_idx| {
+            use gix::diff::index::ChangeRef;
+            let mut push = |loc: &gix::bstr::BStr| {
+                if let Ok(s) = std::str::from_utf8(loc) {
+                    set.insert(PathBuf::from(s));
+                }
+            };
+            match change {
+                ChangeRef::Addition { location, .. }
+                | ChangeRef::Modification { location, .. }
+                | ChangeRef::Deletion { location, .. } => push(&location),
+                ChangeRef::Rewrite {
+                    source_location,
+                    location,
+                    ..
+                } => {
+                    push(&source_location);
+                    push(&location);
+                }
+            }
+            Ok(std::ops::ControlFlow::Continue(()))
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("tree-index diff: {e}"))?;
     Ok(set)
 }
 

@@ -96,23 +96,7 @@ pub fn create_range_with_extent(
 }
 
 fn gitlink_sha_at(repo: &gix::Repository, commit_sha: &str, path: &str) -> Option<String> {
-    let workdir = repo.workdir()?;
-    let out = std::process::Command::new("git")
-        .current_dir(workdir)
-        .args(["ls-tree", commit_sha, "--", path])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    // Format: <mode> <type> <oid>\t<path>
-    let line = s.lines().next()?;
-    let (meta, _) = line.split_once('\t')?;
-    let mut parts = meta.split_whitespace();
-    let _mode = parts.next()?;
-    let _ty = parts.next()?;
-    let oid = parts.next()?;
+    let (_mode, oid) = git::tree_entry_at(repo, commit_sha, std::path::Path::new(path)).ok()??;
     Some(oid.to_string())
 }
 

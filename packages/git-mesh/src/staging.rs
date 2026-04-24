@@ -569,14 +569,10 @@ pub(crate) fn default_config() -> (CopyDetection, bool) {
 }
 
 fn path_exists_in_tree(repo: &gix::Repository, commit_sha: &str, path: &str) -> bool {
-    let Some(workdir) = repo.workdir() else {
-        return false;
-    };
-    let out = std::process::Command::new("git")
-        .current_dir(workdir)
-        .args(["ls-tree", commit_sha, "--", path])
-        .output();
-    matches!(out, Ok(o) if o.status.success() && !o.stdout.is_empty())
+    matches!(
+        crate::git::tree_entry_at(repo, commit_sha, std::path::Path::new(path)),
+        Ok(Some(_))
+    )
 }
 
 /// Read the sidecar metadata file (stamp + range_id) for `<mesh>.<N>`.
