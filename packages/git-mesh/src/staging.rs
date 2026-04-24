@@ -106,21 +106,6 @@ pub struct Staging {
     pub message: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DriftFinding {
-    pub path: String,
-    pub start: u32,
-    pub end: u32,
-    pub diff: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusView {
-    pub name: String,
-    pub staging: Staging,
-    pub drift: Vec<DriftFinding>,
-}
-
 /// JSON sidecar for `<mesh>.<N>` capturing the normalization-version
 /// stamp and the range_id this staged op acknowledges (if any). Plan
 /// §B2 / §D3.
@@ -557,43 +542,6 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
         }
     }
     Ok(())
-}
-
-pub fn drift_check(repo: &gix::Repository, name: &str) -> Result<Vec<DriftFinding>> {
-    let staging = read_staging(repo, name)?;
-    let mut findings = Vec::new();
-    for add in &staging.adds {
-        if add.anchor.is_some() {
-            continue;
-        }
-        let sidecar_p = sidecar_path(repo, name, add.line_number)?;
-        if !sidecar_p.exists() {
-            continue;
-        }
-        let sidecar = fs::read(&sidecar_p)?;
-        let current = git::read_worktree_bytes(repo, &add.path).unwrap_or_default();
-        if sidecar != current {
-            let (start, end) = match add.extent {
-                RangeExtent::Lines { start, end } => (start, end),
-                RangeExtent::Whole => (0, 0),
-            };
-            findings.push(DriftFinding {
-                path: add.path.clone(),
-                start,
-                end,
-                diff: "working-tree bytes differ from sidecar".into(),
-            });
-        }
-    }
-    Ok(findings)
-}
-
-pub fn status_view(repo: &gix::Repository, name: &str) -> Result<StatusView> {
-    Ok(StatusView {
-        name: name.to_string(),
-        staging: read_staging(repo, name)?,
-        drift: drift_check(repo, name)?,
-    })
 }
 
 // ---------------------------------------------------------------------------

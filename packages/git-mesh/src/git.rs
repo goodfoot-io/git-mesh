@@ -487,7 +487,7 @@ pub fn extract_blob_lines(
 }
 
 /// Placeholder for §5.1 per-commit `log -L` walker. Implemented inside
-/// [`crate::stale`] for now; kept here as an unimplemented hook.
+/// [`crate::resolver`] for now; kept here as an unimplemented hook.
 pub fn log_l_resolve(
     _repo: &gix::Repository,
     _anchor_sha: &str,
@@ -499,12 +499,12 @@ pub fn log_l_resolve(
     // Resolver lives in stale.rs (ported from v1). This hook exists only
     // to preserve the Slice B signature.
     Err(Error::Git(
-        "git::log_l_resolve is not used; call stale::resolve_range".into(),
+        "git::log_l_resolve is not used; call resolver::resolve_range".into(),
     ))
 }
 
 /// Placeholder for a standalone culprit helper; the resolver drives its
-/// own blame walk in [`crate::stale::culprit_commit`].
+/// own blame walk in [`crate::resolver::culprit_commit`].
 pub fn culprit_commit(
     _repo: &gix::Repository,
     _anchor_sha: &str,
@@ -513,7 +513,7 @@ pub fn culprit_commit(
     _end: u32,
 ) -> Result<Option<String>> {
     Err(Error::Git(
-        "git::culprit_commit is not used; call stale::culprit_commit".into(),
+        "git::culprit_commit is not used; call resolver::culprit_commit".into(),
     ))
 }
 

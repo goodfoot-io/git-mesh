@@ -213,8 +213,8 @@ pub enum Error {
     #[error("message required for first commit on mesh: {0}")]
     MessageRequired(String),
 
-    /// Working-tree drift detected by `git mesh status` or commit-time
-    /// drift check; sidecar bytes differ from the file on disk or HEAD blob (§6.3).
+    /// Working-tree drift detected by commit-time drift check; sidecar
+    /// bytes differ from the file on disk or HEAD blob (§6.3).
     #[error("working tree drift: {path}#L{start}-L{end}")]
     WorkingTreeDrift {
         path: String,

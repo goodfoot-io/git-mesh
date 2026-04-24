@@ -3,11 +3,10 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::staging::{StagedConfig, StatusView};
+use git_mesh::staging::StagedConfig;
 use git_mesh::types::CopyDetection;
 use git_mesh::{
-    append_add, append_config, append_remove, clear_staging, drift_check, read_staging,
-    set_message, status_view,
+    append_add, append_config, append_remove, clear_staging, read_staging, set_message,
 };
 use support::TestRepo;
 
@@ -143,57 +142,3 @@ fn read_staging_empty_when_no_file() -> Result<()> {
     Ok(())
 }
 
-#[test]
-
-fn drift_check_negative_when_worktree_unchanged() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let gix = repo.gix_repo()?;
-    append_add(&gix, "m", "file1.txt", 1, 5, None)?;
-    assert!(drift_check(&gix, "m")?.is_empty());
-    Ok(())
-}
-
-#[test]
-
-fn drift_check_positive_when_worktree_mutated() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let gix = repo.gix_repo()?;
-    append_add(&gix, "m", "file1.txt", 1, 5, None)?;
-    // Mutate worktree AFTER staging.
-    repo.write_file(
-        "file1.txt",
-        "DRIFT\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    let findings = drift_check(&gix, "m")?;
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].path, "file1.txt");
-    Ok(())
-}
-
-#[test]
-
-fn drift_check_skips_explicit_anchor_adds() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let head = repo.head_sha()?;
-    let gix = repo.gix_repo()?;
-    append_add(&gix, "m", "file1.txt", 1, 5, Some(&head))?;
-    repo.write_file(
-        "file1.txt",
-        "DRIFT\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    // Explicit anchor => skipped by drift_check per §6.3.
-    assert!(drift_check(&gix, "m")?.is_empty());
-    Ok(())
-}
-
-#[test]
-
-fn status_view_assembles_staging_and_drift() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let gix = repo.gix_repo()?;
-    append_add(&gix, "m", "file1.txt", 1, 5, None)?;
-    let v: StatusView = status_view(&gix, "m")?;
-    assert_eq!(v.name, "m");
-    assert_eq!(v.staging.adds.len(), 1);
-    Ok(())
-}

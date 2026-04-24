@@ -6,7 +6,7 @@ use crate::{Error, Result};
 /// From §10.2 "Reserved names."
 pub const RESERVED_MESH_NAMES: &[&str] = &[
     "add", "rm", "commit", "message", "restore", "revert", "delete", "mv", "stale", "fetch",
-    "push", "doctor", "log", "config", "status", "ls", "help",
+    "push", "doctor", "log", "config", "ls", "help",
 ];
 
 /// Validate a mesh name against §3.5 and §10.2.

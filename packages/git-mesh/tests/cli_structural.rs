@@ -107,7 +107,7 @@ fn install_hooks(repo: &TestRepo) -> Result<()> {
     std::fs::write(hooks.join("post-commit"), "#!/bin/sh\ngit mesh commit\n")?;
     std::fs::write(
         hooks.join("pre-commit"),
-        "#!/bin/sh\ngit mesh status --check\n",
+        "#!/bin/sh\ngit mesh stale --no-worktree\n",
     )?;
     Ok(())
 }

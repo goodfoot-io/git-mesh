@@ -9,7 +9,7 @@
 //! * [`mesh`]        — mesh read/commit/structural (§6).
 //! * [`staging`]     — `.git/mesh/staging/` area (§6.3, §6.4).
 //! * [`file_index`]  — `.git/mesh/file-index` lookup table (§3.4).
-//! * [`stale`]       — resolver (§5).
+//! * [`resolver`]    — layered staleness resolver (§5).
 //! * [`sync`]        — fetch/push + lazy refspec (§7).
 //! * [`validation`]  — name validation (§3.5, §10.2).
 //! * [`cli`]         — clap surface; consumed by the binary.
@@ -20,7 +20,7 @@ pub mod git;
 pub mod mesh;
 pub mod range;
 pub mod staging;
-pub mod stale;
+pub mod resolver;
 pub mod sync;
 pub mod types;
 pub mod validation;
@@ -33,12 +33,11 @@ pub use mesh::{
     resolve_commit_ish, restore_mesh, revert_mesh, show_mesh, show_mesh_at,
 };
 pub use range::{create_range, parse_range, range_ref_path, read_range, serialize_range};
+pub use resolver::{culprit_commit, resolve_mesh, resolve_range, stale_meshes};
 pub use staging::{
-    DriftFinding, StagedAdd, StagedConfig, StagedRemove, Staging, StatusView, append_add,
-    append_config, append_remove, clear_staging, drift_check, read_staging, set_message,
-    status_view,
+    StagedAdd, StagedConfig, StagedRemove, Staging, append_add, append_config, append_remove,
+    clear_staging, read_staging, set_message,
 };
-pub use stale::{culprit_commit, resolve_mesh, resolve_range, stale_meshes};
 pub use sync::{default_remote, ensure_refspec_configured, fetch_mesh_refs, push_mesh_refs};
 pub use types::*;
 pub use validation::{RESERVED_MESH_NAMES, validate_mesh_name, validate_range_id};

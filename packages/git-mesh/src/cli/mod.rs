@@ -86,9 +86,6 @@ pub enum Commands {
 
     /// Audit the local mesh setup (§6.7).
     Doctor(DoctorArgs),
-
-    /// Show staging-area state; `--check` is the pre-commit gate (§6.4).
-    Status(StatusArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -289,17 +286,6 @@ pub struct DoctorArgs {
     pub strict: bool,
 }
 
-#[derive(Debug, clap::Args)]
-pub struct StatusArgs {
-    /// Mesh name. Required unless `--check` is passed.
-    pub name: Option<String>,
-
-    /// Exit non-zero if any staged range differs from the working tree;
-    /// used by the suggested pre-commit hook (§6.4).
-    #[arg(long, conflicts_with = "name")]
-    pub check: bool,
-}
-
 /// Parse a `<path>#L<start>-L<end>` range address (§10.3).
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
@@ -330,7 +316,6 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         Commands::Rm(args) => commit::run_rm(repo, args),
         Commands::Message(args) => commit::run_message(repo, args),
         Commands::Commit(args) => commit::run_commit(repo, args),
-        Commands::Status(args) => commit::run_status(repo, args),
         Commands::Config(args) => commit::run_config(repo, args),
         Commands::Restore(args) => structural::run_restore(repo, args),
         Commands::Revert(args) => structural::run_revert(repo, args),

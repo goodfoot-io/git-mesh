@@ -1,18 +1,51 @@
-//! CLI: add, rm, message, commit, status, config.
+//! CLI: add, rm, message, commit, config.
 
 mod support;
 
 use anyhow::Result;
 use support::TestRepo;
 
+/// Concatenate every file in `.git/mesh/staging/` (ops, sidecars, msg)
+/// for assertion purposes — replaces the deleted `git mesh status`
+/// view used by these tests to check what was staged.
+fn staging_dump(repo: &TestRepo, mesh: &str) -> String {
+    let dir = repo
+        .path()
+        .join(".git")
+        .join("mesh")
+        .join("staging");
+    let mut out = String::new();
+    if !dir.exists() {
+        return out;
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .map(|i| i.flatten().collect())
+        .unwrap_or_default();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        // Match `<mesh>` ops file, `<mesh>.<N>` sidecars, `<mesh>.msg`,
+        // and the metadata sidecars `<mesh>.<N>.meta`.
+        if fname == mesh
+            || fname.starts_with(&format!("{mesh}."))
+        {
+            if let Ok(s) = std::fs::read_to_string(entry.path()) {
+                out.push_str(&s);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 #[test]
 
 fn cli_add_stages_range() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(status.contains("file1.txt"));
-    assert!(status.contains("L1-L5"));
+    assert!(status.contains("1-5") || status.contains("L1-L5"));
     Ok(())
 }
 
@@ -55,7 +88,7 @@ fn cli_add_is_atomic_when_any_range_is_invalid() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["add", "m", "file1.txt#L1-L5", "file2.txt#L99-L100"])?;
     assert!(!out.status.success());
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(!status.contains("file1.txt#L1-L5"), "status={status}");
     Ok(())
 }
@@ -65,7 +98,7 @@ fn cli_add_is_atomic_when_any_path_is_missing() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["add", "m", "file1.txt#L1-L5", "no/such.txt#L1-L2"])?;
     assert!(!out.status.success());
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(!status.contains("file1.txt#L1-L5"), "status={status}");
     Ok(())
 }
@@ -103,7 +136,7 @@ fn cli_add_accepts_paths_with_spaces_alongside_other_ranges() -> Result<()> {
         "dir with spaces/file 3.txt#L1-L2",
         "file1.txt#L1-L3",
     ])?;
-    let status = repo.mesh_stdout(["status", "spaced"])?;
+    let status = staging_dump(&repo, "spaced");
     assert!(
         status.contains("dir with spaces/file 3.txt#L1-L2"),
         "status={status}"
@@ -120,7 +153,7 @@ fn cli_rm_stages_remove() -> Result<()> {
     repo.mesh_stdout(["message", "m", "-m", "seed"])?;
     repo.mesh_stdout(["commit", "m"])?;
     repo.mesh_stdout(["rm", "m", "file1.txt#L1-L5"])?;
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(status.contains("remove") || status.contains("rm"));
     Ok(())
 }
@@ -130,7 +163,7 @@ fn cli_rm_stages_remove() -> Result<()> {
 fn cli_message_inline() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["message", "m", "-m", "Hello"])?;
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(status.contains("Hello"));
     Ok(())
 }
@@ -161,30 +194,6 @@ fn cli_commit_empty_is_error() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["commit", "empty"])?;
     assert!(!out.status.success());
-    Ok(())
-}
-
-#[test]
-
-fn cli_status_check_exit_code_clean() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let out = repo.run_mesh(["status", "--check"])?;
-    assert_eq!(out.status.code(), Some(0));
-    Ok(())
-}
-
-#[test]
-
-fn cli_status_check_exit_code_drifty() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    // drift the worktree
-    repo.write_file(
-        "file1.txt",
-        "DRIFT\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    let out = repo.run_mesh(["status", "--check"])?;
-    assert_ne!(out.status.code(), Some(0));
     Ok(())
 }
 
@@ -234,60 +243,6 @@ fn cli_commit_reserved_name_rejected() -> Result<()> {
     // `stale` is on the reserved list — clap may treat it as a subcommand.
     let out = repo.run_mesh(["add", "stale", "file1.txt#L1-L5"])?;
     assert!(!out.status.success());
-    Ok(())
-}
-
-#[test]
-fn cli_status_header_matches_git_show_shape() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    repo.mesh_stdout(["message", "m", "-m", "Initial subject"])?;
-    repo.mesh_stdout(["commit", "m"])?;
-    // Stage a second add without committing.
-    repo.mesh_stdout(["add", "m", "file2.txt#L1-L3"])?;
-    let out = repo.mesh_stdout(["status", "m"])?;
-    assert!(out.starts_with("mesh m\n"), "header: {out}");
-    assert!(out.contains("commit "));
-    assert!(out.contains("Author:"));
-    assert!(out.contains("Date:"));
-    assert!(out.contains("    Initial subject"));
-    assert!(out.contains("Staged changes:"));
-    assert!(out.contains("  add     file2.txt#L1-L3"));
-    Ok(())
-}
-
-#[test]
-fn cli_status_shows_staged_message_and_config() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    repo.mesh_stdout(["message", "m", "-m", "seed"])?;
-    repo.mesh_stdout(["commit", "m"])?;
-    // Stage a fresh message + config on top of the committed mesh.
-    repo.mesh_stdout(["message", "m", "-m", "my staged subject"])?;
-    repo.mesh_stdout(["config", "m", "copy-detection", "off"])?;
-    let out = repo.mesh_stdout(["status", "m"])?;
-    assert!(out.contains("Staged message:"));
-    assert!(out.contains("  my staged subject"));
-    assert!(out.contains("  config  copy-detection off"));
-    Ok(())
-}
-
-#[test]
-fn cli_status_check_prints_drift_diff() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    repo.write_file(
-        "file1.txt",
-        "DRIFT\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
-    )?;
-    let out = repo.run_mesh(["status", "--check"])?;
-    assert_ne!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Working tree drift:"));
-    assert!(stdout.contains("file1.txt#L1-L5"));
-    assert!(stdout.contains("--- file1.txt#L1-L5 (staged)"));
-    assert!(stdout.contains("+++ file1.txt#L1-L5 (working tree)"));
-    assert!(stdout.contains("@@ "));
     Ok(())
 }
 
@@ -350,7 +305,7 @@ fn cli_message_edit_blank_template_new_mesh() -> Result<()> {
         "stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(status.contains("Hello from editor"), "status={status}");
     Ok(())
 }
@@ -372,7 +327,7 @@ fn cli_message_edit_prepopulated_from_existing() -> Result<()> {
     }
     let out = run_mesh_with_editor(&repo, &editor_path, &["message", "m", "--edit"])?;
     assert!(out.status.success());
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(status.contains("Pre-existing text"), "status={status}");
     assert!(status.contains("-edited"), "status={status}");
     Ok(())
@@ -440,7 +395,7 @@ fn cli_message_bare_triggers_editor() -> Result<()> {
         "stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(status.contains("bare edit worked"), "status={status}");
     Ok(())
 }
@@ -467,7 +422,7 @@ fn cli_add_rejects_duplicate_ranges_within_args() -> Result<()> {
         "stderr={stderr}"
     );
     // And nothing was staged.
-    let status = repo.mesh_stdout(["status", "m"])?;
+    let status = staging_dump(&repo, "m");
     assert!(!status.contains("L1-L2"), "status={status}");
     Ok(())
 }

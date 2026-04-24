@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use crate::cli::{StaleArgs, StaleFormat};
-use crate::stale::{resolve_mesh, stale_meshes};
+use crate::resolver::{resolve_mesh, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
     DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
