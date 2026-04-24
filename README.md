@@ -29,7 +29,7 @@ Common command shape:
 ```bash
 git mesh doctor
 git mesh add frontend-backend-sync src/client.ts#L10-L40 src/server.ts#L20-L64
-git mesh message frontend-backend-sync -m "Client request matches server handler"
+git mesh why frontend-backend-sync -m "Client request matches server handler"
 git mesh commit frontend-backend-sync
 git mesh stale frontend-backend-sync
 ```

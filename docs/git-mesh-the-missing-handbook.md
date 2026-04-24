@@ -535,6 +535,175 @@ Report without gating:
 git mesh stale --no-exit-code --format=json > mesh-stale.json
 ```
 
+## Worked examples
+
+These examples show the layered resolver in action against realistic
+fixtures. Every command shown is a real command the current CLI accepts.
+
+### Partial staging with `git add -p`
+
+This example demonstrates how the `src` column distinguishes Index drift
+from Worktree drift in a single file with two unrelated edits.
+
+Start with a 10-line file and a mesh range covering all of it:
+
+```bash
+cat > file1.txt <<'EOF'
+line1
+line2
+line3
+line4
+line5
+line6
+line7
+line8
+line9
+line10
+EOF
+git add file1.txt && git commit -m "seed file1"
+
+git mesh add m file1.txt#L1-L10
+git mesh why m -m "covers file1"
+git mesh commit m
+```
+
+Edit two non-adjacent lines, then stage only the first edit with
+`git add -p` (answer `y` to the first hunk, `n` to the second):
+
+```bash
+sed -i '1s/line1/lineONE/' file1.txt
+sed -i '10s/line10/lineTEN/' file1.txt
+git add -p file1.txt    # stage hunk for line 1; skip hunk for line 10
+```
+
+Now `file1.txt` contains the line-10 edit on disk but only the line-1
+edit in the index. Run stale:
+
+```bash
+git mesh stale m
+```
+
+The range surfaces twice — once per drifting layer — and the porcelain
+`src` column makes the layering explicit:
+
+```text
+CHANGED  m  file1.txt#L1-L10  src=I   # Index: lineONE staged
+CHANGED  m  file1.txt#L1-L10  src=W   # Worktree: lineTEN unstaged
+```
+
+Exit code is `1`. To silence Worktree noise during a pre-commit dry-run:
+
+```bash
+git mesh stale m --no-worktree
+```
+
+…leaves only the Index finding. Run `git mesh add m file1.txt#L1-L10`
+to acknowledge the staged drift; the next `git mesh stale m --no-worktree`
+prints the finding with `(ack)` and exits `0`.
+
+### Whole-file pin on a binary asset
+
+Pin a hero image so a swap of the asset surfaces the copy that describes
+it. Whole-file pins compare blob OIDs at the deepest enabled layer:
+
+```bash
+git add assets/hero.png && git commit -m "add hero asset"
+
+git mesh add web assets/hero.png            # whole-file: no #L... suffix
+git mesh why web -m "Marketing copy describes the hero asset"
+git mesh commit web
+```
+
+Replace the asset and stale reports `CHANGED`:
+
+```bash
+cp assets/hero-v2.png assets/hero.png
+git add assets/hero.png
+git mesh stale web
+# CHANGED  web  assets/hero.png  (whole)  src=I
+```
+
+There is no slice diff and no per-line culprit — the signal is "the bytes
+of this file are not what they were when you pinned it." Re-anchor with
+the same whole-file form to acknowledge:
+
+```bash
+git mesh add web assets/hero.png
+git mesh stale web
+# CHANGED  web  assets/hero.png  (whole)  src=I  (ack)
+# exit 0
+```
+
+The same pattern works for symlinks (compared by target string) and
+submodule gitlinks (compared by gitlink SHA without opening the
+submodule).
+
+### LFS-tracked text: cached vs. not cached
+
+LFS-tracked text files behave like regular text when the content is
+locally cached, and surface `CONTENT_UNAVAILABLE(LfsNotFetched)` when it
+is not. Use `--ignore-unavailable` on fresh clones to keep CI green
+without auto-fetching.
+
+Set up an LFS-tracked TSV and pin a line range:
+
+```bash
+git lfs install --local
+git lfs track "*.tsv"
+git add .gitattributes
+
+git lfs fetch                                 # ensure cache is warm
+git mesh add perf-notes benchmarks/results.tsv#L1-L200
+git mesh why perf-notes -m "Perf doc cites the first 200 rows"
+git mesh commit perf-notes
+```
+
+**Cached case.** A tweak to row 42 produces a normal slice-level diff:
+
+```bash
+sed -i '42s/.*/row42-updated/' benchmarks/results.tsv
+git mesh stale perf-notes --patch
+# CHANGED  perf-notes  benchmarks/results.tsv#L1-L200  src=W
+#   ... unified diff of the slice ...
+```
+
+**Not-cached case.** On a fresh clone where `git lfs fetch` has not run,
+the LFS pointer resolves but the real bytes do not:
+
+```bash
+git clone --no-checkout … && git checkout HEAD -- .
+# (no git lfs fetch)
+git mesh stale perf-notes
+# CONTENT_UNAVAILABLE(LfsNotFetched)  perf-notes  benchmarks/results.tsv#L1-L200
+# exit 1
+```
+
+Two ways forward:
+
+```bash
+git lfs fetch && git mesh stale perf-notes               # resolve normally
+git mesh stale perf-notes --ignore-unavailable           # report, exit 0
+```
+
+The resolver never auto-fetches. `--ignore-unavailable` only downgrades
+`CONTENT_UNAVAILABLE` findings; real drift findings still fail as usual.
+
+### CI recipe: HEAD-only mode
+
+The three `--no-*` flags collapse the resolver to its HEAD-layer floor —
+the stable invariant for CI runners that should not see checkout noise:
+
+```bash
+# In CI: ignore the runner's worktree, the runner's index, and any
+# staged mesh ops. Only HEAD-anchored drift counts.
+git mesh fetch origin
+git mesh stale --no-worktree --no-index --no-staged-mesh \
+  --format=github-actions
+```
+
+See "CI patterns" below for `--since`, `--ignore-unavailable`, and
+advisory-report variants.
+
 ## Team workflow
 
 ### Prefer small, named relationships
