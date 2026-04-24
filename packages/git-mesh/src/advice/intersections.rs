@@ -1,0 +1,1487 @@
+//! Structural intersections (T1–T11).
+//!
+//! Each detector queries the advice DB — `{read,write,commit}_events`,
+//! `mesh_ranges`, seen-set — together with the current gix repo to emit
+//! `Candidate` rows. One `Candidate` per (mesh, reason-kind, partner,
+//! trigger) tuple; the flush pipeline dedups against `flush_additions`.
+
+use anyhow::Result;
+use rusqlite::Connection;
+
+/// Density ladder — §12.5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Density {
+    /// Partner list only.
+    L0,
+    /// Partner list + one excerpt.
+    L1,
+    /// Partner list + excerpt + ready-to-run command.
+    L2,
+}
+
+/// Reason-kind: matches the T1…T11 message-type inventory. Used as a
+/// stable dedup key and as the key for per-reason doc topics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReasonKind {
+    /// T1 partner list.
+    Partner,
+    /// T2 partner excerpt on write.
+    WriteAcross,
+    /// T3 rename literal in partner.
+    RenameLiteral,
+    /// T4 range collapse on partner.
+    RangeCollapse,
+    /// T5 losing coherence.
+    LosingCoherence,
+    /// T6 symbol rename hits in partner.
+    SymbolRename,
+    /// T7 new-group candidate.
+    NewGroup,
+    /// T8 staging cross-cut.
+    StagingCrossCut,
+    /// T9 empty-mesh risk.
+    EmptyMesh,
+    /// T10 pending-commit re-anchor.
+    PendingCommit,
+    /// T11 terminal status.
+    Terminal,
+}
+
+impl ReasonKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasonKind::Partner => "partner",
+            ReasonKind::WriteAcross => "write_across",
+            ReasonKind::RenameLiteral => "rename_literal",
+            ReasonKind::RangeCollapse => "range_collapse",
+            ReasonKind::LosingCoherence => "losing_coherence",
+            ReasonKind::SymbolRename => "symbol_rename",
+            ReasonKind::NewGroup => "new_group",
+            ReasonKind::StagingCrossCut => "staging_cross_cut",
+            ReasonKind::EmptyMesh => "empty_mesh",
+            ReasonKind::PendingCommit => "pending_commit",
+            ReasonKind::Terminal => "terminal",
+        }
+    }
+
+    pub fn doc_topic(self) -> Option<&'static str> {
+        match self {
+            ReasonKind::Partner => None, // L0 — no topic
+            ReasonKind::WriteAcross => Some("editing across files"),
+            ReasonKind::RenameLiteral => Some("renames"),
+            ReasonKind::RangeCollapse => Some("shrinking ranges"),
+            ReasonKind::LosingCoherence => Some("narrow or retire"),
+            ReasonKind::SymbolRename => Some("exported symbols"),
+            ReasonKind::NewGroup => Some("recording a group"),
+            ReasonKind::StagingCrossCut => Some("cross-mesh overlap"),
+            ReasonKind::EmptyMesh => Some("empty groups"),
+            ReasonKind::PendingCommit => None, // L0 — no topic
+            ReasonKind::Terminal => Some("terminal states"),
+        }
+    }
+
+    pub fn default_density(self) -> Density {
+        match self {
+            ReasonKind::Partner | ReasonKind::PendingCommit | ReasonKind::Terminal => Density::L0,
+            ReasonKind::WriteAcross => Density::L1,
+            _ => Density::L2,
+        }
+    }
+}
+
+/// A surfacing candidate — one row per (mesh, reason, partner, trigger).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub mesh: String,
+    pub mesh_why: String,
+    pub reason_kind: ReasonKind,
+    pub partner_path: String,
+    pub partner_start: Option<i64>,
+    pub partner_end: Option<i64>,
+    /// The file the developer just touched (trigger range) — only used for
+    /// dedup and for the command text. May be empty.
+    pub trigger_path: String,
+    pub trigger_start: Option<i64>,
+    pub trigger_end: Option<i64>,
+    /// Bracket marker appended to the partner line (CHANGED, STAGED, …).
+    /// Empty = no marker.
+    pub partner_marker: String,
+    /// Prose clause after an em-dash on the partner line. Empty = none.
+    pub partner_clause: String,
+    pub density: Density,
+    /// Optional ready-to-run command (L2). Empty for L0/L1.
+    pub command: String,
+    /// L1/L2 excerpt block attached to a specific partner path+range. Empty
+    /// for L0.
+    pub excerpt_of_path: String,
+    pub excerpt_start: Option<i64>,
+    pub excerpt_end: Option<i64>,
+}
+
+impl Candidate {
+    fn bare(
+        mesh: &str,
+        mesh_why: &str,
+        kind: ReasonKind,
+        partner_path: &str,
+        partner_start: Option<i64>,
+        partner_end: Option<i64>,
+        trigger_path: &str,
+    ) -> Self {
+        Self {
+            mesh: mesh.to_string(),
+            mesh_why: mesh_why.to_string(),
+            reason_kind: kind,
+            partner_path: partner_path.to_string(),
+            partner_start,
+            partner_end,
+            trigger_path: trigger_path.to_string(),
+            trigger_start: None,
+            trigger_end: None,
+            partner_marker: String::new(),
+            partner_clause: String::new(),
+            density: kind.default_density(),
+            command: String::new(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+        }
+    }
+}
+
+/// A single row from the flush-scoped `mesh_ranges` snapshot.
+#[derive(Clone, Debug)]
+pub struct MeshRangeRow {
+    pub mesh: String,
+    pub path: String,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+    pub status: String,
+    pub source: String,
+    pub ack: bool,
+}
+
+/// Load all mesh_ranges rows from the DB, indexed by mesh.
+pub fn load_mesh_ranges(conn: &Connection) -> Result<Vec<MeshRangeRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT mesh, path, start_line, end_line, COALESCE(status,''), COALESCE(source,''), ack \
+         FROM mesh_ranges",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(MeshRangeRow {
+                mesh: r.get(0)?,
+                path: r.get(1)?,
+                start_line: r.get(2)?,
+                end_line: r.get(3)?,
+                status: r.get(4)?,
+                source: r.get(5)?,
+                ack: {
+                    let v: i64 = r.get(6)?;
+                    v != 0
+                },
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Collect the distinct touched paths from read+write events.
+pub fn session_touched_paths(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT path FROM (\
+           SELECT path FROM read_events WHERE path IS NOT NULL \
+           UNION \
+           SELECT path FROM write_events WHERE path IS NOT NULL)",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Mesh why-messages from a snapshot-style lookup — populated from
+/// `stale_meshes` output during flush and persisted on the `mesh_ranges`
+/// side channel. For simplicity we accept a map at call time.
+pub type WhyMap = std::collections::HashMap<String, String>;
+
+fn why_for(whys: &WhyMap, mesh: &str) -> String {
+    whys.get(mesh).cloned().unwrap_or_default()
+}
+
+fn marker_for_status(status: &str) -> &'static str {
+    match status {
+        "CHANGED" => "[CHANGED]",
+        "MOVED" => "[MOVED]",
+        "ORPHANED" => "[ORPHANED]",
+        "MERGE_CONFLICT" => "[CONFLICT]",
+        "SUBMODULE" => "[SUBMODULE]",
+        _ => "",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T1 — partner list. Baseline: any touched path intersecting a mesh.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t1(
+    conn: &Connection,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let touched = session_touched_paths(conn)?;
+    let mut out = Vec::new();
+
+    // Meshes that have a range on any touched path.
+    let mut meshes_touching: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for row in mesh_ranges {
+        if touched.iter().any(|t| t == &row.path) {
+            meshes_touching.insert(row.mesh.clone());
+        }
+    }
+
+    for mesh in &meshes_touching {
+        // Find trigger path(s) for this mesh — touched paths that the mesh
+        // has a range on. Emit one Candidate per (partner, trigger) combo,
+        // where partner ranges are the *other* ranges in the mesh.
+        let mesh_rows: Vec<&MeshRangeRow> =
+            mesh_ranges.iter().filter(|r| &r.mesh == mesh).collect();
+        let triggers: Vec<&MeshRangeRow> = mesh_rows
+            .iter()
+            .copied()
+            .filter(|r| touched.iter().any(|t| t == &r.path))
+            .collect();
+        for trigger in &triggers {
+            for partner in &mesh_rows {
+                if partner.path == trigger.path
+                    && partner.start_line == trigger.start_line
+                    && partner.end_line == trigger.end_line
+                {
+                    continue;
+                }
+                let mut c = Candidate::bare(
+                    mesh,
+                    &why_for(whys, mesh),
+                    ReasonKind::Partner,
+                    &partner.path,
+                    partner.start_line,
+                    partner.end_line,
+                    &trigger.path,
+                );
+                c.trigger_start = trigger.start_line;
+                c.trigger_end = trigger.end_line;
+                c.partner_marker = marker_for_status(&partner.status).to_string();
+                if matches!(
+                    partner.status.as_str(),
+                    "ORPHANED" | "MERGE_CONFLICT" | "SUBMODULE"
+                ) {
+                    // T11 terminal promotes this reason-kind.
+                    c.reason_kind = ReasonKind::Terminal;
+                }
+                out.push(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T2 — partner excerpt on write. A write event whose path lives in a mesh
+// produces an L1 candidate with excerpts of the *other* partners.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t2(
+    conn: &Connection,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT path FROM write_events WHERE path IS NOT NULL",
+    )?;
+    let written: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    let mut meshes_touching: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for row in mesh_ranges {
+        if written.iter().any(|w| w == &row.path) {
+            meshes_touching.insert(row.mesh.clone());
+        }
+    }
+
+    for mesh in &meshes_touching {
+        let mesh_rows: Vec<&MeshRangeRow> =
+            mesh_ranges.iter().filter(|r| &r.mesh == mesh).collect();
+        let triggers: Vec<&MeshRangeRow> = mesh_rows
+            .iter()
+            .copied()
+            .filter(|r| written.iter().any(|w| w == &r.path))
+            .collect();
+        for trigger in &triggers {
+            for partner in &mesh_rows {
+                if partner.path == trigger.path {
+                    continue;
+                }
+                let mut c = Candidate::bare(
+                    mesh,
+                    &why_for(whys, mesh),
+                    ReasonKind::WriteAcross,
+                    &partner.path,
+                    partner.start_line,
+                    partner.end_line,
+                    &trigger.path,
+                );
+                c.trigger_start = trigger.start_line;
+                c.trigger_end = trigger.end_line;
+                c.partner_marker = marker_for_status(&partner.status).to_string();
+                c.excerpt_of_path = partner.path.clone();
+                c.excerpt_start = partner.start_line;
+                c.excerpt_end = partner.end_line;
+                c.density = Density::L1;
+                out.push(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T3 — rename literal in partner. Given a write event whose path is a mesh
+// path, and whose pre→post blob reveals a rename of a co-mesh path/basename,
+// surface partners that still contain the old literal.
+// We keep this conservative: check if any partner range contains the
+// (current) basename of another mesh path — as a stand-in, we surface
+// partners whose body contains the trigger's basename as a plain substring
+// and flag only when an edit touched the trigger.
+//
+// Greenfield scope: full rename detection via gix `--follow` is out; we
+// structurally detect the pattern plan §11.7 targets — "partner contains a
+// mesh-member path/basename as literal" — over the mesh itself.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t3(
+    conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    // meshes with ≥2 ranges; for each pair (a, b), if the body of a's range
+    // contains b's basename as a literal and the session touched b, emit.
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT path FROM write_events WHERE path IS NOT NULL")?;
+    let written: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if written.is_empty() {
+        return Ok(out);
+    }
+
+    let mut by_mesh: std::collections::BTreeMap<String, Vec<&MeshRangeRow>> =
+        std::collections::BTreeMap::new();
+    for row in mesh_ranges {
+        by_mesh.entry(row.mesh.clone()).or_default().push(row);
+    }
+
+    for (mesh, rows) in &by_mesh {
+        if rows.len() < 2 {
+            continue;
+        }
+        for trigger in rows {
+            if !written.iter().any(|w| w == &trigger.path) {
+                continue;
+            }
+            let tbase =
+                std::path::Path::new(&trigger.path).file_name().map(|s| s.to_string_lossy().into_owned());
+            let Some(tbase) = tbase else { continue };
+            if tbase.is_empty() {
+                continue;
+            }
+            for partner in rows {
+                if partner.path == trigger.path {
+                    continue;
+                }
+                let Some(body) = read_partner_bytes(repo, partner) else {
+                    continue;
+                };
+                if body.contains(&tbase) {
+                    let mut c = Candidate::bare(
+                        mesh,
+                        &why_for(whys, mesh),
+                        ReasonKind::RenameLiteral,
+                        &partner.path,
+                        partner.start_line,
+                        partner.end_line,
+                        &trigger.path,
+                    );
+                    c.trigger_start = trigger.start_line;
+                    c.trigger_end = trigger.end_line;
+                    c.partner_clause = format!("still references \"{tbase}\"");
+                    c.excerpt_of_path = partner.path.clone();
+                    c.excerpt_start = partner.start_line;
+                    c.excerpt_end = partner.end_line;
+                    c.density = Density::L2;
+                    c.command = format!(
+                        "git mesh add {mesh} {}{}",
+                        trigger.path,
+                        addr_suffix(trigger.start_line, trigger.end_line)
+                    );
+                    out.push(c);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T4 — range collapse. Post-edit extent ≤ 25% of anchored extent (skip
+// single-line anchors).
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t4(
+    conn: &Connection,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    // For each write event with a range, find meshes whose range on the
+    // same path has extent > 4× the write's extent and (start,end) overlap.
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT path, start_line, end_line FROM write_events \
+         WHERE path IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL",
+    )?;
+    let writes: Vec<(String, i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (wpath, ws, we) in &writes {
+        let w_extent = (we - ws + 1).max(1);
+        for row in mesh_ranges {
+            if &row.path != wpath {
+                continue;
+            }
+            let (Some(ms), Some(me)) = (row.start_line, row.end_line) else {
+                continue;
+            };
+            let m_extent = (me - ms + 1).max(1);
+            if m_extent <= 1 {
+                continue; // skip single-line anchors
+            }
+            // overlap?
+            if we < &ms || ws > &me {
+                continue;
+            }
+            if w_extent * 4 > m_extent {
+                continue;
+            }
+            // Collapse detected — surface the *partner* (other ranges in the
+            // mesh), per plan §11.8.
+            for partner in mesh_ranges.iter().filter(|r| r.mesh == row.mesh) {
+                if partner.path == row.path
+                    && partner.start_line == row.start_line
+                    && partner.end_line == row.end_line
+                {
+                    continue;
+                }
+                let mut c = Candidate::bare(
+                    &row.mesh,
+                    &why_for(whys, &row.mesh),
+                    ReasonKind::RangeCollapse,
+                    &partner.path,
+                    partner.start_line,
+                    partner.end_line,
+                    wpath,
+                );
+                c.trigger_start = Some(*ws);
+                c.trigger_end = Some(*we);
+                c.excerpt_of_path = partner.path.clone();
+                c.excerpt_start = partner.start_line;
+                c.excerpt_end = partner.end_line;
+                c.density = Density::L2;
+                c.command = format!(
+                    "git mesh rm {m} {p}#L{s}-L{e}\n#   git mesh add {m} {p}#L{s}-L{e}",
+                    m = row.mesh,
+                    p = row.path,
+                    s = ms,
+                    e = me,
+                );
+                out.push(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T5 — losing coherence. Mesh has any FRESH range and all other ranges are
+// non-FRESH (CHANGED/DELETED/MOVED/…). Trigger is any touched path on that
+// mesh.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t5(
+    conn: &Connection,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    let touched = session_touched_paths(conn)?;
+    let mut by_mesh: std::collections::BTreeMap<String, Vec<&MeshRangeRow>> =
+        std::collections::BTreeMap::new();
+    for row in mesh_ranges {
+        by_mesh.entry(row.mesh.clone()).or_default().push(row);
+    }
+    for (mesh, rows) in &by_mesh {
+        if rows.len() < 2 {
+            continue;
+        }
+        let fresh_count = rows.iter().filter(|r| r.status == "FRESH").count();
+        let non_fresh = rows.len() - fresh_count;
+        if !(fresh_count >= 1 && non_fresh >= rows.len().saturating_sub(1) && non_fresh >= 2) {
+            continue;
+        }
+        // Require at least one touched path on this mesh.
+        let Some(trigger) = rows.iter().find(|r| touched.iter().any(|t| t == &r.path)) else {
+            continue;
+        };
+        for partner in rows {
+            let mut c = Candidate::bare(
+                mesh,
+                &why_for(whys, mesh),
+                ReasonKind::LosingCoherence,
+                &partner.path,
+                partner.start_line,
+                partner.end_line,
+                &trigger.path,
+            );
+            c.trigger_start = trigger.start_line;
+            c.trigger_end = trigger.end_line;
+            c.partner_marker = marker_for_status(&partner.status).to_string();
+            c.density = Density::L2;
+            c.command = format!("git mesh rm {mesh} <path>");
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T6 — symbol rename hits in partner. Heuristic: write events whose
+// pre→post blobs differ in exported symbol names that appear as
+// word-boundary matches in partner range bodies.
+// ---------------------------------------------------------------------------
+
+/// Extract identifiers that immediately follow exported-symbol keywords.
+/// Recognised patterns (ASCII identifiers only):
+///   pub fn <id>   export function <id>   export class <id>
+///   export const <id>   export let <id>  export default function <id>
+///   export default class <id>            export <id> (bare re-export)
+fn extract_exported_symbols(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Tokenise by whitespace boundaries so we can do a sliding-window scan.
+    let tokens: Vec<&str> = text.split_ascii_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = tokens[i];
+        // Match keyword patterns; advance i and capture the identifier.
+        let ident_idx = if t == "pub" && tokens.get(i + 1).copied() == Some("fn") {
+            // pub fn <id>
+            i += 2;
+            Some(i)
+        } else if t == "export" {
+            match tokens.get(i + 1).copied() {
+                Some("function") | Some("class") => {
+                    i += 2;
+                    Some(i)
+                }
+                Some("const") | Some("let") | Some("var") => {
+                    i += 2;
+                    Some(i)
+                }
+                Some("default") => {
+                    match tokens.get(i + 2).copied() {
+                        Some("function") | Some("class") => {
+                            i += 3;
+                            Some(i)
+                        }
+                        _ => {
+                            i += 1;
+                            None
+                        }
+                    }
+                }
+                Some(candidate) if is_ident(candidate) => {
+                    // bare `export <id>` — only if it looks like an identifier
+                    i += 2;
+                    Some(i)
+                }
+                Some(_) => {
+                    i += 1;
+                    None
+                }
+                None => {
+                    i += 1;
+                    None
+                }
+            }
+        } else {
+            i += 1;
+            None
+        };
+
+        if let Some(idx) = ident_idx
+            && let Some(raw) = tokens.get(idx)
+        {
+            // Strip trailing punctuation (parens, braces, semicolons).
+            let clean = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
+            if is_ident(clean) {
+                out.push(clean.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn is_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// Return true iff `name` appears as a word-boundary token in `body`.
+fn contains_word(body: &str, name: &str) -> bool {
+    // Simple linear scan: look for `name` surrounded by non-ident chars.
+    let nb = name.as_bytes();
+    let bb = body.as_bytes();
+    if nb.is_empty() || bb.len() < nb.len() {
+        return false;
+    }
+    'outer: for start in 0..=(bb.len() - nb.len()) {
+        if &bb[start..start + nb.len()] != nb {
+            continue;
+        }
+        // Check left boundary.
+        if start > 0 {
+            let prev = bb[start - 1] as char;
+            if prev.is_ascii_alphanumeric() || prev == '_' {
+                continue 'outer;
+            }
+        }
+        // Check right boundary.
+        let end = start + nb.len();
+        if end < bb.len() {
+            let next = bb[end] as char;
+            if next.is_ascii_alphanumeric() || next == '_' {
+                continue 'outer;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// Core T6 logic: given a map from partner path to its body text, emit
+/// candidates for symbol renames found in pre→post blob diffs.
+/// Extracted as a pure function so unit tests can supply synthetic bodies
+/// without a gix repository.
+fn detect_t6_inner(
+    written_path: &str,
+    pre_blob: &str,
+    post_blob: &str,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+    partner_body: &dyn Fn(&MeshRangeRow) -> Option<String>,
+) -> Vec<Candidate> {
+    let mut out = Vec::new();
+
+    let pre_syms: std::collections::HashSet<String> =
+        extract_exported_symbols(pre_blob).into_iter().collect();
+    let post_syms: std::collections::HashSet<String> =
+        extract_exported_symbols(post_blob).into_iter().collect();
+
+    let mut old_names: Vec<String> = pre_syms.difference(&post_syms).cloned().collect();
+    let new_names: std::collections::HashSet<&String> = post_syms.difference(&pre_syms).collect();
+
+    if old_names.is_empty() || new_names.is_empty() {
+        return out;
+    }
+    old_names.sort();
+    old_names.truncate(3);
+
+    // Group by mesh.
+    let mut by_mesh: std::collections::BTreeMap<String, Vec<&MeshRangeRow>> =
+        std::collections::BTreeMap::new();
+    for row in mesh_ranges {
+        by_mesh.entry(row.mesh.clone()).or_default().push(row);
+    }
+
+    // Find meshes that include the written path.
+    let meshes_with_path: Vec<&str> = mesh_ranges
+        .iter()
+        .filter(|r| r.path == written_path)
+        .map(|r| r.mesh.as_str())
+        .collect();
+
+    for mesh in &meshes_with_path {
+        let Some(rows) = by_mesh.get(*mesh) else {
+            continue;
+        };
+        let trigger_row = rows.iter().find(|r| r.path == written_path);
+        let (tstart, tend) = trigger_row
+            .map(|r| (r.start_line, r.end_line))
+            .unwrap_or((None, None));
+
+        for partner in rows {
+            if partner.path == written_path {
+                continue;
+            }
+            let Some(body) = partner_body(partner) else {
+                continue;
+            };
+            for old_name in &old_names {
+                if !contains_word(&body, old_name) {
+                    continue;
+                }
+                let mut c = Candidate::bare(
+                    mesh,
+                    &why_for(whys, mesh),
+                    ReasonKind::SymbolRename,
+                    &partner.path,
+                    partner.start_line,
+                    partner.end_line,
+                    written_path,
+                );
+                c.trigger_start = tstart;
+                c.trigger_end = tend;
+                c.partner_clause =
+                    format!("still references \"{old_name}\" (renamed in {written_path})");
+                c.density = Density::L2;
+                c.command = format!(
+                    "git mesh add {mesh} {}{}",
+                    partner.path,
+                    addr_suffix(partner.start_line, partner.end_line)
+                );
+                out.push(c);
+                break; // one candidate per (mesh, partner, trigger) — first hit
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn detect_t6(
+    conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT path, pre_blob, post_blob FROM write_events \
+         WHERE path IS NOT NULL AND pre_blob IS NOT NULL AND post_blob IS NOT NULL",
+    )?;
+    struct WriteBlobs {
+        path: String,
+        pre: String,
+        post: String,
+    }
+    let writes: Vec<WriteBlobs> = stmt
+        .query_map([], |r| {
+            Ok(WriteBlobs {
+                path: r.get(0)?,
+                pre: r.get(1)?,
+                post: r.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for w in &writes {
+        let cands = detect_t6_inner(
+            &w.path,
+            &w.pre,
+            &w.post,
+            mesh_ranges,
+            whys,
+            &|partner| read_partner_bytes(repo, partner),
+        );
+        out.extend(cands);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T7 — new-group candidate. Files the session has touched together ≥3
+// times AND that co-change in ≥5 of the last 40 commits. No mesh currently
+// covers them.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t7(
+    conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    _whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+
+    // Touched multiset.
+    let mut stmt = conn.prepare(
+        "SELECT path FROM (\
+           SELECT path FROM read_events WHERE path IS NOT NULL \
+           UNION ALL SELECT path FROM write_events WHERE path IS NOT NULL) \
+           GROUP BY path HAVING COUNT(*) >= 3",
+    )?;
+    let mut popular: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    popular.sort();
+    popular.dedup();
+    if popular.len() < 2 {
+        return Ok(out);
+    }
+
+    // Paths already in a mesh — any pair including one of them is filtered.
+    let meshed: std::collections::HashSet<&str> =
+        mesh_ranges.iter().map(|r| r.path.as_str()).collect();
+
+    // Historical co-change counts over last 40 commits.
+    let co = historical_co_change(repo, &popular, 40).unwrap_or_default();
+
+    // Enumerate pairs.
+    for i in 0..popular.len() {
+        for j in (i + 1)..popular.len() {
+            let a = &popular[i];
+            let b = &popular[j];
+            if meshed.contains(a.as_str()) || meshed.contains(b.as_str()) {
+                continue;
+            }
+            let n_co = co.get(&pair_key(a, b)).copied().unwrap_or(0);
+            if n_co < 5 {
+                continue;
+            }
+            let mut c = Candidate {
+                mesh: String::new(), // placeholder — new group, no name yet
+                mesh_why: String::new(),
+                reason_kind: ReasonKind::NewGroup,
+                partner_path: b.clone(),
+                partner_start: None,
+                partner_end: None,
+                trigger_path: a.clone(),
+                trigger_start: None,
+                trigger_end: None,
+                partner_marker: String::new(),
+                partner_clause: format!(
+                    "touched together this session; also co-changed in {n_co} of the last 40 commits"
+                ),
+                density: Density::L2,
+                command: format!("git mesh add <group-name> {a} {b}"),
+                excerpt_of_path: String::new(),
+                excerpt_start: None,
+                excerpt_end: None,
+            };
+            // Put the two paths into the trigger/partner slots; give them
+            // deterministic ordering for dedup.
+            if a > b {
+                std::mem::swap(&mut c.trigger_path, &mut c.partner_path);
+            }
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T8 — staging cross-cut. Stubbed minimal: walks `.git/mesh/staging/*` via
+// `read_staging` and surfaces a candidate when a staged add's (path,
+// extent) overlaps a mesh range on a *different* mesh.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t8(
+    _conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+
+    // Iterate known mesh names' staging areas; find staged adds that overlap
+    // another mesh's ranges in the same file.
+    let names = crate::mesh::list_mesh_names(repo).unwrap_or_default();
+    for staged_mesh in &names {
+        let Ok(staging) = crate::staging::read_staging(repo, staged_mesh) else {
+            continue;
+        };
+        for a in &staging.adds {
+            let (s_start, s_end) = (a.start(), a.end());
+            for row in mesh_ranges {
+                if &row.mesh == staged_mesh || row.path != a.path {
+                    continue;
+                }
+                let (Some(ms), Some(me)) = (row.start_line, row.end_line) else {
+                    continue;
+                };
+                if (s_end as i64) < ms || (s_start as i64) > me {
+                    continue;
+                }
+                let mut c = Candidate::bare(
+                    &row.mesh,
+                    &why_for(whys, &row.mesh),
+                    ReasonKind::StagingCrossCut,
+                    &row.path,
+                    row.start_line,
+                    row.end_line,
+                    &a.path,
+                );
+                c.trigger_start = Some(s_start as i64);
+                c.trigger_end = Some(s_end as i64);
+                c.partner_clause = format!(
+                    "{staged_mesh} [STAGED] overlaps at {}#L{}-L{}",
+                    a.path, s_start, s_end
+                );
+                c.density = Density::L2;
+                c.command = format!("git mesh restore {staged_mesh}");
+                out.push(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T9 — empty-mesh risk. A staged remove that, if committed, would leave
+// a mesh with no ranges.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t9(
+    _conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    let names = crate::mesh::list_mesh_names(repo).unwrap_or_default();
+
+    let mut by_mesh: std::collections::BTreeMap<String, Vec<&MeshRangeRow>> =
+        std::collections::BTreeMap::new();
+    for row in mesh_ranges {
+        by_mesh.entry(row.mesh.clone()).or_default().push(row);
+    }
+
+    for mesh in &names {
+        let Some(rows) = by_mesh.get(mesh) else {
+            continue;
+        };
+        let Ok(staging) = crate::staging::read_staging(repo, mesh) else {
+            continue;
+        };
+        if staging.removes.is_empty() {
+            continue;
+        }
+        // Any remaining mesh range not covered by a removal?
+        let remaining = rows.iter().filter(|r| {
+            !staging.removes.iter().any(|rm| {
+                rm.path == r.path
+                    && r.start_line.map(|v| v as u32) == Some(rm.start())
+                    && r.end_line.map(|v| v as u32) == Some(rm.end())
+            })
+        });
+        if remaining.count() > 0 {
+            continue;
+        }
+        if !staging.adds.is_empty() {
+            continue;
+        }
+        // Empty-mesh risk.
+        let mut c = Candidate::bare(
+            mesh,
+            &why_for(whys, mesh),
+            ReasonKind::EmptyMesh,
+            "",
+            None,
+            None,
+            "",
+        );
+        c.partner_clause = "staged removals would leave this mesh empty".into();
+        c.density = Density::L2;
+        c.command = format!("git mesh delete {mesh}");
+        out.push(c);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T10 — pending-commit re-anchor. A commit_event whose tree touched a meshed
+// path: the mesh will re-anchor at post-commit time.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t10(
+    conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    let mut stmt = conn.prepare("SELECT sha FROM commit_events WHERE sha IS NOT NULL")?;
+    let shas: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if shas.is_empty() {
+        return Ok(out);
+    }
+
+    let mut touched_paths: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for sha in &shas {
+        if let Ok(paths) = commit_touched_paths(repo, sha) {
+            touched_paths.extend(paths);
+        }
+    }
+
+    for row in mesh_ranges {
+        if !touched_paths.contains(&row.path) {
+            continue;
+        }
+        let mut c = Candidate::bare(
+            &row.mesh,
+            &why_for(whys, &row.mesh),
+            ReasonKind::PendingCommit,
+            &row.path,
+            row.start_line,
+            row.end_line,
+            &row.path,
+        );
+        c.partner_marker = "[WILL RE-ANCHOR]".into();
+        out.push(c);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// T11 — terminal status. Already folded into T1 (promoted reason-kind) and
+// we add a standalone detector that surfaces terminal ranges even without
+// a touch. Runs at L0 with the terminal marker.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn detect_t11(
+    _conn: &Connection,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    for row in mesh_ranges {
+        let marker = marker_for_status(&row.status);
+        if !matches!(
+            row.status.as_str(),
+            "ORPHANED" | "MERGE_CONFLICT" | "SUBMODULE"
+        ) {
+            continue;
+        }
+        let mut c = Candidate::bare(
+            &row.mesh,
+            &why_for(whys, &row.mesh),
+            ReasonKind::Terminal,
+            &row.path,
+            row.start_line,
+            row.end_line,
+            "",
+        );
+        c.partner_marker = marker.to_string();
+        out.push(c);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers.
+// ---------------------------------------------------------------------------
+
+fn pair_key(a: &str, b: &str) -> String {
+    if a < b {
+        format!("{a}\0{b}")
+    } else {
+        format!("{b}\0{a}")
+    }
+}
+
+/// Walk the last `limit` commits on HEAD and count, for each pair in
+/// `paths`, the number of commits that modified both.
+fn historical_co_change(
+    repo: &gix::Repository,
+    paths: &[String],
+    limit: usize,
+) -> Result<std::collections::HashMap<String, u32>> {
+    let mut out: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let Ok(head) = repo.head_commit() else {
+        return Ok(out);
+    };
+    let mut cur = Some(head);
+    let mut n = 0usize;
+    while let Some(commit) = cur {
+        if n >= limit {
+            break;
+        }
+        n += 1;
+        let paths_in_commit = commit_touched_paths_commit(repo, &commit).unwrap_or_default();
+        let hit: Vec<&String> = paths
+            .iter()
+            .filter(|p| paths_in_commit.iter().any(|q| q == p.as_str()))
+            .collect();
+        for i in 0..hit.len() {
+            for j in (i + 1)..hit.len() {
+                *out.entry(pair_key(hit[i], hit[j])).or_insert(0) += 1;
+            }
+        }
+        // advance to first parent
+        let parents: Vec<_> = commit.parent_ids().collect();
+        cur = parents
+            .first()
+            .and_then(|id| repo.find_object(*id).ok())
+            .and_then(|o| o.try_into_commit().ok());
+    }
+    Ok(out)
+}
+
+/// Paths modified by a commit relative to its first parent. Returns empty
+/// vec for the initial commit (no parent) for simplicity.
+fn commit_touched_paths(repo: &gix::Repository, sha: &str) -> Result<Vec<String>> {
+    let oid = repo
+        .rev_parse_single(sha)
+        .map_err(|e| anyhow::anyhow!("resolve {sha}: {e}"))?
+        .detach();
+    let commit = repo.find_object(oid)?.try_into_commit()?;
+    commit_touched_paths_commit(repo, &commit)
+}
+
+fn commit_touched_paths_commit(
+    repo: &gix::Repository,
+    commit: &gix::Commit<'_>,
+) -> Result<Vec<String>> {
+    let tree = commit.tree()?;
+    let Some(parent_id) = commit.parent_ids().next() else {
+        let mut out = Vec::new();
+        collect_tree_paths(repo, &tree, "", &mut out)?;
+        return Ok(out);
+    };
+    let parent_commit = repo.find_object(parent_id)?.try_into_commit()?;
+    let parent_tree = parent_commit.tree()?;
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut changes = parent_tree.changes()?;
+    changes
+        .for_each_to_obtain_tree(&tree, |c| -> Result<std::ops::ControlFlow<()>> {
+            out.insert(c.location().to_string());
+            Ok(std::ops::ControlFlow::Continue(()))
+        })
+        .ok();
+    Ok(out.into_iter().collect())
+}
+
+fn collect_tree_paths(
+    repo: &gix::Repository,
+    tree: &gix::Tree<'_>,
+    prefix: &str,
+    out: &mut Vec<String>,
+) -> Result<()> {
+    for entry in tree.iter() {
+        let entry = entry?;
+        let name = entry.filename().to_string();
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if entry.mode().is_tree() {
+            let sub = repo.find_object(entry.object_id())?.try_into_tree()?;
+            collect_tree_paths(repo, &sub, &path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn read_partner_bytes(repo: &gix::Repository, row: &MeshRangeRow) -> Option<String> {
+    let bytes = crate::git::read_worktree_bytes(repo, &row.path).ok()?;
+    let s = std::str::from_utf8(&bytes).ok()?.to_string();
+    match (row.start_line, row.end_line) {
+        (Some(start), Some(end)) => {
+            let lines: Vec<&str> = s.lines().collect();
+            let lo = (start.max(1) as usize).saturating_sub(1);
+            let hi = (end as usize).min(lines.len());
+            if lo > hi {
+                return None;
+            }
+            Some(lines[lo..hi].join("\n"))
+        }
+        _ => Some(s),
+    }
+}
+
+fn addr_suffix(start: Option<i64>, end: Option<i64>) -> String {
+    match (start, end) {
+        (Some(s), Some(e)) => format!("#L{s}-L{e}"),
+        _ => String::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator: run all detectors.
+// ---------------------------------------------------------------------------
+
+pub fn run_all(
+    conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    out.extend(detect_t1(conn, mesh_ranges, whys)?);
+    out.extend(detect_t2(conn, mesh_ranges, whys)?);
+    out.extend(detect_t3(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t4(conn, mesh_ranges, whys)?);
+    out.extend(detect_t5(conn, mesh_ranges, whys)?);
+    out.extend(detect_t6(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t7(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t8(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t9(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t10(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t11(conn, mesh_ranges, whys)?);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::advice::db::init_or_verify_schema_pub;
+
+    fn conn() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        init_or_verify_schema_pub(&c).unwrap();
+        c
+    }
+
+    fn insert_read(conn: &Connection, path: &str) {
+        conn.execute(
+            "INSERT INTO events(kind,ts,payload) VALUES('read','t','{}')",
+            [],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO read_events(event_id,path,start_line,end_line) VALUES(?,?,NULL,NULL)",
+            rusqlite::params![id, path],
+        )
+        .unwrap();
+    }
+
+    fn insert_mesh_range(
+        conn: &Connection,
+        mesh: &str,
+        path: &str,
+        s: Option<i64>,
+        e: Option<i64>,
+        status: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO mesh_ranges(mesh,path,start_line,end_line,status,source,ack) \
+             VALUES(?,?,?,?,?,'W',0)",
+            rusqlite::params![mesh, path, s, e, status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn t1_produces_partner_rows() {
+        let c = conn();
+        insert_read(&c, "a.rs");
+        insert_mesh_range(&c, "m1", "a.rs", Some(1), Some(10), "FRESH");
+        insert_mesh_range(&c, "m1", "b.rs", Some(5), Some(20), "CHANGED");
+
+        let rows = load_mesh_ranges(&c).unwrap();
+        let whys = WhyMap::new();
+        let cands = detect_t1(&c, &rows, &whys).unwrap();
+        assert_eq!(cands.len(), 1);
+        let cand = &cands[0];
+        assert_eq!(cand.reason_kind, ReasonKind::Partner);
+        assert_eq!(cand.partner_path, "b.rs");
+        assert_eq!(cand.partner_marker, "[CHANGED]");
+        assert_eq!(cand.trigger_path, "a.rs");
+    }
+
+    #[test]
+    fn t1_promotes_to_terminal_on_orphaned() {
+        let c = conn();
+        insert_read(&c, "a.rs");
+        insert_mesh_range(&c, "m1", "a.rs", Some(1), Some(10), "FRESH");
+        insert_mesh_range(&c, "m1", "b.rs", Some(5), Some(20), "ORPHANED");
+
+        let rows = load_mesh_ranges(&c).unwrap();
+        let whys = WhyMap::new();
+        let cands = detect_t1(&c, &rows, &whys).unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].reason_kind, ReasonKind::Terminal);
+        assert_eq!(cands[0].partner_marker, "[ORPHANED]");
+    }
+
+    #[test]
+    fn t5_losing_coherence_fires_only_when_mostly_drift() {
+        let c = conn();
+        insert_read(&c, "a.rs");
+        insert_mesh_range(&c, "m", "a.rs", Some(1), Some(10), "FRESH");
+        insert_mesh_range(&c, "m", "b.rs", Some(1), Some(10), "CHANGED");
+        insert_mesh_range(&c, "m", "c.rs", Some(1), Some(10), "CHANGED");
+
+        let rows = load_mesh_ranges(&c).unwrap();
+        let whys = WhyMap::new();
+        let cands = detect_t5(&c, &rows, &whys).unwrap();
+        assert!(!cands.is_empty(), "should fire");
+        assert!(cands.iter().all(|c| c.reason_kind == ReasonKind::LosingCoherence));
+    }
+
+    #[test]
+    fn t4_collapse_detects() {
+        let c = conn();
+        // Write on a.rs#L1-L2 (extent 2); mesh range a.rs#L1-L20 (extent 20).
+        // 20 / 2 = 10 ≥ 4, so collapse fires.
+        c.execute(
+            "INSERT INTO events(kind,ts,payload) VALUES('write','t','{}')",
+            [],
+        ).unwrap();
+        let id = c.last_insert_rowid();
+        c.execute(
+            "INSERT INTO write_events(event_id,path,start_line,end_line,pre_blob,post_blob) \
+             VALUES(?,'a.rs',1,2,NULL,NULL)",
+            rusqlite::params![id],
+        ).unwrap();
+
+        insert_mesh_range(&c, "m", "a.rs", Some(1), Some(20), "CHANGED");
+        insert_mesh_range(&c, "m", "b.rs", Some(1), Some(10), "FRESH");
+        let rows = load_mesh_ranges(&c).unwrap();
+        let whys = WhyMap::new();
+        let cands = detect_t4(&c, &rows, &whys).unwrap();
+        assert!(!cands.is_empty());
+        assert_eq!(cands[0].reason_kind, ReasonKind::RangeCollapse);
+        // Partner is the *other* range (b.rs), per §11.8.
+        assert_eq!(cands[0].partner_path, "b.rs");
+    }
+
+    #[test]
+    fn t11_surfaces_orphaned() {
+        let c = conn();
+        insert_mesh_range(&c, "m", "z.rs", Some(1), Some(5), "ORPHANED");
+        let rows = load_mesh_ranges(&c).unwrap();
+        let cands = detect_t11(&c, &rows, &WhyMap::new()).unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].partner_marker, "[ORPHANED]");
+    }
+
+    /// T6: pub fn old_name → pub fn new_name in pre/post, partner contains
+    /// old_name → one Candidate with SymbolRename, L2, git mesh add command.
+    #[test]
+    fn t6_symbol_rename_detects_partner_hit() {
+        let pre_blob = "pub fn old_name() -> u32 { 0 }";
+        let post_blob = "pub fn new_name() -> u32 { 0 }";
+        // Partner body that references the old symbol.
+        let partner_body_text = "// calls old_name to compute value\nlet x = old_name();";
+
+        let mut ranges = Vec::new();
+        // Trigger range: written file a.rs
+        ranges.push(MeshRangeRow {
+            mesh: "auth/flow".to_string(),
+            path: "a.rs".to_string(),
+            start_line: Some(1),
+            end_line: Some(10),
+            status: "FRESH".to_string(),
+            source: "W".to_string(),
+            ack: false,
+        });
+        // Partner range: b.rs (same mesh, different file)
+        ranges.push(MeshRangeRow {
+            mesh: "auth/flow".to_string(),
+            path: "b.rs".to_string(),
+            start_line: Some(1),
+            end_line: Some(5),
+            status: "FRESH".to_string(),
+            source: "W".to_string(),
+            ack: false,
+        });
+
+        let whys = WhyMap::new();
+        let cands = detect_t6_inner(
+            "a.rs",
+            pre_blob,
+            post_blob,
+            &ranges,
+            &whys,
+            &|row| {
+                if row.path == "b.rs" {
+                    Some(partner_body_text.to_string())
+                } else {
+                    None
+                }
+            },
+        );
+
+        assert_eq!(cands.len(), 1, "expected exactly one candidate");
+        let c = &cands[0];
+        assert_eq!(c.reason_kind, ReasonKind::SymbolRename);
+        assert_eq!(c.density, Density::L2);
+        assert!(
+            c.command.starts_with("git mesh add auth/flow b.rs"),
+            "command was: {}",
+            c.command
+        );
+    }
+
+    /// T6: no hit when partner body does not contain old_name.
+    #[test]
+    fn t6_symbol_rename_no_hit_when_partner_clean() {
+        let pre_blob = "export function oldFn() {}";
+        let post_blob = "export function newFn() {}";
+        let partner_body_text = "// only references newFn\nnewFn();";
+
+        let ranges = vec![
+            MeshRangeRow {
+                mesh: "m".to_string(),
+                path: "src.ts".to_string(),
+                start_line: None,
+                end_line: None,
+                status: "FRESH".to_string(),
+                source: "W".to_string(),
+                ack: false,
+            },
+            MeshRangeRow {
+                mesh: "m".to_string(),
+                path: "consumer.ts".to_string(),
+                start_line: None,
+                end_line: None,
+                status: "FRESH".to_string(),
+                source: "W".to_string(),
+                ack: false,
+            },
+        ];
+
+        let whys = WhyMap::new();
+        let cands = detect_t6_inner(
+            "src.ts",
+            pre_blob,
+            post_blob,
+            &ranges,
+            &whys,
+            &|_| Some(partner_body_text.to_string()),
+        );
+        assert!(cands.is_empty(), "no hit expected when partner is already updated");
+    }
+}
