@@ -22,6 +22,7 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
     "ls",
     "help",
     "pre-commit",
+    "advice",
 ];
 
 /// Validate a mesh name against §3.5 and §10.2.
