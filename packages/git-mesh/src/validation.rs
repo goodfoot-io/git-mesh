@@ -5,8 +5,23 @@ use crate::{Error, Result};
 /// Subcommands and reserved tokens that cannot be used as mesh names.
 /// From §10.2 "Reserved names."
 pub const RESERVED_MESH_NAMES: &[&str] = &[
-    "add", "rm", "commit", "message", "restore", "revert", "delete", "mv", "stale", "fetch",
-    "push", "doctor", "log", "config", "ls", "help",
+    "add",
+    "rm",
+    "commit",
+    "message",
+    "restore",
+    "revert",
+    "delete",
+    "mv",
+    "stale",
+    "fetch",
+    "push",
+    "doctor",
+    "log",
+    "config",
+    "ls",
+    "help",
+    "pre-commit-check",
 ];
 
 /// Validate a mesh name against §3.5 and §10.2.

@@ -213,16 +213,6 @@ pub enum Error {
     #[error("message required for first commit on mesh: {0}")]
     MessageRequired(String),
 
-    /// Working-tree drift detected by commit-time drift check; sidecar
-    /// bytes differ from the file on disk or HEAD blob (§6.3).
-    #[error("working tree drift: {path}#L{start}-L{end}")]
-    WorkingTreeDrift {
-        path: String,
-        start: u32,
-        end: u32,
-        diff: String,
-    },
-
     /// `anchor_sha` is not reachable; resolver classifies the range as
     /// `Orphaned` rather than erroring, but callers writing new ranges
     /// surface this as a hard error (§5.3, §6.8).

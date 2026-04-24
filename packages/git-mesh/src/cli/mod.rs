@@ -17,6 +17,7 @@
 //!   `Show` handler.
 
 pub mod commit;
+pub mod pre_commit;
 pub mod show;
 pub mod stale_output;
 pub mod structural;
@@ -86,6 +87,11 @@ pub enum Commands {
 
     /// Audit the local mesh setup (§6.7).
     Doctor(DoctorArgs),
+
+    /// Pre-commit hook body — fail the commit if the in-flight changes
+    /// would leave the mesh stale (plan §"Phase 4").
+    #[command(name = "pre-commit-check")]
+    PreCommitCheck,
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -324,5 +330,6 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         Commands::Doctor(args) => structural::run_doctor(repo, args),
         Commands::Fetch(args) => sync::run_fetch(repo, args),
         Commands::Push(args) => sync::run_push(repo, args),
+        Commands::PreCommitCheck => pre_commit::run_pre_commit_check(repo),
     }
 }

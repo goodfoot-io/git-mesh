@@ -58,9 +58,9 @@ pub enum DoctorCode {
 }
 
 const POST_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh commit\n";
-const PRE_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh stale --no-worktree\n";
+const PRE_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh pre-commit-check\n";
 const POST_COMMIT_MARKER: &str = "git mesh commit";
-const PRE_COMMIT_MARKER: &str = "git mesh stale";
+const PRE_COMMIT_MARKER: &str = "git mesh pre-commit-check";
 
 pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
     let mut out = Vec::new();

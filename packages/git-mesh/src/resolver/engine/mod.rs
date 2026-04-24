@@ -1,7 +1,7 @@
 //! Engine orchestration: layer setup, per-range resolution, mesh-wide
 //! resolution, acknowledgment + pending wiring, concurrency guard.
 
-pub(crate) mod pending;
+pub mod pending;
 pub(crate) mod range;
 pub(crate) mod whole_file;
 

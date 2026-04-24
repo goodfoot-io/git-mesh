@@ -115,7 +115,7 @@ fn read_live_for_range(repo: &gix::Repository, r: &RangeResolved) -> Option<Vec<
     Some(s.replace("\r\n", "\n").into_bytes())
 }
 
-pub(crate) fn build_pending_findings(
+pub fn build_pending_findings(
     repo: &gix::Repository,
     mesh_name: &str,
 ) -> Vec<PendingFinding> {
