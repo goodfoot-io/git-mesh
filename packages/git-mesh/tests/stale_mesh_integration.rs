@@ -590,6 +590,54 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     Ok(())
 }
 
+/// Regression: a line-range pin on an LFS-tracked path must report
+/// `Fresh` immediately after the mesh commit when the worktree hasn't
+/// been edited. The previous implementation hashed the raw (smudged)
+/// worktree bytes during the `index → worktree` diff pass, which made
+/// every LFS file look modified (index stores the pointer, worktree
+/// stores the smudged content) and mangled the tracked line range via
+/// spurious hunks. Requires `git-lfs` on PATH; skipped otherwise.
+#[test]
+fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
+    if std::process::Command::new("git-lfs")
+        .arg("version")
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
+    {
+        eprintln!("skipping: git-lfs not available");
+        return Ok(());
+    }
+    let repo = TestRepo::new()?;
+    repo.run_git(["lfs", "install", "--local"])?;
+    write_gitattributes(&repo, "*.tsv filter=lfs diff=lfs merge=lfs -text\n")?;
+    repo.run_git(["add", ".gitattributes"])?;
+    repo.run_git(["commit", "-m", "attr"])?;
+    // A 50-line LFS-tracked file. The clean filter (via `git add`) rewrites
+    // the index entry to a pointer, while the worktree retains the smudged
+    // content.
+    let mut body = String::with_capacity(50 * 12);
+    for i in 1..=50u32 {
+        body.push_str(&format!("row{i}\tval\n"));
+    }
+    repo.write_file("data.tsv", &body)?;
+    repo.run_git(["add", "data.tsv"])?;
+    repo.run_git(["commit", "-m", "data"])?;
+    let _ = repo.run_mesh(["add", "pn", "data.tsv#L1-L10"])?;
+    repo.run_mesh(["why", "pn", "-m", "seed"])?;
+    repo.run_mesh(["commit", "pn"])?;
+    // No edits to data.tsv. Stale must report no drift.
+    let out = repo.run_mesh(["stale", "pn", "--format=porcelain"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected no stale findings; stdout=\n{stdout}\nstderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
 /// Plan bullet: `git mv` across a pinned file (one-layer rename): Moved with new
 /// path; mesh record's anchored path unchanged (re-anchor is a separate action).
 #[test]
