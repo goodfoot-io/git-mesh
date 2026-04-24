@@ -239,6 +239,7 @@ fn orphaned_placeholder(range_id: &str) -> RangeResolved {
         current: None,
         status: RangeStatus::Orphaned,
         source: None,
+        layer_sources: vec![],
         acknowledged_by: None,
         culprit: None,
     }

@@ -66,21 +66,45 @@ pub fn run_pre_commit(repo: &gix::Repository) -> Result<i32> {
     // in the in-flight commit.
     let staged_paths = staged_paths(repo)?;
 
+    // Per-layer expansion: same as `stale_output.rs` adapter.
     let findings: Vec<Finding> = meshes
         .iter()
         .flat_map(|m| {
             m.ranges
                 .iter()
                 .filter(|r| r.status != RangeStatus::Fresh)
-                .map(|r| Finding {
-                    mesh: m.name.clone(),
-                    range_id: r.range_id.clone(),
-                    status: r.status.clone(),
-                    source: r.source,
-                    anchored: r.anchored.clone(),
-                    current: r.current.clone(),
-                    acknowledged_by: r.acknowledged_by.clone(),
-                    culprit: r.culprit.clone(),
+                .flat_map(|r| {
+                    let ack = r.acknowledged_by.clone();
+                    if r.layer_sources.is_empty() {
+                        vec![Finding {
+                            mesh: m.name.clone(),
+                            range_id: r.range_id.clone(),
+                            status: r.status.clone(),
+                            source: r.source,
+                            anchored: r.anchored.clone(),
+                            current: r.current.clone(),
+                            acknowledged_by: ack,
+                            culprit: r.culprit.clone(),
+                        }]
+                    } else {
+                        r.layer_sources
+                            .iter()
+                            .map(|&src| Finding {
+                                mesh: m.name.clone(),
+                                range_id: r.range_id.clone(),
+                                status: r.status.clone(),
+                                source: Some(src),
+                                anchored: r.anchored.clone(),
+                                current: r.current.clone(),
+                                acknowledged_by: ack.clone(),
+                                culprit: if src == DriftSource::Head {
+                                    r.culprit.clone()
+                                } else {
+                                    None
+                                },
+                            })
+                            .collect()
+                    }
                 })
         })
         .collect();

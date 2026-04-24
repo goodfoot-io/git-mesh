@@ -48,6 +48,31 @@ fn string_from_utf8_lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Read the text content of an index blob by OID.
+fn read_blob_text(repo: &gix::Repository, oid_hex: &str) -> String {
+    git::read_git_text(repo, oid_hex).unwrap_or_default()
+}
+
+/// Compare the content slice at `tracked` position against the anchored
+/// slice. Returns `true` when the slice differs (i.e. this layer drifts).
+fn slice_differs(
+    text: &str,
+    tracked: &Tracked,
+    anchored_lines: &[&str],
+    anchored_start: u32,
+    anchored_end: u32,
+    ignore_ws: bool,
+) -> bool {
+    let current_lines: Vec<&str> = text.lines().collect();
+    let a_lo = (anchored_start as usize).saturating_sub(1);
+    let a_hi = (anchored_end as usize).min(anchored_lines.len());
+    let c_lo = (tracked.start as usize).saturating_sub(1);
+    let c_hi = (tracked.end as usize).min(current_lines.len());
+    let a_slice = if a_lo <= a_hi { &anchored_lines[a_lo..a_hi] } else { &[][..] };
+    let c_slice = if c_lo <= c_hi { &current_lines[c_lo..c_hi] } else { &[][..] };
+    !lines_equal(a_slice, c_slice, ignore_ws)
+}
+
 pub(crate) fn resolve_range_inner(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -75,6 +100,7 @@ pub(crate) fn resolve_range_inner(
             current: None,
             status: RangeStatus::Orphaned,
             source: None,
+            layer_sources: vec![],
             acknowledged_by: None,
             culprit: None,
         });
@@ -97,55 +123,66 @@ pub(crate) fn resolve_range_inner(
                 }),
                 status: RangeStatus::MergeConflict,
                 source: None,
+                layer_sources: vec![],
                 acknowledged_by: None,
                 culprit: None,
             });
         }
     }
 
+    // Track per-layer positions. Each option is `None` if the path was
+    // deleted at that layer.
     let head_tracked = head_loc.clone();
-    let mut tracked = head_tracked.clone();
-    let mut deepest_layer = DriftSource::Head;
+
+    // Index layer: apply hunks on top of head_tracked.
+    let mut index_tracked: Option<Tracked> = head_tracked.clone();
     let mut index_blob_oid: Option<String> = None;
-    let mut index_changed = false;
-    let mut worktree_changed = false;
-
-    if state.layers.index {
-        if let Some(t) = tracked.as_ref()
-            && let Some(diffs) = state.index_diffs.as_ref()
-            && let Some(entry) = diffs.map.get(&t.path)
-        {
-            if entry.deleted {
-                tracked = None;
-            } else {
-                let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
-                let new_path = entry.new_path.clone();
-                tracked = Some(Tracked { path: new_path, start: s, end: e });
-                index_blob_oid = entry.new_blob.clone();
-                index_changed = true;
-            }
+    let mut index_hunk_applied = false;
+    if state.layers.index
+        && let Some(t) = index_tracked.as_ref()
+        && let Some(diffs) = state.index_diffs.as_ref()
+        && let Some(entry) = diffs.map.get(&t.path)
+    {
+        if entry.deleted {
+            index_tracked = None;
+        } else {
+            let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
+            let new_path = entry.new_path.clone();
+            index_tracked = Some(Tracked { path: new_path, start: s, end: e });
+            index_blob_oid = entry.new_blob.clone();
+            index_hunk_applied = true;
         }
-        deepest_layer = DriftSource::Index;
     }
 
-    if state.layers.worktree {
-        if let Some(t) = tracked.as_ref()
-            && let Some(diffs) = state.worktree_diffs.as_ref()
-            && let Some(entry) = diffs.map.get(&t.path)
-        {
-            if entry.deleted {
-                tracked = None;
-            } else {
-                let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
-                let new_path = entry.new_path.clone();
-                tracked = Some(Tracked { path: new_path, start: s, end: e });
-                worktree_changed = true;
-            }
+    // Worktree layer: apply hunks on top of index_tracked.
+    let mut worktree_tracked: Option<Tracked> = index_tracked.clone();
+    let mut worktree_hunk_applied = false;
+    if state.layers.worktree
+        && let Some(t) = worktree_tracked.as_ref()
+        && let Some(diffs) = state.worktree_diffs.as_ref()
+        && let Some(entry) = diffs.map.get(&t.path)
+    {
+        if entry.deleted {
+            worktree_tracked = None;
+        } else {
+            let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
+            let new_path = entry.new_path.clone();
+            worktree_tracked = Some(Tracked { path: new_path, start: s, end: e });
+            worktree_hunk_applied = true;
         }
-        deepest_layer = DriftSource::Worktree;
     }
 
-    if let Some(t) = tracked.as_ref()
+    // The deepest enabled layer's tracked position determines `current`.
+    let (tracked, deepest_layer) = if state.layers.worktree {
+        (worktree_tracked.as_ref(), DriftSource::Worktree)
+    } else if state.layers.index {
+        (index_tracked.as_ref(), DriftSource::Index)
+    } else {
+        (head_tracked.as_ref(), DriftSource::Head)
+    };
+
+    // LFS short-circuit: if the deepest tracked path is LFS-managed, delegate.
+    if let Some(t) = tracked
         && is_lfs_path(repo, &t.path)
     {
         return Ok(resolve_lfs_range(
@@ -157,11 +194,12 @@ pub(crate) fn resolve_range_inner(
             t,
             deepest_layer,
             index_blob_oid.as_deref(),
-            worktree_changed,
+            worktree_hunk_applied,
         ));
     }
 
-    let current = match tracked.as_ref() {
+    // Read the deepest layer's content for `current` and overall status.
+    let current = match tracked {
         None => None,
         Some(t) => {
             let (cur_text, cur_blob) = match deepest_layer {
@@ -206,12 +244,14 @@ pub(crate) fn resolve_range_inner(
     let status: RangeStatus;
     let source: Option<DriftSource>;
     let current_loc: Option<RangeLocation>;
+    let layer_sources: Vec<DriftSource>;
 
     match current {
         None => {
             status = RangeStatus::Changed;
             source = Some(deepest_layer);
             current_loc = None;
+            layer_sources = vec![deepest_layer];
         }
         Some((t, cur_text, cur_blob)) => {
             let anchored_text = git::read_git_text(repo, &r.blob)?;
@@ -224,27 +264,53 @@ pub(crate) fn resolve_range_inner(
             let a_slice = if a_lo <= a_hi { &anchored_lines[a_lo..a_hi] } else { &[][..] };
             let c_slice = if c_lo <= c_hi { &current_lines[c_lo..c_hi] } else { &[][..] };
             let equal = lines_equal(a_slice, c_slice, cfg.ignore_whitespace);
-            let inferred_source = infer_layer_source(
-                repo, &r, &head_tracked, state, anchored_lines.as_slice(),
-                cfg.ignore_whitespace, index_changed, worktree_changed,
+
+            // Compute per-layer drift: compare each enabled layer's content
+            // independently against the anchor. Emit a Finding per drifting
+            // layer in shallow-to-deep order (I → W → H).
+            let computed_layer_sources = compute_layer_sources(
+                repo,
+                &r,
+                &head_tracked,
+                &index_tracked,
+                &worktree_tracked,
+                &mut *state,
+                &anchored_lines,
+                anchored_start,
+                anchored_end,
+                cfg.ignore_whitespace,
+                index_hunk_applied,
+                worktree_hunk_applied,
+                &index_blob_oid,
             )?;
+
+            let inferred_source = computed_layer_sources.first().copied();
 
             if equal {
                 if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
                     status = RangeStatus::Fresh;
                     source = None;
+                    layer_sources = vec![];
                 } else {
                     status = RangeStatus::Moved;
                     source = inferred_source;
+                    // MOVED means bytes are equal; per design requirement 4,
+                    // keep the single-row shape (source=first drifting layer).
+                    layer_sources = if let Some(s) = inferred_source { vec![s] } else { vec![] };
                 }
             } else {
                 status = RangeStatus::Changed;
                 source = inferred_source.or(Some(deepest_layer));
+                layer_sources = if computed_layer_sources.is_empty() {
+                    vec![deepest_layer]
+                } else {
+                    computed_layer_sources
+                };
             }
             current_loc = Some(RangeLocation {
                 path: PathBuf::from(t.path.clone()),
                 extent: RangeExtent::Lines { start: t.start, end: t.end },
-                blob: if worktree_changed {
+                blob: if worktree_hunk_applied {
                     None
                 } else if state.layers.index && index_blob_oid.is_some() {
                     index_blob_oid
@@ -264,6 +330,7 @@ pub(crate) fn resolve_range_inner(
         current: current_loc,
         status,
         source,
+        layer_sources,
         acknowledged_by: None,
         culprit: None,
     })
@@ -282,58 +349,141 @@ fn unavailable(
         current: None,
         status: RangeStatus::ContentUnavailable(reason),
         source: None,
+        layer_sources: vec![],
         acknowledged_by: None,
         culprit: None,
     }
 }
 
+/// Compute the list of layers that independently show drift vs the anchor,
+/// in shallow-to-deep order: Index → Worktree → Head.
+///
+/// For each enabled layer:
+/// - If the path was deleted at that layer → drifts.
+/// - Otherwise read that layer's content at the tracked position and compare
+///   the anchored slice. If they differ → drifts.
+///
+/// The index-hunk and worktree-hunk applied flags indicate whether the diff
+/// pass found any change at that layer for this path. If no hunk was applied
+/// for a layer, the position matches the layer above — so we only need to
+/// check whether the content differs from anchor.
 #[allow(clippy::too_many_arguments)]
-fn infer_layer_source(
+fn compute_layer_sources(
     repo: &gix::Repository,
-    r: &Range,
+    _r: &Range,
     head_tracked: &Option<Tracked>,
-    state: &EngineState,
+    index_tracked: &Option<Tracked>,
+    worktree_tracked: &Option<Tracked>,
+    state: &mut EngineState,
     anchored_lines: &[&str],
+    anchored_start: u32,
+    anchored_end: u32,
     ignore_ws: bool,
-    index_changed: bool,
-    worktree_changed: bool,
-) -> Result<Option<DriftSource>> {
-    let (anchored_start, anchored_end) = match r.extent {
-        RangeExtent::Lines { start, end } => (start, end),
-        RangeExtent::Whole => return Ok(None),
-    };
-    let head_slice = if let Some(t) = head_tracked.as_ref() {
-        let oid = head_blob_for(repo, &t.path).ok();
-        let txt = match &oid {
-            Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
-            None => String::new(),
-        };
-        let lines: Vec<String> = txt.lines().map(str::to_string).collect();
-        let lo = (t.start as usize).saturating_sub(1);
-        let hi = (t.end as usize).min(lines.len());
-        Some((t.clone(), lines, lo, hi))
-    } else {
-        None
-    };
-    let a_lo = (anchored_start as usize).saturating_sub(1);
-    let a_hi = (anchored_end as usize).min(anchored_lines.len());
-    let a_slice = if a_lo <= a_hi { &anchored_lines[a_lo..a_hi] } else { &[][..] };
+    index_hunk_applied: bool,
+    worktree_hunk_applied: bool,
+    index_blob_oid: &Option<String>,
+) -> Result<Vec<DriftSource>> {
+    let layer_index = state.layers.index;
+    let layer_worktree = state.layers.worktree;
+    let mut sources: Vec<DriftSource> = Vec::new();
 
-    let head_diverges = match &head_slice {
-        None => true,
-        Some((_, lines, lo, hi)) => {
-            let s: Vec<&str> = lines[*lo..*hi].iter().map(String::as_str).collect();
-            !lines_equal(a_slice, &s, ignore_ws)
+    // HEAD layer: compare HEAD content at head_tracked position vs anchor.
+    {
+        let head_drifts = match head_tracked.as_ref() {
+            None => true, // path deleted at HEAD
+            Some(t) => {
+                if let Some(filter) = filter_short_circuit(repo, &t.path)? {
+                    // Can't compare — treat as drifts (fail-closed).
+                    let _ = filter;
+                    true
+                } else {
+                    let oid = head_blob_for(repo, &t.path).ok();
+                    let txt = match &oid {
+                        Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                }
+            }
+        };
+        // HEAD is always enabled (the baseline layer). If HEAD drifts, only
+        // emit it; shallower layers (I, W) that also drift are still emitted.
+        if head_drifts {
+            sources.push(DriftSource::Head);
         }
-    };
-    if head_diverges {
-        return Ok(Some(DriftSource::Head));
     }
-    if state.layers.index && index_changed {
-        return Ok(Some(DriftSource::Index));
+
+    // Index layer: compare Index content at index_tracked position vs anchor.
+    if layer_index {
+        let index_drifts = match index_tracked.as_ref() {
+            None => true, // path deleted in index
+            Some(t) => {
+                if index_hunk_applied {
+                    // Index blob changed for this path; read the indexed blob.
+                    let oid = index_blob_oid.clone().or_else(|| head_blob_for(repo, &t.path).ok());
+                    let txt = match &oid {
+                        Some(o) => read_blob_text(repo, o),
+                        None => String::new(),
+                    };
+                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                } else {
+                    // No index hunk for this path: index content == head
+                    // content at this position. Reuse the HEAD drift result
+                    // so we don't re-read the blob.
+                    let oid = head_blob_for(repo, &t.path).ok();
+                    let txt = match &oid {
+                        Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                }
+            }
+        };
+        if index_drifts {
+            sources.push(DriftSource::Index);
+        }
     }
-    if state.layers.worktree && worktree_changed {
-        return Ok(Some(DriftSource::Worktree));
+
+    // Worktree layer: compare worktree content at worktree_tracked vs anchor.
+    if layer_worktree {
+        let worktree_drifts = match worktree_tracked.as_ref() {
+            None => true, // path deleted in worktree
+            Some(t) => {
+                if worktree_hunk_applied {
+                    match read_worktree_normalized(repo, &mut state.custom_filters, &t.path) {
+                        Ok(bytes) => {
+                            let txt = string_from_utf8_lossy(&bytes);
+                            slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                        }
+                        Err(_) => true, // fail-closed on unreadable
+                    }
+                } else {
+                    // No worktree hunk: worktree == index at this position.
+                    let oid = index_blob_oid.clone().or_else(|| head_blob_for(repo, &t.path).ok());
+                    let txt = match &oid {
+                        Some(o) => read_blob_text(repo, o),
+                        None => String::new(),
+                    };
+                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                }
+            }
+        };
+        if worktree_drifts {
+            sources.push(DriftSource::Worktree);
+        }
     }
-    Ok(None)
+
+    // Return in shallow-to-deep order: I → W → H. Currently sources was
+    // built H first for clarity; reorder to I → W → H.
+    let mut ordered: Vec<DriftSource> = Vec::new();
+    if sources.contains(&DriftSource::Index) {
+        ordered.push(DriftSource::Index);
+    }
+    if sources.contains(&DriftSource::Worktree) {
+        ordered.push(DriftSource::Worktree);
+    }
+    if sources.contains(&DriftSource::Head) {
+        ordered.push(DriftSource::Head);
+    }
+    Ok(ordered)
 }

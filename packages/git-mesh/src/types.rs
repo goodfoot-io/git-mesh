@@ -134,6 +134,10 @@ pub struct RangeResolved {
     pub status: RangeStatus,
     /// Layer that produced the drift; `None` when `Fresh` or terminal.
     pub source: Option<DriftSource>,
+    /// All layers that show drift for this range, in shallow-to-deep order
+    /// (Index → Worktree → Head). Empty for `Fresh` and terminal statuses.
+    /// When non-empty, one `Finding` is emitted per entry at render time.
+    pub layer_sources: Vec<DriftSource>,
     /// Staged re-anchor that acknowledges this drift, matched by `range_id`.
     /// Populated in slice 5: the engine compares re-normalized sidecar
     /// bytes against the live content for the referenced range.

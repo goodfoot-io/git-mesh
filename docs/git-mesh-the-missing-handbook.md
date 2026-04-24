@@ -957,12 +957,25 @@ bootstrap them when the remote is configured.
 
 ### `git log --all` shows mesh commits
 
-Mesh commits live under custom refs, so all-ref traversals can see them.
-Use scoped history aliases when you want normal branch/tag history:
+Mesh commits live under custom refs, so all-ref traversals (`git log
+--all`, `gitk --all`) can see them. Prefer a positively-scoped
+traversal that never expands the custom `refs/meshes/*` namespace in
+the first place:
 
 ```bash
+git log --branches --remotes --tags
 git config alias.hist 'log --graph --branches --remotes --tags'
-git log --all --exclude=refs/meshes/*
+```
+
+`--exclude=refs/meshes/*` on `git log --all` does **not** work: the
+flag filters only the `--all` / `--branches` / `--tags` / `--remotes`
+expansion that follows it, so when `--all` precedes `--exclude` the
+exclude has nothing left to filter. Use the scoped form above instead.
+
+To keep `--all` for ergonomic reasons and only quiet the decoration on
+mesh commits (they still appear in the walk):
+
+```bash
 git config log.excludeDecoration refs/meshes/*
 ```
 
@@ -998,18 +1011,23 @@ are stable anchors.
 Staged mesh operations live under `.git/mesh/staging/`:
 
 ```text
-<name>       pending add/remove/config operations
-<name>.why   staged why text
-<name>.<N>   sidecar bytes for staged add N (with normalization stamp)
+<name>          pending add/remove/config operations
+<name>.why      staged why text
+<name>.<N>      sidecar bytes for staged add N
+<name>.<N>.meta sidecar metadata for staged add N
 ```
 
-The sidecar captures the bytes at the moment of `git mesh add`,
-normalized through the current `.gitattributes` + filter pipeline (line
-endings, smudge, LFS). Each sidecar records a small stamp covering the
-gitattributes hash and the filter driver list at capture time; at stale
-time, the resolver re-normalizes both sides of the comparison if the
-stamp indicates the filter rules have changed, so an acknowledgment
-captured under one EOL policy still matches under another.
+The sidecar (`<name>.<N>`) captures the bytes at the moment of
+`git mesh add`, normalized through the current `.gitattributes` +
+filter pipeline (line endings, smudge, LFS). The paired meta file
+(`<name>.<N>.meta`) carries a small record covering the gitattributes
+hash, the filter driver list at capture time, and a SHA-256 of the
+sidecar bytes used for tamper detection. At stale time, the resolver
+re-normalizes both sides of the comparison if the stamp indicates the
+filter rules have changed, so an acknowledgment captured under one EOL
+policy still matches under another. A sidecar whose bytes no longer
+match the meta's SHA-256 surfaces as `SidecarTampered` — fail-closed,
+in `git mesh commit`, `git mesh stale`, and `git mesh doctor`.
 
 Identical staged adds for the same `(path, extent)` are collapsed
 last-write-wins ordered by the `.<N>` suffix descending. Overlapping

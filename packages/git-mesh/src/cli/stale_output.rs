@@ -52,21 +52,53 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // Adapter: engine output (`MeshResolved`) → renderer input
     // (`Finding` / `PendingFinding`). The adapter is a pure data shape
     // transform; semantics live in the engine.
+    //
+    // Per-layer expansion: each non-Fresh range emits one `Finding` per
+    // drifting layer in `layer_sources` (shallow-to-deep: I → W → H).
+    // Terminal statuses (Orphaned, MergeConflict, Submodule,
+    // ContentUnavailable) have an empty `layer_sources` and emit exactly
+    // one row with `source=None`. MOVED also emits one row.
     let findings: Vec<Finding> = meshes
         .iter()
         .flat_map(|m| {
             m.ranges
                 .iter()
                 .filter(|r| r.status != RangeStatus::Fresh)
-                .map(|r| Finding {
-                    mesh: m.name.clone(),
-                    range_id: r.range_id.clone(),
-                    status: r.status.clone(),
-                    source: r.source,
-                    anchored: r.anchored.clone(),
-                    current: r.current.clone(),
-                    acknowledged_by: r.acknowledged_by.clone(),
-                    culprit: r.culprit.clone(),
+                .flat_map(|r| {
+                    let ack = r.acknowledged_by.clone();
+                    if r.layer_sources.is_empty() {
+                        // Terminal status or MOVED with no tracked layer:
+                        // emit one row with the stored source.
+                        vec![Finding {
+                            mesh: m.name.clone(),
+                            range_id: r.range_id.clone(),
+                            status: r.status.clone(),
+                            source: r.source,
+                            anchored: r.anchored.clone(),
+                            current: r.current.clone(),
+                            acknowledged_by: ack,
+                            culprit: r.culprit.clone(),
+                        }]
+                    } else {
+                        // Emit one Finding per drifting layer.
+                        r.layer_sources
+                            .iter()
+                            .map(|&src| Finding {
+                                mesh: m.name.clone(),
+                                range_id: r.range_id.clone(),
+                                status: r.status.clone(),
+                                source: Some(src),
+                                anchored: r.anchored.clone(),
+                                current: r.current.clone(),
+                                acknowledged_by: ack.clone(),
+                                culprit: if src == DriftSource::Head {
+                                    r.culprit.clone()
+                                } else {
+                                    None
+                                },
+                            })
+                            .collect()
+                    }
                 })
         })
         .collect();

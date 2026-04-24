@@ -157,6 +157,7 @@ pub(crate) fn resolve_lfs_range(
     if anchored_oid.is_some() && anchored_oid == current_oid {
         let status = if same_path_extent { RangeStatus::Fresh } else { RangeStatus::Moved };
         let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
+        let layer_sources = if source.is_some() { vec![deepest_layer] } else { vec![] };
         return RangeResolved {
             range_id: range_id.into(),
             anchor_sha: r.anchor_sha.clone(),
@@ -168,6 +169,7 @@ pub(crate) fn resolve_lfs_range(
             }),
             status,
             source,
+            layer_sources,
             acknowledged_by: None,
             culprit: None,
         };
@@ -201,6 +203,7 @@ pub(crate) fn resolve_lfs_range(
             RangeStatus::Changed
         };
         let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
+        let layer_sources = if source.is_some() { vec![deepest_layer] } else { vec![] };
         return RangeResolved {
             range_id: range_id.into(),
             anchor_sha: r.anchor_sha.clone(),
@@ -212,6 +215,7 @@ pub(crate) fn resolve_lfs_range(
             }),
             status,
             source,
+            layer_sources,
             acknowledged_by: None,
             culprit: None,
         };
@@ -238,6 +242,7 @@ pub(crate) fn resolve_lfs_range(
         RangeStatus::Changed
     };
     let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
+    let layer_sources = if source.is_some() { vec![deepest_layer] } else { vec![] };
     RangeResolved {
         range_id: range_id.into(),
         anchor_sha: r.anchor_sha.clone(),
@@ -249,6 +254,7 @@ pub(crate) fn resolve_lfs_range(
         }),
         status,
         source,
+        layer_sources,
         acknowledged_by: None,
         culprit: None,
     }
@@ -267,6 +273,7 @@ fn lfs_terminal(
         current: None,
         status: RangeStatus::ContentUnavailable(reason),
         source: None,
+        layer_sources: vec![],
         acknowledged_by: None,
         culprit: None,
     }

@@ -39,6 +39,7 @@ pub(crate) fn resolve_whole_file(
             current: None,
             status: RangeStatus::Orphaned,
             source: None,
+            layer_sources: vec![],
             acknowledged_by: None,
             culprit: None,
         });
@@ -50,17 +51,22 @@ pub(crate) fn resolve_whole_file(
         .unwrap_or_else(|| r.path.clone());
 
     let head_kind_sha = tree_entry_for(repo, &head_sha, &current_path);
-    let mut deepest = DriftSource::Head;
-    let mut current_blob: Option<String> = head_kind_sha.as_ref().map(|(_, sha)| sha.clone());
     let moved = current_path != r.path;
 
-    if state.layers.index {
+    // Per-layer blob OIDs for whole-file comparison.
+    let head_blob: Option<String> = head_kind_sha.as_ref().map(|(_, sha)| sha.clone());
+
+    let index_blob: Option<String> = if state.layers.index {
         if let Some((_mode, sha)) = index_entry_for(repo, &current_path) {
-            current_blob = Some(sha);
+            Some(sha)
+        } else {
+            head_blob.clone() // no index entry → same as HEAD
         }
-        deepest = DriftSource::Index;
-    }
-    if state.layers.worktree {
+    } else {
+        head_blob.clone()
+    };
+
+    let worktree_blob: Option<Option<String>> = if state.layers.worktree {
         let abs = workdir.join(&current_path);
         if let Ok(md) = std::fs::symlink_metadata(&abs) {
             if md.file_type().is_symlink() {
@@ -70,22 +76,49 @@ pub(crate) fn resolve_whole_file(
                 let oid = git::hash_blob(target.as_bytes())
                     .ok()
                     .map(|o| o.to_string());
-                current_blob = oid;
+                Some(oid)
             } else if md.file_type().is_file()
                 && let Ok(bytes) = std::fs::read(&abs)
                 && let Ok(oid) = git::hash_blob(&bytes)
             {
-                current_blob = Some(oid.to_string());
+                Some(Some(oid.to_string()))
+            } else {
+                Some(index_blob.clone())
             }
         } else {
-            current_blob = None;
+            Some(None) // deleted in worktree
         }
-        deepest = DriftSource::Worktree;
-    }
+    } else {
+        None // worktree layer not enabled
+    };
+
+    // The deepest-layer blob determines `current`.
+    let current_blob: Option<String> = if let Some(wt) = worktree_blob.as_ref() {
+        wt.clone()
+    } else {
+        index_blob.clone()
+    };
 
     let _ = cfg;
     let status: RangeStatus;
     let source: Option<DriftSource>;
+    let layer_sources: Vec<DriftSource>;
+
+    // Determine which layers independently show drift (blob OID != anchor blob).
+    let head_drifts = head_blob.as_deref() != Some(r.blob.as_str());
+    let index_drifts = state.layers.index && index_blob.as_deref() != Some(r.blob.as_str());
+    let worktree_drifts = state.layers.worktree && worktree_blob.as_ref()
+        .map(|b| b.as_deref() != Some(r.blob.as_str()))
+        .unwrap_or(false);
+
+    let deepest = if state.layers.worktree {
+        DriftSource::Worktree
+    } else if state.layers.index {
+        DriftSource::Index
+    } else {
+        DriftSource::Head
+    };
+
     let cur_blob_oid = current_blob.as_deref().and_then(|s| oid_from_hex(s).ok());
     let current_loc = Some(RangeLocation {
         path: PathBuf::from(&current_path),
@@ -96,18 +129,28 @@ pub(crate) fn resolve_whole_file(
         None => {
             status = RangeStatus::Changed;
             source = Some(deepest);
+            layer_sources = vec![deepest];
         }
         Some(cur) if cur == r.blob && moved => {
             status = RangeStatus::Moved;
             source = Some(deepest);
+            // MOVED: single row per design requirement 4.
+            layer_sources = vec![deepest];
         }
         Some(cur) if cur == r.blob => {
             status = RangeStatus::Fresh;
             source = None;
+            layer_sources = vec![];
         }
         Some(_) => {
             status = RangeStatus::Changed;
             source = Some(deepest);
+            // Collect all drifting layers in I → W → H order.
+            let mut ls: Vec<DriftSource> = Vec::new();
+            if index_drifts { ls.push(DriftSource::Index); }
+            if worktree_drifts { ls.push(DriftSource::Worktree); }
+            if head_drifts { ls.push(DriftSource::Head); }
+            layer_sources = if ls.is_empty() { vec![deepest] } else { ls };
         }
     }
 
@@ -118,6 +161,7 @@ pub(crate) fn resolve_whole_file(
         current: current_loc,
         status,
         source,
+        layer_sources,
         acknowledged_by: None,
         culprit: None,
     })
