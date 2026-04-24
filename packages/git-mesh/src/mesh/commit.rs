@@ -121,6 +121,26 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         (None, None) => return Err(Error::WhyRequired(name.into())),
     };
 
+    // Slice 4: hard-fail on any tampered sidecar BEFORE any range refs
+    // are written. `<fail-closed>`: a missing/unreadable meta or an
+    // empty/non-matching `content_sha256` is treated as tampered.
+    for a in &staging.adds {
+        match staging::read_sidecar_verified(repo, name, a.line_number) {
+            Ok(_) => {}
+            Err(staging::SidecarVerifyError::Tampered) => {
+                return Err(Error::SidecarTampered {
+                    mesh: name.to_string(),
+                    index: a.line_number,
+                });
+            }
+            // Missing sidecar bytes are a separate corruption class
+            // already reported by `doctor` / surfaced downstream by the
+            // sidecar-meta lookup below; let the line-count read raise
+            // its own error rather than masking it here.
+            Err(staging::SidecarVerifyError::Missing) => {}
+        }
+    }
+
     // Drift check and range creation for staged adds. All-or-nothing:
     // create range refs for each add; on any failure propagate.
     let head_sha = git::head_oid(repo)?;

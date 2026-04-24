@@ -128,6 +128,17 @@ pub struct SidecarMeta {
     /// never re-validates a `filter=lfs` path against the raw pointer
     /// blob (Slice 1).
     pub line_count: u32,
+    /// Lowercase hex SHA-256 of the sidecar bytes at write time. Slice 4
+    /// of the review plan — every sidecar read site verifies this hash
+    /// before consuming the bytes; a mismatch surfaces as
+    /// `Error::SidecarTampered` (commit) or `PendingDrift::SidecarTampered`
+    /// (resolver).
+    ///
+    /// Greenfield: there is no migration path. An older (pre-Slice-4)
+    /// `.meta` file deserializes with an empty string here and is
+    /// treated as tampered (`<fail-closed>`).
+    #[serde(default)]
+    pub content_sha256: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -459,12 +470,13 @@ pub(crate) fn append_prepared_add(
     };
     let add_n = append_line(repo, name, &line)?;
     fs::write(sidecar_path(repo, name, add_n)?, &add.bytes)?;
-    // Write sidecar metadata: stamp + range_id + line_count.
+    // Write sidecar metadata: stamp + range_id + line_count + content_sha256.
     let stamp = crate::types::current_normalization_stamp(repo).unwrap_or_default();
     let meta = SidecarMeta {
         stamp,
         range_id,
         line_count: add.line_count,
+        content_sha256: sha256_hex(&add.bytes),
     };
     let meta_json = serde_json::to_vec_pretty(&meta)
         .map_err(|e| Error::Parse(format!("serialize sidecar meta: {e}")))?;
@@ -700,6 +712,57 @@ pub(crate) fn read_sidecar_meta(
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Lowercase hex SHA-256 of `bytes`. Slice 4 of the review plan.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("{:x}", h.finalize())
+}
+
+/// Outcome of reading a sidecar with integrity verification (Slice 4).
+///
+/// `Ok(bytes)` — the sidecar exists, the meta records a non-empty
+/// `content_sha256`, and `sha256(bytes) == meta.content_sha256`.
+///
+/// `Err(SidecarVerifyError::Tampered)` — the sidecar exists but its
+/// content does not match the recorded hash, or the meta file is
+/// missing/unreadable, or the meta records an empty hash. Per
+/// `<fail-closed>`, all three collapse to "tampered" — there is no
+/// passthrough for unverifiable sidecars.
+///
+/// `Err(SidecarVerifyError::Missing)` — the sidecar bytes file itself
+/// is absent (separate from tampering; callers may want to skip
+/// rather than fail-loud on a missing sidecar, depending on context).
+pub(crate) fn read_sidecar_verified(
+    repo: &gix::Repository,
+    name: &str,
+    n: u32,
+) -> std::result::Result<Vec<u8>, SidecarVerifyError> {
+    let p = sidecar_path(repo, name, n).map_err(|_| SidecarVerifyError::Missing)?;
+    let bytes = match fs::read(&p) {
+        Ok(b) => b,
+        Err(_) => return Err(SidecarVerifyError::Missing),
+    };
+    let meta = match read_sidecar_meta(repo, name, n) {
+        Some(m) => m,
+        None => return Err(SidecarVerifyError::Tampered),
+    };
+    if meta.content_sha256.is_empty() {
+        return Err(SidecarVerifyError::Tampered);
+    }
+    if sha256_hex(&bytes) != meta.content_sha256 {
+        return Err(SidecarVerifyError::Tampered);
+    }
+    Ok(bytes)
+}
+
+#[derive(Debug)]
+pub(crate) enum SidecarVerifyError {
+    Missing,
+    Tampered,
+}
+
 /// Update the `range_id` on an existing sidecar's `.meta` file. Used by
 /// the dedup pass when a new add ends up shadowing an existing range.
 #[allow(dead_code)]
@@ -714,6 +777,7 @@ pub(crate) fn update_sidecar_range_id(
         stamp: NormalizationStamp::default(),
         range_id: None,
         line_count: 0,
+        content_sha256: String::new(),
     });
     meta.range_id = range_id;
     let bytes = serde_json::to_vec_pretty(&meta)

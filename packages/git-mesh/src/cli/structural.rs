@@ -55,6 +55,7 @@ pub enum DoctorCode {
     FileIndexMissing,
     FileIndexRebuilt,
     DanglingRangeRef,
+    SidecarTampered,
 }
 
 const POST_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh commit\n";
@@ -102,6 +103,9 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
 
     // ---- Staging area corruption -------------------------------------
     check_staging(&git_dir, &mut out);
+
+    // ---- Sidecar integrity (Slice 4) --------------------------------
+    check_sidecar_integrity(repo, &mut out);
 
     // ---- Orphan range references + dangling range refs --------------
     check_range_reachability(repo, &remote, &mut out);
@@ -335,6 +339,64 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
                     "harmless pending `git gc`; delete with `git update-ref -d` if intended".into(),
                 ),
             });
+        }
+    }
+}
+
+/// Slice 4: walk each staging mesh, verify every staged-add sidecar
+/// against its `.meta` `content_sha256`, and emit a `SidecarTampered`
+/// finding for every mismatch (or missing/empty hash). Per
+/// `<fail-closed>`, an empty/absent meta hash is treated as tampering.
+fn check_sidecar_integrity(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
+    let wd = match crate::git::work_dir(repo) {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+    let dir = wd.join(".git").join("mesh").join("staging");
+    if !dir.exists() {
+        return;
+    }
+    // Collect the set of mesh names with an ops file (no extension).
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut mesh_names: Vec<String> = Vec::new();
+    for e in entries.flatten() {
+        let Some(fname) = e.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !fname.contains('.') {
+            mesh_names.push(fname);
+        }
+    }
+    for name in &mesh_names {
+        let staging = match crate::staging::read_staging(repo, name) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        for add in &staging.adds {
+            match crate::staging::read_sidecar_verified(repo, name, add.line_number) {
+                Ok(_) => {}
+                Err(crate::staging::SidecarVerifyError::Tampered) => {
+                    out.push(DoctorFinding {
+                        code: DoctorCode::SidecarTampered,
+                        severity: Severity::Error,
+                        message: format!(
+                            "sidecar for mesh `{name}` slot {} (`{}`) failed integrity check",
+                            add.line_number, add.path
+                        ),
+                        remediation: Some(format!(
+                            "`git mesh restore {name}` and re-stage `{}`",
+                            add.path
+                        )),
+                    });
+                }
+                Err(crate::staging::SidecarVerifyError::Missing) => {
+                    // Already covered by `check_staging`'s "missing
+                    // sidecar" finding; don't double-report.
+                }
+            }
         }
     }
 }

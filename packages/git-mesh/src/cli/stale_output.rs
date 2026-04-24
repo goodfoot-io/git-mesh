@@ -297,6 +297,7 @@ fn render_human(
 fn drift_note(drift: Option<&PendingDrift>) -> String {
     match drift {
         Some(PendingDrift::SidecarMismatch) => "  (drift: sidecar mismatch)".into(),
+        Some(PendingDrift::SidecarTampered) => "  (drift: sidecar tampered)".into(),
         None => String::new(),
     }
 }
@@ -473,6 +474,7 @@ fn staged_config_json(c: &StagedConfig) -> Value {
 fn drift_json(d: Option<&PendingDrift>) -> Value {
     match d {
         Some(PendingDrift::SidecarMismatch) => json!("SIDECAR_MISMATCH"),
+        Some(PendingDrift::SidecarTampered) => json!("SIDECAR_TAMPERED"),
         None => Value::Null,
     }
 }

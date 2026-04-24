@@ -16,7 +16,8 @@
 use crate::mesh::read::list_mesh_names;
 use crate::resolver::{build_pending_findings, resolve_mesh};
 use crate::types::{
-    DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingFinding, RangeStatus,
+    DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
+    RangeStatus,
 };
 use crate::Error;
 use anyhow::Result;
@@ -262,18 +263,18 @@ fn render_report(
         for p in &mesh_pending {
             match p {
                 PendingFinding::Add { op, drift, .. } => {
-                    let note = if drift.is_some() {
-                        " (drift: sidecar mismatch)"
-                    } else {
-                        ""
+                    let note = match drift {
+                        Some(PendingDrift::SidecarMismatch) => " (drift: sidecar mismatch)",
+                        Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
+                        None => "",
                     };
                     println!("    + ADD    {}{}", op.path, note);
                 }
                 PendingFinding::Remove { op, drift, .. } => {
-                    let note = if drift.is_some() {
-                        " (drift: sidecar mismatch)"
-                    } else {
-                        ""
+                    let note = match drift {
+                        Some(PendingDrift::SidecarMismatch) => " (drift: sidecar mismatch)",
+                        Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
+                        None => "",
                     };
                     println!("    - REMOVE {}{}", op.path, note);
                 }

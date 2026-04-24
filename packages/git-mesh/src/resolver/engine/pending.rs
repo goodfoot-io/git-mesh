@@ -1,9 +1,9 @@
 //! Acknowledgment matching + pending-finding builder.
 
 use crate::git;
+use crate::staging::{SidecarVerifyError, read_sidecar_verified};
 use crate::types::{
     PendingDrift, PendingFinding, RangeExtent, RangeResolved, RangeStatus, StagedOpRef,
-    current_normalization_stamp,
 };
 
 /// Acknowledgment matching by `range_id` (plan §B2).
@@ -28,15 +28,14 @@ pub(crate) fn apply_acknowledgment(
         if rid != &r.range_id {
             continue;
         }
-        let sidecar_path =
-            match crate::staging::sidecar_path(repo, mesh_name, add.line_number) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-        let Ok(side_bytes) = std::fs::read(&sidecar_path) else {
-            continue;
+        // Slice 4: integrity-check the sidecar bytes before consuming.
+        // A tampered sidecar must NOT acknowledge anything; the pending
+        // finding renderer will surface the tamper separately.
+        let side_bytes = match read_sidecar_verified(repo, mesh_name, add.line_number) {
+            Ok(b) => b,
+            Err(_) => continue,
         };
-        let side_norm = renormalize(repo, &add.path, &side_bytes, &meta.stamp);
+        let side_norm = normalize_for_compare(repo, &add.path, &side_bytes, &meta.stamp);
         let live_norm = match read_live_for_range(repo, r) {
             Some(b) => b,
             None => continue,
@@ -88,18 +87,73 @@ fn slice_eq_at(
     side_slice == live_slice
 }
 
-fn renormalize(
+/// Return bytes ready for whole-file or sliced byte-equal comparison.
+///
+/// Slice 2 of the review plan. The previous implementation ran
+/// `String::from_utf8_lossy(...).replace("\r\n", "\n")` on the raw
+/// bytes — destroying any byte ≥ 0x80 that wasn't a valid UTF-8 lead
+/// (PNG headers, gzip frames, every binary asset) by mapping it to
+/// U+FFFD. We instead:
+///
+/// 1. Probe the path's `.gitattributes` `binary` attribute. If the
+///    path is declared binary, return raw bytes — no normalization at
+///    all. (Binary paths cannot meaningfully have CRLF rewriting
+///    applied.)
+/// 2. Otherwise, if the captured normalization stamp matches the
+///    current stamp, return raw bytes (the sidecar bytes already
+///    reflect today's filter rules).
+/// 3. Otherwise, replace `\r\n` with `\n` at the byte level — no
+///    UTF-8 round-trip — symmetrically for sidecar and live readers.
+fn normalize_for_compare(
     repo: &gix::Repository,
-    _path: &str,
+    path: &str,
     bytes: &[u8],
-    captured: &crate::types::NormalizationStamp,
+    _captured: &crate::types::NormalizationStamp,
 ) -> Vec<u8> {
-    let current = current_normalization_stamp(repo).unwrap_or_default();
-    if &current == captured {
+    if path_is_binary(repo, path) {
         return bytes.to_vec();
     }
-    let s = String::from_utf8_lossy(bytes).into_owned();
-    s.replace("\r\n", "\n").into_bytes()
+    // Text paths: always CRLF→LF at the byte level. This is symmetric
+    // with `read_live_for_range`. We deliberately do NOT short-circuit
+    // when the captured stamp matches the current stamp — the previous
+    // implementation did, and that asymmetry caused PNG-with-`\r\n`
+    // bytes (sidecar untouched, live rewritten) to compare unequal even
+    // though the underlying content was identical. `crlf_to_lf` is
+    // idempotent on already-normalized bytes, so applying it
+    // unconditionally costs at most one linear scan.
+    crlf_to_lf(bytes)
+}
+
+/// Byte-level `\r\n` → `\n` rewriter. Preserves every other byte
+/// exactly, including bytes that are not valid UTF-8 starts.
+fn crlf_to_lf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'\r' && bytes[i + 1] == b'\n' {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Resolve the `.gitattributes` `binary` macro for `path`. Defaults to
+/// `false` on any plumbing error — fail open here would be wrong, but
+/// in practice an attribute lookup failure means we genuinely don't
+/// know, and treating "unknown" as "text" preserves the prior comparison
+/// shape for non-binary paths. Binary paths universally have the
+/// attribute set (either via `*.png binary` or by the `binary` macro
+/// expanding `-text -diff`).
+fn path_is_binary(repo: &gix::Repository, path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    match git::attr_for(repo, p, "binary") {
+        Ok(Some(v)) => v.as_slice() == b"set" || v.as_slice() == b"true",
+        _ => false,
+    }
 }
 
 fn read_live_for_range(repo: &gix::Repository, r: &RangeResolved) -> Option<Vec<u8>> {
@@ -111,8 +165,16 @@ fn read_live_for_range(repo: &gix::Repository, r: &RangeResolved) -> Option<Vec<
         .unwrap_or(r.anchored.path.clone());
     let abs = workdir.join(&path);
     let bytes = std::fs::read(&abs).ok()?;
-    let s = String::from_utf8_lossy(&bytes).into_owned();
-    Some(s.replace("\r\n", "\n").into_bytes())
+    // Mirror `normalize_for_compare`: byte-safe CRLF rewrite for text
+    // paths, raw for binary. We have no captured stamp to compare
+    // against here — treat the live read as "current rules" and apply
+    // the same shape the sidecar side sees once it's been normalized.
+    let path_str = path.to_string_lossy().into_owned();
+    if path_is_binary(repo, &path_str) {
+        Some(bytes)
+    } else {
+        Some(crlf_to_lf(&bytes))
+    }
 }
 
 pub fn build_pending_findings(
@@ -167,8 +229,14 @@ fn pending_add_drift(
     add: &crate::staging::StagedAdd,
     meta: Option<&crate::staging::SidecarMeta>,
 ) -> Option<PendingDrift> {
-    let sidecar_p = crate::staging::sidecar_path(repo, mesh_name, add.line_number).ok()?;
-    let side_bytes = std::fs::read(&sidecar_p).ok()?;
+    // Slice 4: integrity check first. A tampered sidecar surfaces as a
+    // distinct `SidecarTampered` drift so renderers can tell external
+    // corruption apart from a legitimate live-content divergence.
+    let side_bytes = match read_sidecar_verified(repo, mesh_name, add.line_number) {
+        Ok(b) => b,
+        Err(SidecarVerifyError::Tampered) => return Some(PendingDrift::SidecarTampered),
+        Err(SidecarVerifyError::Missing) => return None,
+    };
     let stamp = meta.map(|m| &m.stamp);
     let live = if let Some(anchor) = &add.anchor {
         match crate::git::path_blob_at(repo, anchor, &add.path) {
@@ -180,10 +248,14 @@ fn pending_add_drift(
         std::fs::read(workdir.join(&add.path)).ok()?
     };
     let captured = stamp.cloned().unwrap_or_default();
-    let side_norm = renormalize(repo, &add.path, &side_bytes, &captured);
-    let live_norm = {
-        let s = String::from_utf8_lossy(&live).into_owned();
-        s.replace("\r\n", "\n").into_bytes()
+    let side_norm = normalize_for_compare(repo, &add.path, &side_bytes, &captured);
+    // The live-side byte stream comes either from the worktree (raw
+    // bytes, possibly CRLF) or from a git blob (already in canonical
+    // form). Apply the same byte-safe normalization the sidecar got.
+    let live_norm = if path_is_binary(repo, &add.path) {
+        live
+    } else {
+        crlf_to_lf(&live)
     };
     let equal = match add.extent {
         RangeExtent::Whole => side_norm == live_norm,

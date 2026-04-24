@@ -249,6 +249,13 @@ pub enum Error {
     #[error("filter not implemented: {filter}")]
     FilterFailed { filter: String },
 
+    /// A staging sidecar's content hash does not match the
+    /// `content_sha256` recorded in its `.meta` file (or the meta is
+    /// missing/empty when one was expected). Slice 4 of the review plan
+    /// — fail closed on tamper before any commit-side work proceeds.
+    #[error("sidecar tampered for mesh `{mesh}` slot {index}")]
+    SidecarTampered { mesh: String, index: u32 },
+
     /// Generic git-process / gix error.
     #[error("git: {0}")]
     Git(String),
@@ -476,6 +483,11 @@ pub struct StagedOpRef {
 pub enum PendingDrift {
     /// Sidecar bytes disagree with the claimed blob under current filters.
     SidecarMismatch,
+    /// Sidecar bytes do not match the `content_sha256` recorded in the
+    /// sidecar's `.meta` file (or the meta is missing the hash). Slice 4:
+    /// distinguishes external tampering / corruption from the legitimate
+    /// "live blob diverged" `SidecarMismatch` case.
+    SidecarTampered,
 }
 
 /// Staged mesh operation surfaced by the engine alongside `Finding`s.
