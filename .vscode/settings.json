@@ -1,0 +1,11 @@
+{
+  "cards.detectedAgents": [
+    {
+      "id": "claude-code-cli",
+      "binaryPath": "/usr/local/share/npm-global/bin/claude",
+      "installedScopes": [
+        "claude-project"
+      ]
+    }
+  ]
+}

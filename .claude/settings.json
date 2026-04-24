@@ -51,7 +51,8 @@
     "plugin-dev@claude-plugins-official": true,
     "claude-code-hooks@goodfoot": true,
     "last30days@last30days-skill": true,
-    "git-mesh@git-mesh": true
+    "git-mesh@git-mesh": true,
+    "cards@cards.management": true
   },
   "extraKnownMarketplaces": {
     "git-mesh": {
@@ -82,6 +83,12 @@
       "source": {
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "cards.management": {
+      "source": {
+        "source": "directory",
+        "path": "/home/node/.vscode-server/extensions/goodfoot.cards-1.0.48/dist/marketplace"
       }
     }
   }
