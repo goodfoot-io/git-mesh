@@ -172,6 +172,17 @@ fn extent_str(extent: RangeExtent) -> String {
     }
 }
 
+/// Human-facing `(path, extent)` render. Whole-file pins read
+/// `hero.png  (whole)`; line ranges read `src/foo.rs#L1-L10`.
+fn render_path_extent_human(path: &std::path::Path, extent: RangeExtent) -> String {
+    match extent {
+        RangeExtent::Whole => format!("{}  (whole)", path.display()),
+        RangeExtent::Lines { start, end } => {
+            format!("{}#L{}-L{}", path.display(), start, end)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Human renderer.
 // ---------------------------------------------------------------------------
@@ -194,13 +205,10 @@ fn render_human(
 
         if oneline {
             for f in &mesh_findings {
-                let (s, e) = extent_lines(f.anchored.extent);
                 println!(
-                    "{:<8}  {}#L{}-L{}",
+                    "{:<8}  {}",
                     status_str(&f.status),
-                    f.anchored.path.display(),
-                    s,
-                    e
+                    render_path_extent_human(&f.anchored.path, f.anchored.extent),
                 );
             }
             continue;
@@ -216,7 +224,6 @@ fn render_human(
             continue;
         }
         for f in &mesh_findings {
-            let (s, e) = extent_lines(f.anchored.extent);
             let mut line = String::new();
             if show_src {
                 line.push_str(source_marker(f.source));
@@ -224,11 +231,9 @@ fn render_human(
             }
             line.push_str(status_str(&f.status));
             line.push(' ');
-            line.push_str(&format!(
-                "{}#L{}-L{}",
-                f.anchored.path.display(),
-                s,
-                e
+            line.push_str(&render_path_extent_human(
+                &f.anchored.path,
+                f.anchored.extent,
             ));
             if f.acknowledged_by.is_some() {
                 line.push_str("  (ack)");
@@ -342,7 +347,12 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
     }
     println!("# porcelain v1");
     for f in findings {
-        let (s, e) = extent_lines(f.anchored.extent);
+        // Whole-file pins emit `(whole)\t-` in place of the two line
+        // columns, keeping the column count stable for parsers.
+        let (start_col, end_col) = match f.anchored.extent {
+            RangeExtent::Whole => ("(whole)".to_string(), "-".to_string()),
+            RangeExtent::Lines { start, end } => (start.to_string(), end.to_string()),
+        };
         // Anchor sha lives on RangeResolved, not Finding. Recovering the
         // short anchor for porcelain output goes through the engine; the
         // adapter doesn't carry it. Slice 3 emitted an 8-char prefix; we
@@ -360,8 +370,8 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
                 src,
                 f.mesh,
                 f.anchored.path.display(),
-                s,
-                e,
+                start_col,
+                end_col,
                 anchor_short
             );
         } else {
@@ -370,8 +380,8 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
                 status_str(&f.status),
                 f.mesh,
                 f.anchored.path.display(),
-                s,
-                e,
+                start_col,
+                end_col,
                 anchor_short
             );
         }
@@ -543,7 +553,7 @@ fn render_junit(findings: &[Finding]) {
         findings.len()
     );
     for f in findings {
-        let (s, e) = extent_lines(f.anchored.extent);
+        let addr = render_path_extent_human(&f.anchored.path, f.anchored.extent);
         let src = source_marker(f.source);
         let ack = if f.acknowledged_by.is_some() {
             " (ack)"
@@ -551,11 +561,9 @@ fn render_junit(findings: &[Finding]) {
             ""
         };
         println!(
-            "  <testcase classname=\"{}\" name=\"{}#L{}-L{} [{}]{}\"><failure message=\"{}\"/></testcase>",
+            "  <testcase classname=\"{}\" name=\"{} [{}]{}\"><failure message=\"{}\"/></testcase>",
             f.mesh,
-            f.anchored.path.display(),
-            s,
-            e,
+            addr,
             src,
             ack,
             status_str(&f.status)
@@ -566,7 +574,6 @@ fn render_junit(findings: &[Finding]) {
 
 fn render_github(findings: &[Finding]) {
     for f in findings {
-        let (s, _e) = extent_lines(f.anchored.extent);
         let level = match f.status {
             RangeStatus::Moved => "warning",
             _ => "error",
@@ -577,10 +584,16 @@ fn render_github(findings: &[Finding]) {
         } else {
             ""
         };
+        // Whole-file pins omit `,line=N`; line ranges emit the start line.
+        let loc = match f.anchored.extent {
+            RangeExtent::Whole => format!("file={}", f.anchored.path.display()),
+            RangeExtent::Lines { start, .. } => {
+                format!("file={},line={}", f.anchored.path.display(), start)
+            }
+        };
         println!(
-            "::{level} file={},line={}::{} [{}]{}",
-            f.anchored.path.display(),
-            s,
+            "::{level} {}::{} [{}]{}",
+            loc,
             status_str(&f.status),
             src,
             ack,

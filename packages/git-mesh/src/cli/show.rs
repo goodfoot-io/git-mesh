@@ -63,7 +63,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
             };
             let addr = match r.extent {
                 RangeExtent::Lines { start, end } => format!("{}#L{}-L{}", r.path, start, end),
-                RangeExtent::Whole => r.path.clone(),
+                RangeExtent::Whole => format!("{}  (whole)", r.path),
             };
             println!("{sha}  {addr}");
         }
@@ -89,7 +89,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         };
         let addr = match r.extent {
             RangeExtent::Lines { start, end } => format!("{}#L{}-L{}", r.path, start, end),
-            RangeExtent::Whole => r.path.clone(),
+            RangeExtent::Whole => format!("{}  (whole)", r.path),
         };
         println!("    {sha}  {addr}");
     }
@@ -243,7 +243,7 @@ fn evaluate_mesh_token(
                             RangeExtent::Lines { start, end } => {
                                 format!("{}#L{}-L{}", r.path, start, end)
                             }
-                            RangeExtent::Whole => r.path.clone(),
+                            RangeExtent::Whole => format!("{}  (whole)", r.path),
                         };
                         lines.push(format!("{sha}  {addr}"));
                     }
