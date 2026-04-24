@@ -51,7 +51,7 @@
     "plugin-dev@claude-plugins-official": true,
     "claude-code-hooks@goodfoot": true,
     "last30days@last30days-skill": true,
-    "handbook@git-mesh": true
+    "git-mesh@git-mesh": true
   },
   "extraKnownMarketplaces": {
     "git-mesh": {

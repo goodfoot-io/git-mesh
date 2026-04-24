@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "bin": "bin/git-mesh",
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
@@ -16,11 +16,11 @@
     "scripts/postinstall.js"
   ],
   "optionalDependencies": {
-    "@goodfoot/git-mesh-darwin-arm64": "1.0.0",
-    "@goodfoot/git-mesh-darwin-x64": "1.0.0",
-    "@goodfoot/git-mesh-linux-arm64": "1.0.0",
-    "@goodfoot/git-mesh-linux-x64": "1.0.0",
-    "@goodfoot/git-mesh-win32-x64": "1.0.0"
+    "@goodfoot/git-mesh-darwin-arm64": "1.0.1",
+    "@goodfoot/git-mesh-darwin-x64": "1.0.1",
+    "@goodfoot/git-mesh-linux-arm64": "1.0.1",
+    "@goodfoot/git-mesh-linux-x64": "1.0.1",
+    "@goodfoot/git-mesh-win32-x64": "1.0.1"
   },
   "repository": {
     "type": "git",

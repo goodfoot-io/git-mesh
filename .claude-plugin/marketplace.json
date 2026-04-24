@@ -1,19 +1,26 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "git-mesh",
   "owner": {
     "name": "goodfoot",
     "url": "https://github.com/goodfoot-io"
   },
-  "description": "Claude Code plugins from the goodfoot team.",
+  "metadata": {
+    "description": "Anchor line ranges across files with a durable why."
+  },
   "plugins": [
     {
-      "name": "handbook",
-      "source": "./plugins/handbook",
+      "name": "git-mesh",
+      "source": "./plugins/git-mesh",
       "description": "Record and audit durable relationships between exact line ranges in a Git repository.",
-      "version": "0.1.0",
+      "version": "1.0.1",
       "category": "git",
-      "keywords": ["git", "mesh", "ranges", "drift", "audit"]
+      "keywords": [
+        "git",
+        "mesh",
+        "ranges",
+        "drift",
+        "audit"
+      ]
     }
   ]
 }
