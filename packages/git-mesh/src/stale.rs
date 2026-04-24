@@ -336,7 +336,7 @@ fn resolve_range_inner(
     }
 
     // 1. Resolve current location at HEAD.
-    let head_loc = resolve_current_location(repo, &r, cfg.copy_detection)?;
+    let head_loc = resolve_current_location(repo, &r, cfg.copy_detection, &mut state.warnings)?;
 
     // 2. If any non-HEAD layer is enabled, check merge conflict on the
     //    current path before doing any layer math.
@@ -769,6 +769,7 @@ fn resolve_current_location(
     repo: &gix::Repository,
     r: &Range,
     copy_detection: CopyDetection,
+    warnings: &mut Vec<String>,
 ) -> Result<Option<Tracked>> {
     let (rstart, rend) = match r.extent {
         RangeExtent::Lines { start, end } => (start, end),
@@ -787,7 +788,7 @@ fn resolve_current_location(
     };
     let mut parent = r.anchor_sha.clone();
     for commit in &commits {
-        match advance(repo, &parent, commit, &loc, copy_detection)? {
+        match advance(repo, &parent, commit, &loc, copy_detection, warnings)? {
             Change::Unchanged => {}
             Change::Deleted => return Ok(None),
             Change::Updated(next) => loc = next,
@@ -812,8 +813,9 @@ fn advance(
     commit: &str,
     loc: &Tracked,
     copy_detection: CopyDetection,
+    warnings: &mut Vec<String>,
 ) -> Result<Change> {
-    let entries = name_status(repo, parent, commit, copy_detection)?;
+    let entries = name_status(repo, parent, commit, copy_detection, warnings)?;
     let mut next_path: Option<String> = None;
     let mut deleted = false;
     let mut modified = false;
@@ -962,6 +964,7 @@ fn name_status(
     parent: &str,
     commit: &str,
     copy_detection: CopyDetection,
+    warnings: &mut Vec<String>,
 ) -> Result<Vec<NS>> {
     let parent_oid = gix::ObjectId::from_str(parent)
         .map_err(|e| Error::Git(format!("parse parent oid: {e}")))?;
@@ -979,25 +982,56 @@ fn name_status(
     let new_tree = commit_obj
         .tree()
         .map_err(|e| Error::Git(format!("commit tree: {e}")))?;
+    let budget = rename_budget();
+    let want_rewrites = true;
+
+    // First pass: cheap, no rewrite pairing. Counts raw add/delete/modify
+    // entries to decide whether we can afford the full pairing pass.
+    let raw = collect_changes(&parent_tree, &new_tree, copy_detection, false)?;
+    if raw.len() > budget && want_rewrites {
+        warnings.push(format!(
+            "warning: rename detection disabled (--no-renames) for HEAD walk {}..{}; {} > GIT_MESH_RENAME_BUDGET={}",
+            &parent[..parent.len().min(8)],
+            &commit[..commit.len().min(8)],
+            raw.len(),
+            budget,
+        ));
+        return Ok(raw);
+    }
+    // Under budget: rerun with rewrite pairing for accurate Renamed/Copied
+    // entries.
+    collect_changes(&parent_tree, &new_tree, copy_detection, true)
+}
+
+fn collect_changes<'a>(
+    parent_tree: &gix::Tree<'a>,
+    new_tree: &gix::Tree<'a>,
+    copy_detection: CopyDetection,
+    track_rewrites: bool,
+) -> Result<Vec<NS>> {
     let mut platform = parent_tree
         .changes()
         .map_err(|e| Error::Git(format!("tree changes: {e}")))?;
     platform.options(|opts| {
         let want_copies = !matches!(copy_detection, CopyDetection::Off);
-        opts.track_path().track_rewrites(Some(gix::diff::Rewrites {
-            copies: if want_copies {
-                Some(gix::diff::rewrites::Copies::default())
-            } else {
-                None
-            },
-            percentage: Some(0.5),
-            limit: 1000,
-            track_empty: false,
-        }));
+        if track_rewrites {
+            opts.track_path().track_rewrites(Some(gix::diff::Rewrites {
+                copies: if want_copies {
+                    Some(gix::diff::rewrites::Copies::default())
+                } else {
+                    None
+                },
+                percentage: Some(0.5),
+                limit: 1000,
+                track_empty: false,
+            }));
+        } else {
+            opts.track_path().track_rewrites(None);
+        }
     });
     let mut out = Vec::new();
     platform
-        .for_each_to_obtain_tree(&new_tree, |change| -> Result<std::ops::ControlFlow<()>> {
+        .for_each_to_obtain_tree(new_tree, |change| -> Result<std::ops::ControlFlow<()>> {
             use gix::object::tree::diff::Change as DC;
             match change {
                 DC::Addition { location, .. } => out.push(NS::Added {

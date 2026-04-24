@@ -150,3 +150,49 @@ to invoke them; the engine slice will surface those as
 - ~~Slice 1's `WorktreeFile` reader will silently use the default
   `gix_filter` handling for `filter=<name>` drivers~~ — closed by the
   corrective slice's fail-loud short-circuit (see above).
+
+## Phase 1 acceptance — slice 8 sign-off
+
+Slice 8 (renderers, performance gate, final test matrix) closes Phase 1.
+At the time of landing:
+
+- 24/24 acceptance tests in `tests/stale_mesh_integration.rs` pass.
+- Reader dispatch tree is final: HEAD blobs via `find_object`; worktree
+  via `gix::filter::Pipeline::convert_to_git` with the core-filter
+  allowlist; LFS via the managed `git-lfs filter-process` reader (slice
+  6); arbitrary `filter.<name>.process` drivers via the slice-7
+  orchestrator. Pure-shell `clean`/`smudge` drivers (no `.process`)
+  stay on `FilterFailed` — explicit Phase-2 follow-up.
+- Renderers consume `Finding` / `PendingFinding` end-to-end via a
+  thin engine→renderer adapter in `cli/stale_output.rs`. JSON envelope
+  is `{ "schema_version": 1, "mesh", "findings", "pending" }` with full
+  structural fields per `types.rs`.
+- HEAD-only walker honors `GIT_MESH_RENAME_BUDGET` (default 1000) per
+  commit-pair: a first cheap traversal counts entries; over budget
+  falls back to no rewrites and emits a stderr warning. Matches the
+  existing index/worktree-layer fallback behavior.
+
+### Performance baseline
+
+`benches/stale_head_only.rs` (criterion) measures
+`stale_meshes(EngineOptions::committed_only())` on a 10-range fixture.
+Initial baseline on the slice-8 landing commit:
+
+```
+stale_meshes_head_only  time:   [~100 ms]
+```
+
+The plan's >10% regression policy is a CI-gate concern (not enforced by
+the bench itself). Adding criterion grew `cargo build --tests` link
+time modestly (+~5s for the deps); not enough to motivate gating it
+behind a feature flag.
+
+### Phase 2 / Phase 3 follow-ups carried over
+
+- Pure-shell `clean`/`smudge` drivers without `.process`: still
+  `FilterFailed` (slice-7 honest debt).
+- Byte-identical fixture vs. `git cat-file --filters` for the core
+  filter set: still owed (Phase 0 honest gap; not closed in slice 8).
+- Module split (`resolver/{walker,layers,engine,attribution}.rs`) —
+  Phase 2.
+- Removal of `git mesh status` and the schema-superset check — Phase 3.

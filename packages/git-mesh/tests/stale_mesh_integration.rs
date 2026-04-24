@@ -649,7 +649,6 @@ fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
 /// Plan bullet: Rename-heavy changeset (>1000 paths): `stale` completes without
 /// pairing blow-up; a note indicates rename detection was disabled.
 #[test]
-#[ignore = "phase-1-pending: rename-budget cap applies to diff-index/diff-files; this fixture's renames live in HEAD history"]
 fn rename_heavy_changeset_completes_with_note() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -695,7 +694,6 @@ fn index_sha1_trailer_changes_mid_run_prints_warning() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-1-pending: ContentRef readers not implemented"]
 fn content_ref_read_normalized_is_the_single_boundary() -> Result<()> {
     let layers = LayerSet::full();
     assert!(layers.worktree && layers.index && layers.staged_mesh);
@@ -714,7 +712,6 @@ fn content_ref_read_normalized_is_the_single_boundary() -> Result<()> {
 /// single-range entry point against the mesh-level entry point once the
 /// engine slice lands.
 #[test]
-#[ignore = "phase-1-pending: engine not implemented"]
 fn resolve_range_agrees_with_resolve_mesh_smoke() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
@@ -727,7 +724,6 @@ fn resolve_range_agrees_with_resolve_mesh_smoke() -> Result<()> {
 
 /// Plan bullet (coverage of `stale_meshes`): worst-first ordering across meshes.
 #[test]
-#[ignore = "phase-1-pending: stale_meshes worst-first sort pending engine slice"]
 fn stale_meshes_sorts_worst_first_smoke() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "clean")?;
