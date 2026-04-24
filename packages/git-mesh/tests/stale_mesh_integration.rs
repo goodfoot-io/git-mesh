@@ -564,11 +564,15 @@ fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()>
 /// Plan bullet: Custom `filter=<name>` driver with broken smudge:
 /// ContentUnavailable(FilterFailed { filter }).
 #[test]
-#[ignore = "phase-1-pending: custom filter-process driver pending readers slice"]
 fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     write_gitattributes(&repo, "*.secret filter=broken\n")?;
-    // Configure a filter whose smudge command will fail.
+    // Configure a filter whose smudge command will fail. `clean=cat`
+    // lets the fixture commit succeed; `smudge=false` is what the
+    // engine's read path will hit. (The engine routes through
+    // `filter.broken.process` if set; with no `.process` configured,
+    // the dispatch tree stays on `FilterFailed` per slice 7.)
+    repo.run_git(["config", "filter.broken.clean", "cat"])?;
     repo.run_git(["config", "filter.broken.smudge", "false"])?;
     repo.run_git(["config", "filter.broken.required", "true"])?;
     repo.write_file("config.secret", "secret payload\n")?;

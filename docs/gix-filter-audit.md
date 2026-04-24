@@ -83,9 +83,36 @@ OIDs are compared first as a fast-path; cache misses surface as
 `ContentUnavailable(LfsNotInstalled)`. See `stale::resolve_lfs_range`
 and the LFS subprocess block at the bottom of `stale.rs`.
 
-When slice 7 (custom filter-process) lands the allowlist will widen
-again to admit any configured `filter.<name>.process` driver via the
-same orchestrator pattern.
+**Slice 7** generalized the LFS subprocess holder into a shared
+`FilterProcess` type (`pub(crate)` in `stale.rs`) and added the
+custom-driver branch. The dispatch tree at the worktree-read site is
+now:
+
+1. Path resolves to no `filter` attribute (or to a core filter):
+   gix `convert_to_git` pipeline.
+2. `filter=lfs`: managed LFS subprocess (slice 6, branch lives upstream
+   of `read_worktree_normalized` in `resolve_range_inner`).
+3. `filter=<name>` with `filter.<name>.process` configured: managed
+   custom subprocess. One subprocess per driver name, cached on
+   `EngineState.custom_filters` for the run, spawned via `sh -c <cmd>`
+   in the worktree. Smudge / spawn / handshake failure surfaces as
+   `ContentUnavailable(FilterFailed { filter })`.
+4. `filter=<name>` with no `filter.<name>.process`: stays on
+   `FilterFailed` (fail-loud).
+
+At the index/HEAD blob-read sites, `filter_short_circuit` follows the
+same classification: a `<name>` is "known" (no short-circuit, blob
+bytes used directly because git stores canonical form) when it is core,
+LFS, or `.process`-configured. Unknown drivers stay `FilterFailed`.
+
+### Deferred (slice 7)
+
+- **`clean` / `smudge` shell-command-only drivers** (drivers configured
+  with `filter.<name>.clean` and/or `filter.<name>.smudge` but no
+  `filter.<name>.process`). The slice-7 orchestrator only routes
+  `.process` long-running drivers; one-shot `clean`/`smudge` shell
+  commands stay on `FilterFailed`. Documented honest debt; revisit if
+  a real-world repo surfaces the gap.
 
 ## Deferred
 
@@ -98,13 +125,10 @@ to invoke them; the engine slice will surface those as
   `git-lfs filter-process` subprocess (lazy, reused across a `stale`
   run, `GIT_LFS_SKIP_SMUDGE=1`). Detection is by `.gitattributes`
   attribute, not blob sniffing.
-- **Custom `filter=<name>` drivers** (`filter.<name>.process` or
-  smudge/clean shell pairs) — plan calls for one managed
-  `git filter-process`-protocol subprocess per driver, also lazy. The
-  current `convert_to_git` call will pass these through to whatever
-  `gix_filter` does by default; that is *not* the same thing as the
-  spec'd long-lived process orchestrator, so the readers slice will
-  intercept these before they reach `gix_filter`.
+- ~~**Custom `filter=<name>` drivers** (`filter.<name>.process` or
+  smudge/clean shell pairs)~~ — `.process` half closed by slice 7; see
+  the slice-7 dispatch-tree section above. Pure-shell `clean`/`smudge`
+  pairs (no `.process`) remain `FilterFailed`.
 - **Sidecar re-normalization on read.** Sidecars carry a
   `.gitattributes` SHA + filter-driver-list hash. On mismatch the
   engine must re-normalize both sides before comparing rather than

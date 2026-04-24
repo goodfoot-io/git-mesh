@@ -75,15 +75,19 @@ struct EngineState {
     /// every LFS read in a single `stale` run. `None` until the first
     /// LFS read; `Some(Err(_))` if a previous spawn attempt already
     /// failed (cached so we don't retry — it's deterministic per run).
-    lfs: Option<std::result::Result<LfsProcess, LfsSpawnError>>,
+    lfs: Option<std::result::Result<FilterProcess, FilterSpawnError>>,
+    /// Custom `filter.<name>.process` subprocesses (slice 7), cached
+    /// per driver name for the duration of the run. `Err(_)` is sticky
+    /// — a driver that failed to spawn / handshake stays terminal.
+    custom_filters: HashMap<String, std::result::Result<FilterProcess, FilterSpawnError>>,
 }
 
-/// Why a `git-lfs filter-process` spawn failed. Cached on the engine so
-/// subsequent LFS reads in the same run return the same terminal state
-/// without re-attempting the spawn.
+/// Why a `git filter-process`-protocol spawn failed. Cached on the
+/// engine so subsequent reads in the same run return the same terminal
+/// state without re-attempting the spawn.
 #[derive(Clone, Debug)]
-enum LfsSpawnError {
-    /// `git-lfs` not on PATH (ENOENT) or otherwise unspawnable.
+enum FilterSpawnError {
+    /// Binary not on PATH (ENOENT) or otherwise unspawnable.
     NotInstalled,
     /// Spawn succeeded but the handshake failed.
     HandshakeFailed,
@@ -100,6 +104,7 @@ impl EngineState {
             index_trailer_start,
             warnings: Vec::new(),
             lfs: None,
+            custom_filters: HashMap::new(),
         };
         if layers.index || layers.worktree {
             // Need conflicted-path set whenever any non-HEAD layer is on.
@@ -436,7 +441,7 @@ fn resolve_range_inner(
         Some(t) => {
             // For the deepest enabled layer, read bytes appropriately.
             let (cur_text, cur_blob) = match deepest_layer {
-                DriftSource::Worktree => match read_worktree_normalized(repo, &t.path) {
+                DriftSource::Worktree => match read_worktree_normalized(repo, state, &t.path) {
                     Ok(bytes) => (string_from_utf8_lossy(&bytes), None),
                     Err(Error::FilterFailed { filter }) => {
                         return Ok(RangeResolved {
@@ -659,14 +664,24 @@ fn infer_layer_source(
     Ok(None)
 }
 
-/// Probe `.gitattributes` for a custom `filter=<name>` driver on `path`.
-/// Returns `Some(name)` when the driver is outside the slice-2 core
-/// allowlist (fail-loud short-circuit); `None` when it's safe to read
-/// the blob's stored canonical bytes.
+/// Probe `.gitattributes` for a custom `filter=<name>` driver on
+/// `path`. Returns `Some(name)` when the driver is unknown — neither on
+/// the core-filter allowlist (`types::is_core_filter`) nor backed by a
+/// configured `filter.<name>.process` (slice 7) — i.e. fail-loud
+/// short-circuit. Returns `None` when it's safe to read the blob's
+/// stored canonical bytes (core, LFS, or `.process`-backed driver).
+///
+/// Index/HEAD-layer reads consult this helper because git stores blobs
+/// in canonical form already; the driver name only matters for
+/// classifying whether the path's read path is "known" to the engine.
+/// Worktree-layer reads still need the actual subprocess to smudge
+/// disk bytes — that lives in `read_worktree_normalized`.
 fn filter_short_circuit(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
     let workdir = git::work_dir(repo)?;
     match types::path_filter_attribute(workdir, std::path::Path::new(path))? {
-        Some(name) if !types::is_core_filter(&name) => Ok(Some(name)),
+        Some(name) if types::is_core_filter(&name) => Ok(None),
+        Some(name) if is_custom_filter_configured(repo, &name) => Ok(None),
+        Some(name) => Ok(Some(name)),
         _ => Ok(None),
     }
 }
@@ -1294,18 +1309,39 @@ fn read_index_trailer(repo: &gix::Repository) -> Result<[u8; 20]> {
 
 /// Read a worktree file, applying git's clean filter where possible.
 ///
-/// Fail-loud per `docs/stale-layers-slices.md`: paths whose
-/// `.gitattributes` resolve to a `filter=<name>` outside the slice-2
-/// core-filter allowlist (currently empty for the `filter` attribute —
-/// see `types::is_core_filter`) raise `Error::FilterFailed`, which the
-/// engine surfaces as `RangeStatus::ContentUnavailable(FilterFailed)`.
-fn read_worktree_normalized(repo: &gix::Repository, rel_path: &str) -> Result<Vec<u8>> {
+/// Driver dispatch (slice 7):
+///   - core filters (`types::is_core_filter`) → gix pipeline below.
+///   - `filter=<name>` with `filter.<name>.process` configured → managed
+///     custom subprocess (cached on `state.custom_filters`).
+///   - `filter=<name>` with no `.process` → `Error::FilterFailed`.
+///   - LFS is *not* handled here; callers branch on `is_lfs_path`
+///     before reaching this read site.
+///
+/// Engine maps `Error::FilterFailed` to
+/// `RangeStatus::ContentUnavailable(FilterFailed)`.
+fn read_worktree_normalized(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    rel_path: &str,
+) -> Result<Vec<u8>> {
     let workdir = git::work_dir(repo)?;
     if let Some(name) =
         types::path_filter_attribute(workdir, std::path::Path::new(rel_path))?
         && !types::is_core_filter(&name)
     {
-        return Err(Error::FilterFailed { filter: name });
+        // Custom filter-process driver (slice 7). LFS is intercepted
+        // by the caller before this function runs, so a `<name>` here
+        // is either backed by `filter.<name>.process` config (route
+        // through the subprocess) or unknown (fail loud).
+        let abs = workdir.join(rel_path);
+        let raw = match std::fs::read(&abs) {
+            Ok(b) => b,
+            Err(_) => return Ok(Vec::new()),
+        };
+        return match custom_filter_smudge(state, workdir, &name, rel_path, &raw) {
+            CustomFilterOutcome::Bytes(b) => Ok(b),
+            CustomFilterOutcome::FilterFailed => Err(Error::FilterFailed { filter: name }),
+        };
     }
     let abs = workdir.join(rel_path);
     let md = match std::fs::symlink_metadata(&abs) {
@@ -1830,10 +1866,12 @@ fn pending_add_drift(
 use std::io::{BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
-/// Owned `git-lfs filter-process` subprocess, plus the pkt-line streams
-/// used to drive the long-running protocol. Kept on `EngineState` so a
-/// single process serves every LFS read in the run.
-struct LfsProcess {
+/// Owned `git filter-process`-protocol subprocess, plus the pkt-line
+/// streams used to drive the long-running protocol. Kept on
+/// `EngineState` so a single process serves every read in the run for
+/// its driver. Generic across LFS (`git-lfs filter-process`) and
+/// custom `filter.<name>.process` shell-command drivers (slice 7).
+pub(crate) struct FilterProcess {
     child: Child,
     /// `Option` so `Drop` can take + drop the write-end *before*
     /// `child.wait()`. Without an explicit drop the subprocess never
@@ -1842,13 +1880,13 @@ struct LfsProcess {
     stdout: BufReader<ChildStdout>,
 }
 
-impl LfsProcess {
+impl FilterProcess {
     fn stdin_mut(&mut self) -> &mut ChildStdin {
         self.stdin.as_mut().expect("stdin only None during Drop")
     }
 }
 
-impl Drop for LfsProcess {
+impl Drop for FilterProcess {
     fn drop(&mut self) {
         if let Some(mut s) = self.stdin.take() {
             let _ = s.flush();
@@ -1858,12 +1896,29 @@ impl Drop for LfsProcess {
     }
 }
 
+/// Finish wiring `child` into a `FilterProcess` and run the
+/// long-running-process handshake. Caller built `child` so they get to
+/// pick the command line (LFS vs `sh -c <cmd>` for slice 7).
+fn finalize_filter_process(
+    mut child: Child,
+) -> std::result::Result<FilterProcess, FilterSpawnError> {
+    let stdin = child.stdin.take().ok_or(FilterSpawnError::HandshakeFailed)?;
+    let stdout = BufReader::new(child.stdout.take().ok_or(FilterSpawnError::HandshakeFailed)?);
+    let mut p = FilterProcess { child, stdin: Some(stdin), stdout };
+    if filter_handshake(&mut p).is_err() {
+        return Err(FilterSpawnError::HandshakeFailed);
+    }
+    Ok(p)
+}
+
 /// Spawn `git-lfs filter-process` in the repo's worktree and complete
 /// the long-running-process handshake. On any spawn / handshake failure
-/// the caller maps to `LfsSpawnError` and the engine surfaces a
+/// the caller maps to `FilterSpawnError` and the engine surfaces a
 /// terminal `ContentUnavailable` finding.
-fn spawn_lfs_process(workdir: &std::path::Path) -> std::result::Result<LfsProcess, LfsSpawnError> {
-    let mut child = std::process::Command::new("git-lfs")
+fn spawn_lfs_process(
+    workdir: &std::path::Path,
+) -> std::result::Result<FilterProcess, FilterSpawnError> {
+    let child = std::process::Command::new("git-lfs")
         .arg("filter-process")
         .current_dir(workdir)
         .env("GIT_LFS_SKIP_SMUDGE", "1")
@@ -1871,20 +1926,35 @@ fn spawn_lfs_process(workdir: &std::path::Path) -> std::result::Result<LfsProces
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| LfsSpawnError::NotInstalled)?;
-    let stdin = child.stdin.take().ok_or(LfsSpawnError::HandshakeFailed)?;
-    let stdout = BufReader::new(child.stdout.take().ok_or(LfsSpawnError::HandshakeFailed)?);
-    let mut p = LfsProcess { child, stdin: Some(stdin), stdout };
-    if lfs_handshake(&mut p).is_err() {
-        return Err(LfsSpawnError::HandshakeFailed);
-    }
-    Ok(p)
+        .map_err(|_| FilterSpawnError::NotInstalled)?;
+    finalize_filter_process(child)
+}
+
+/// Spawn a custom `filter.<name>.process` driver via `sh -c <cmd>`
+/// (matches what git itself does for `filter.<name>.process` config
+/// values per `git help config`). Slice 7. Failures are sticky on the
+/// engine cache; subsequent reads on the same driver short-circuit
+/// without re-spawning.
+fn spawn_custom_filter_process(
+    workdir: &std::path::Path,
+    cmd: &str,
+) -> std::result::Result<FilterProcess, FilterSpawnError> {
+    let child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(workdir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| FilterSpawnError::NotInstalled)?;
+    finalize_filter_process(child)
 }
 
 /// Long-running filter-process handshake (see `git help long-running-process`):
 /// client sends `git-filter-client`, version pkts, then capabilities; server
 /// echoes welcome, a version, and capabilities. We negotiate `smudge` only.
-fn lfs_handshake(p: &mut LfsProcess) -> std::io::Result<()> {
+fn filter_handshake(p: &mut FilterProcess) -> std::io::Result<()> {
     pkt_write_text(p.stdin_mut(), "git-filter-client\n")?;
     pkt_write_text(p.stdin_mut(), "version=2\n")?;
     pkt_flush(p.stdin_mut())?;
@@ -1905,16 +1975,20 @@ fn lfs_handshake(p: &mut LfsProcess) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Run a single `command=smudge` round-trip against the LFS subprocess
-/// for `pathname`, sending `pointer_bytes` as the input payload.
-/// Returns the smudged output bytes on success.
-fn lfs_smudge(p: &mut LfsProcess, pathname: &str, pointer_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+/// Run a single `command=smudge` round-trip against a long-running
+/// filter-process subprocess for `pathname`, sending `input_bytes` as
+/// the payload. Returns the smudged output bytes on success.
+fn filter_smudge(
+    p: &mut FilterProcess,
+    pathname: &str,
+    input_bytes: &[u8],
+) -> std::io::Result<Vec<u8>> {
     pkt_write_text(p.stdin_mut(), "command=smudge\n")?;
     pkt_write_text(p.stdin_mut(), &format!("pathname={pathname}\n"))?;
     pkt_flush(p.stdin_mut())?;
     p.stdin_mut().flush()?;
     // Payload pkt-lines, then a flush.
-    for chunk in pointer_bytes.chunks(65516) {
+    for chunk in input_bytes.chunks(65516) {
         pkt_write_bytes(p.stdin_mut(), chunk)?;
     }
     pkt_flush(p.stdin_mut())?;
@@ -1991,6 +2065,78 @@ fn pkt_read_text(r: &mut BufReader<ChildStdout>) -> std::io::Result<String> {
     match pkt_read(r)? {
         None => Ok(String::new()),
         Some(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+    }
+}
+
+// ---- Custom filter-process dispatch (slice 7) ----------------------------
+
+/// Outcome of routing a single read through a custom
+/// `filter.<name>.process` driver.
+pub(crate) enum CustomFilterOutcome {
+    /// Smudge succeeded; bytes are the driver's output for this path.
+    Bytes(Vec<u8>),
+    /// Driver isn't configured (no `filter.<name>.process`), spawn /
+    /// handshake failed, or the smudge round-trip failed. Engine
+    /// surfaces as `ContentUnavailable(FilterFailed { filter })`.
+    FilterFailed,
+}
+
+/// Look up `filter.<name>.process` in the repo's git config. Returns
+/// the configured shell command line, or `None` when unset (in which
+/// case the driver is not "known" — the engine keeps the existing
+/// fail-loud `FilterFailed` short-circuit per slice doc).
+fn lookup_custom_filter_process_command(
+    workdir: &std::path::Path,
+    name: &str,
+) -> Option<String> {
+    let key = format!("filter.{name}.process");
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["config", "--get", &key])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// True if a `filter.<name>.process` driver is configured for this
+/// repo. Used by dispatch sites to decide whether `<name>` is
+/// "known" (route through the custom subprocess) or "unknown" (stay on
+/// `FilterFailed`).
+fn is_custom_filter_configured(repo: &gix::Repository, name: &str) -> bool {
+    let Ok(workdir) = git::work_dir(repo) else {
+        return false;
+    };
+    lookup_custom_filter_process_command(workdir, name).is_some()
+}
+
+/// Smudge `input_bytes` through the configured `filter.<name>.process`
+/// driver. Lazily spawns the subprocess on first call (cached on
+/// `state.custom_filters` for the run); returns `FilterFailed` on any
+/// configuration / spawn / protocol failure.
+fn custom_filter_smudge(
+    state: &mut EngineState,
+    workdir: &std::path::Path,
+    name: &str,
+    pathname: &str,
+    input_bytes: &[u8],
+) -> CustomFilterOutcome {
+    if !state.custom_filters.contains_key(name) {
+        let spawned = match lookup_custom_filter_process_command(workdir, name) {
+            None => return CustomFilterOutcome::FilterFailed,
+            Some(cmd) => spawn_custom_filter_process(workdir, &cmd),
+        };
+        state.custom_filters.insert(name.to_string(), spawned);
+    }
+    match state.custom_filters.get_mut(name).expect("just inserted") {
+        Err(_) => CustomFilterOutcome::FilterFailed,
+        Ok(p) => match filter_smudge(p, pathname, input_bytes) {
+            Ok(b) => CustomFilterOutcome::Bytes(b),
+            Err(_) => CustomFilterOutcome::FilterFailed,
+        },
     }
 }
 
@@ -2072,9 +2218,9 @@ fn lfs_read(
         state.lfs = Some(spawn_lfs_process(workdir));
     }
     match state.lfs.as_mut().expect("just set") {
-        Err(LfsSpawnError::NotInstalled) => LfsReadOutcome::NotInstalled,
-        Err(LfsSpawnError::HandshakeFailed) => LfsReadOutcome::NotInstalled,
-        Ok(p) => match lfs_smudge(p, path, pointer_bytes) {
+        Err(FilterSpawnError::NotInstalled) => LfsReadOutcome::NotInstalled,
+        Err(FilterSpawnError::HandshakeFailed) => LfsReadOutcome::NotInstalled,
+        Ok(p) => match filter_smudge(p, path, pointer_bytes) {
             Ok(b) => LfsReadOutcome::Bytes(b),
             Err(_) => LfsReadOutcome::NotInstalled,
         },
