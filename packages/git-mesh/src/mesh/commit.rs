@@ -4,7 +4,7 @@ use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
 use crate::mesh::read::{parse_config_blob, serialize_config_blob};
-use crate::range::{create_range_with_extent, read_range};
+use crate::range::{create_range_with_extent_skipping_blob_bounds, read_range};
 use crate::staging::{self, StagedConfig, Staging};
 use crate::types::{Mesh, MeshConfig, RangeExtent};
 use crate::validation::validate_mesh_name;
@@ -131,8 +131,21 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         let anchor = a.anchor.clone().unwrap_or_else(|| head_sha.clone());
         match a.extent {
             RangeExtent::Lines { start, end } => {
-                let blob = crate::git::path_blob_at(repo, &anchor, &a.path)?;
-                let line_count = crate::git::blob_line_count(repo, &blob)?;
+                // Slice 1: source the line count from the sidecar meta
+                // (captured at stage-time from filtered worktree bytes),
+                // *never* from the raw blob — the latter is the LFS
+                // pointer for `filter=lfs` paths and would always trip.
+                // `append_prepared_add` writes the meta unconditionally,
+                // so a missing file here is a corrupted staging area;
+                // fail closed (CLAUDE.md `<fail-closed>`) instead of
+                // re-rendering, which would diverge from the bytes the
+                // resolver later reads from the same sidecar.
+                let line_count = staging::read_sidecar_meta(repo, name, a.line_number)
+                    .map(|m| m.line_count)
+                    .ok_or_else(|| Error::Git(format!(
+                        "missing or unreadable sidecar meta for staged add `{}` (mesh `{}`, slot {})",
+                        a.path, name, a.line_number
+                    )))?;
                 if start < 1 || end < start || end > line_count {
                     return Err(Error::InvalidRange { start, end });
                 }
@@ -153,7 +166,8 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     }
     for a in &staging.adds {
         let anchor = a.anchor.clone().unwrap_or_else(|| head_sha.clone());
-        let id = create_range_with_extent(repo, &anchor, &a.path, a.extent)?;
+        let id =
+            create_range_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
         new_range_ids.push(id);
     }
 

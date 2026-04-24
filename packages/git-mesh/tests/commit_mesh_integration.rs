@@ -266,6 +266,133 @@ fn commit_retries_on_cas_conflict() -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Slice 3 (last-write-wins supersede across staging invocations).
+// ---------------------------------------------------------------------------
+
+/// Two sequential `git mesh add m f.txt#L1-L10` calls with a mid-sequence
+/// edit succeed; only one staged add survives; the resulting mesh range
+/// pins the newer content.
+#[test]
+fn add_supersedes_prior_with_post_edit_bytes_then_commits() -> Result<()> {
+    use git_mesh::range::read_range;
+
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    // Mid-sequence edit + git-add so the new bytes are visible to the
+    // worktree read in `validate_add_target`.
+    repo.write_file(
+        "file1.txt",
+        "alpha\nbeta\ngamma\ndelta\nepsilon\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("rewrite head")?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "supersede"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+
+    let gix = repo.gix_repo()?;
+    let m = read_mesh(&gix, "m")?;
+    assert_eq!(m.ranges.len(), 1);
+    let r = read_range(&gix, &m.ranges[0])?;
+    // Range blob should pin the newer (post-edit) content for L1-L5.
+    let text = repo.git_stdout(["cat-file", "-p", &r.blob])?;
+    assert!(
+        text.contains("alpha"),
+        "range blob should reflect post-edit bytes; got: {text}"
+    );
+    Ok(())
+}
+
+/// Supersede must survive a `restore`+re-add cycle (i.e. clear staging,
+/// then add again — no leftover sidecar wedges the second add).
+#[test]
+fn add_supersede_survives_restore_and_readd() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L3"])?;
+    repo.mesh_stdout(["restore", "m"])?;
+    let out = repo.run_mesh(["add", "m", "file1.txt#L1-L3"])?;
+    assert!(
+        out.status.success(),
+        "re-add after restore must succeed; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Slice 1 (LFS line-range commit) regression tests.
+// ---------------------------------------------------------------------------
+
+/// `git mesh commit` against a `filter=lfs` line-range pin must succeed
+/// when the worktree carries the smudged content. Pre-fix it failed with
+/// `InvalidRange` because validation re-read the raw blob (the ~3-line
+/// LFS pointer) instead of the captured filtered bytes.
+#[test]
+fn commit_lfs_line_range_uses_sidecar_line_count() -> Result<()> {
+    let repo = TestRepo::new()?;
+    // Configure LFS in the local repo (no global config required).
+    let out = std::process::Command::new("git")
+        .current_dir(repo.path())
+        .args(["lfs", "install", "--local"])
+        .output()?;
+    if !out.status.success() {
+        // Skip cleanly if the test host lacks `git-lfs`.
+        eprintln!(
+            "skipping: `git lfs install --local` failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return Ok(());
+    }
+    repo.run_git(["lfs", "track", "*.tsv"])?;
+    let mut body = String::new();
+    for i in 1..=50 {
+        body.push_str(&format!("col_a_{i}\tcol_b_{i}\n"));
+    }
+    repo.write_file("data.tsv", &body)?;
+    repo.commit_all("seed lfs tsv")?;
+
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "m", "data.tsv", 1, 10, None)?;
+    set_why(&gix, "m", "lfs slice")?;
+    let tip = commit_mesh(&gix, "m")?;
+    assert!(!tip.is_empty(), "mesh commit should succeed");
+    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    Ok(())
+}
+
+/// Bounds regression: an out-of-range slice on the same 50-line LFS file
+/// still fails with `InvalidRange`. Slice 1 only changes the *source* of
+/// the line count, not the bounds rule.
+#[test]
+fn commit_lfs_line_range_out_of_bounds_still_rejected() -> Result<()> {
+    use git_mesh::Error;
+
+    let repo = TestRepo::new()?;
+    let out = std::process::Command::new("git")
+        .current_dir(repo.path())
+        .args(["lfs", "install", "--local"])
+        .output()?;
+    if !out.status.success() {
+        return Ok(());
+    }
+    repo.run_git(["lfs", "track", "*.tsv"])?;
+    let mut body = String::new();
+    for i in 1..=50 {
+        body.push_str(&format!("c{i}\n"));
+    }
+    repo.write_file("data.tsv", &body)?;
+    repo.commit_all("seed lfs tsv")?;
+
+    let gix = repo.gix_repo()?;
+    // Stage-time precheck rejects 1-200 against the 50-line worktree.
+    let stage_err = append_add(&gix, "m", "data.tsv", 1, 200, None);
+    assert!(
+        matches!(stage_err, Err(Error::InvalidRange { start: 1, end: 200 })),
+        "expected InvalidRange at stage time, got {stage_err:?}"
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore] // TODO: Exercise CAS-failure retry path; requires a seam to
 // advance the ref between snapshot-read and ref-update inside

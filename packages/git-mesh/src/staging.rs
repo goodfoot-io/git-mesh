@@ -60,6 +60,11 @@ pub(crate) struct PreparedAdd {
     pub extent: RangeExtent,
     pub anchor: Option<String>,
     pub bytes: Vec<u8>,
+    /// Line count of the captured (post-filter) bytes. Pinned at
+    /// stage-time so the commit pipeline does not re-read the worktree
+    /// or worse, fall back to the raw blob (e.g. an LFS pointer) and
+    /// trip the bounds check. Slice 1 of the review plan.
+    pub line_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,6 +123,11 @@ pub struct SidecarMeta {
     /// at `git mesh add` time by looking up the active mesh range at
     /// `(path, extent)`.
     pub range_id: Option<String>,
+    /// Line count of the captured (post-filter) sidecar bytes. The
+    /// commit pipeline reads this for line-range bounds checks so it
+    /// never re-validates a `filter=lfs` path against the raw pointer
+    /// blob (Slice 1).
+    pub line_count: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -419,11 +429,14 @@ pub(crate) fn prepare_add(
     extent: RangeExtent,
     anchor: Option<&str>,
 ) -> Result<PreparedAdd> {
+    let bytes = validate_add_target(repo, path, extent, anchor)?;
+    let line_count = count_lines(&bytes);
     Ok(PreparedAdd {
         path: path.to_string(),
         extent,
         anchor: anchor.map(str::to_string),
-        bytes: validate_add_target(repo, path, extent, anchor)?,
+        bytes,
+        line_count,
     })
 }
 
@@ -433,6 +446,12 @@ pub(crate) fn append_prepared_add(
     add: &PreparedAdd,
     range_id: Option<String>,
 ) -> Result<()> {
+    // Slice 3: last-write-wins for `(path, extent)`. Strip any existing
+    // staged add at the same address (and its sidecar + meta files),
+    // renumbering trailing sidecars so that parse-order ↔ on-disk `<N>`
+    // alignment is preserved. Then append the new add as usual.
+    supersede_existing_adds(repo, name, &add.path, add.extent)?;
+
     let addr = format_address(&add.path, add.extent);
     let line = match add.anchor.as_deref() {
         Some(sha) => format!("add {addr}{ADD_ANCHOR_SEPARATOR}{sha}"),
@@ -440,12 +459,105 @@ pub(crate) fn append_prepared_add(
     };
     let add_n = append_line(repo, name, &line)?;
     fs::write(sidecar_path(repo, name, add_n)?, &add.bytes)?;
-    // Write sidecar metadata: stamp + range_id.
+    // Write sidecar metadata: stamp + range_id + line_count.
     let stamp = crate::types::current_normalization_stamp(repo).unwrap_or_default();
-    let meta = SidecarMeta { stamp, range_id };
+    let meta = SidecarMeta {
+        stamp,
+        range_id,
+        line_count: add.line_count,
+    };
     let meta_json = serde_json::to_vec_pretty(&meta)
         .map_err(|e| Error::Parse(format!("serialize sidecar meta: {e}")))?;
     fs::write(sidecar_meta_path(repo, name, add_n)?, meta_json)?;
+    Ok(())
+}
+
+/// Drop any staged add lines matching `(path, extent)` from the ops file
+/// for `mesh`, delete their sidecars, and renumber trailing sidecars to
+/// keep `<mesh>.<N>` dense.
+///
+/// Slice 3 of the review plan (`append_prepared_add` cleanup). The
+/// renumbering is required because `read_staging` assigns
+/// `StagedAdd::line_number` purely by parse position; without renaming
+/// the on-disk sidecars to match, the engine would read the wrong
+/// sidecar/meta for adds that follow the deleted slot.
+fn supersede_existing_adds(
+    repo: &gix::Repository,
+    name: &str,
+    path: &str,
+    extent: RangeExtent,
+) -> Result<()> {
+    let ops_p = ops_path(repo, name)?;
+    if !ops_p.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(&ops_p)?;
+    // Collect, per source line, whether it is an add and (if so) whether
+    // it matches the supersede target. Keep ordering identical to the
+    // file so we can safely rewrite.
+    let mut new_lines: Vec<String> = Vec::new();
+    // For each kept add we record its old `<N>` (1-based among adds in
+    // the prior file) so we can rename its sidecar files to a fresh
+    // dense `<N>` matching the new ops file.
+    let mut keep_old_n: Vec<u32> = Vec::new();
+    let mut dropped_old_n: Vec<u32> = Vec::new();
+    let mut add_n: u32 = 0;
+    for line in text.lines() {
+        if let Some(parsed) = parse_line(line)? {
+            match parsed {
+                ParsedLine::Add(a) => {
+                    add_n += 1;
+                    if a.path == path && a.extent == extent {
+                        dropped_old_n.push(add_n);
+                        continue;
+                    }
+                    keep_old_n.push(add_n);
+                    new_lines.push(line.to_string());
+                }
+                ParsedLine::Remove(_) | ParsedLine::Config(_) => {
+                    new_lines.push(line.to_string());
+                }
+            }
+        }
+    }
+    if dropped_old_n.is_empty() {
+        return Ok(());
+    }
+
+    // Delete dropped sidecars first so the rename pass cannot collide.
+    for n in &dropped_old_n {
+        let _ = fs::remove_file(sidecar_path(repo, name, *n)?);
+        let _ = fs::remove_file(sidecar_meta_path(repo, name, *n)?);
+    }
+
+    // Renumber kept sidecars from `old_n` → `new_n` (1-based). Iterate
+    // ascending so renames never overwrite an old_n that is still
+    // pending (new_n <= old_n always when dropping a lower-index slot).
+    for (i, old_n) in keep_old_n.iter().enumerate() {
+        let new_n = (i as u32) + 1;
+        if new_n == *old_n {
+            continue;
+        }
+        let from = sidecar_path(repo, name, *old_n)?;
+        let to = sidecar_path(repo, name, new_n)?;
+        if from.exists() {
+            fs::rename(&from, &to)?;
+        }
+        let from_meta = sidecar_meta_path(repo, name, *old_n)?;
+        let to_meta = sidecar_meta_path(repo, name, new_n)?;
+        if from_meta.exists() {
+            fs::rename(&from_meta, &to_meta)?;
+        }
+    }
+
+    // Rewrite ops file. Preserve trailing newline semantics from
+    // `append_line` (every line terminated with `\n`).
+    let mut combined = String::with_capacity(text.len());
+    for line in &new_lines {
+        combined.push_str(line);
+        combined.push('\n');
+    }
+    fs::write(&ops_p, combined)?;
     Ok(())
 }
 
@@ -601,6 +713,7 @@ pub(crate) fn update_sidecar_range_id(
     let mut meta = read_sidecar_meta(repo, name, n).unwrap_or_else(|| SidecarMeta {
         stamp: NormalizationStamp::default(),
         range_id: None,
+        line_count: 0,
     });
     meta.range_id = range_id;
     let bytes = serde_json::to_vec_pretty(&meta)

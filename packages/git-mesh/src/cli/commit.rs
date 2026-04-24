@@ -18,37 +18,23 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         parsed.push(p);
     }
 
-    // Reject duplicate `(path, extent)` within this invocation.
-    for (i, a) in parsed.iter().enumerate() {
-        for b in &parsed[..i] {
-            if a == b {
-                return Err(anyhow!(
-                    "duplicate range location in mesh: {}",
-                    format_addr(a)
-                ));
-            }
+    // Slice 3: last-write-wins. Within a single invocation, coalesce
+    // duplicate `(path, extent)` adds silently — keep the last
+    // occurrence, drop earlier ones. Cross-invocation supersede is
+    // handled by `append_prepared_add` (which strips + renumbers).
+    {
+        let mut last_idx: std::collections::HashMap<(String, RangeExtent), usize> =
+            std::collections::HashMap::new();
+        for (i, a) in parsed.iter().enumerate() {
+            last_idx.insert(a.clone(), i);
         }
-    }
-
-    // Reject against already-staged adds for this mesh (net of staged
-    // removes).
-    let existing = crate::staging::read_staging(repo, &args.name).unwrap_or_default();
-    let removed: std::collections::HashSet<(String, RangeExtent)> = existing
-        .removes
-        .iter()
-        .map(|r| (r.path.clone(), r.extent))
-        .collect();
-    for a in &parsed {
-        let is_staged_add = existing
-            .adds
+        let coalesced: Vec<(String, RangeExtent)> = parsed
             .iter()
-            .any(|s| s.path == a.0 && s.extent == a.1);
-        if is_staged_add && !removed.contains(a) {
-            return Err(anyhow!(
-                "duplicate range location in mesh: {}",
-                format_addr(a)
-            ));
-        }
+            .enumerate()
+            .filter(|(i, a)| last_idx.get(*a) == Some(i))
+            .map(|(_, a)| a.clone())
+            .collect();
+        parsed = coalesced;
     }
 
     // Stage-time precheck (plan §"CLI and `git mesh add` prechecks").
@@ -71,13 +57,6 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         append_prepared_add(repo, &args.name, add, range_id)?;
     }
     Ok(0)
-}
-
-fn format_addr(a: &(String, RangeExtent)) -> String {
-    match a.1 {
-        RangeExtent::Lines { start, end } => format!("{}:{}-{}", a.0, start, end),
-        RangeExtent::Whole => a.0.clone(),
-    }
 }
 
 fn mesh_range_id_lookup(

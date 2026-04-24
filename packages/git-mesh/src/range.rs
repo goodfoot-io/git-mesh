@@ -52,6 +52,31 @@ pub fn create_range_with_extent(
     path: &str,
     extent: RangeExtent,
 ) -> Result<String> {
+    create_range_with_extent_inner(repo, anchor_sha, path, extent, true)
+}
+
+/// Variant used by the mesh commit pipeline (Slice 1). The pipeline has
+/// already validated line bounds against the captured sidecar
+/// `line_count`, which is the post-filter source of truth for
+/// `filter=lfs` paths. Re-checking against the raw blob here would
+/// re-introduce the bug fixed in `mesh/commit.rs` (the LFS pointer is
+/// only ~3 lines).
+pub(crate) fn create_range_with_extent_skipping_blob_bounds(
+    repo: &gix::Repository,
+    anchor_sha: &str,
+    path: &str,
+    extent: RangeExtent,
+) -> Result<String> {
+    create_range_with_extent_inner(repo, anchor_sha, path, extent, false)
+}
+
+fn create_range_with_extent_inner(
+    repo: &gix::Repository,
+    anchor_sha: &str,
+    path: &str,
+    extent: RangeExtent,
+    check_blob_bounds: bool,
+) -> Result<String> {
     validate_path(path)?;
     if let RangeExtent::Lines { start, end } = extent
         && (start < 1 || end < start)
@@ -74,7 +99,8 @@ pub fn create_range_with_extent(
         }
         Err(e) => return Err(e),
     };
-    if let RangeExtent::Lines { start, end } = extent
+    if check_blob_bounds
+        && let RangeExtent::Lines { start, end } = extent
         && !blob.is_empty()
     {
         let line_count = git::blob_line_count(repo, &blob)?;

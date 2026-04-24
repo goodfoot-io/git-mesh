@@ -753,7 +753,7 @@ mod gix_helper_tests {
     fn attr_for_reads_filter_and_binary() {
         let (_td, repo, _head) = seed_repo();
         std::fs::write(_td.path().join("x.tx"), "y").unwrap();
-        std::fs::write(_td.path().join("y.bin"), &[0u8, 1u8]).unwrap();
+        std::fs::write(_td.path().join("y.bin"), [0u8, 1u8]).unwrap();
         let f = attr_for(&repo, Path::new("x.tx"), "filter").unwrap();
         assert_eq!(f.as_ref().map(|b| b.to_string()), Some("foo".to_string()));
         let b = attr_for(&repo, Path::new("y.bin"), "binary").unwrap();

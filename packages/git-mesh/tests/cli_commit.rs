@@ -26,13 +26,11 @@ fn staging_dump(repo: &TestRepo, mesh: &str) -> String {
         let fname = entry.file_name().to_string_lossy().into_owned();
         // Match `<mesh>` ops file, `<mesh>.<N>` sidecars, `<mesh>.why`,
         // and the metadata sidecars `<mesh>.<N>.meta`.
-        if fname == mesh
-            || fname.starts_with(&format!("{mesh}."))
+        if (fname == mesh || fname.starts_with(&format!("{mesh}.")))
+            && let Ok(s) = std::fs::read_to_string(entry.path())
         {
-            if let Ok(s) = std::fs::read_to_string(entry.path()) {
-                out.push_str(&s);
-                out.push('\n');
-            }
+            out.push_str(&s);
+            out.push('\n');
         }
     }
     out
@@ -413,27 +411,50 @@ fn cli_config_unset_unknown_key_errors() -> Result<()> {
 }
 
 #[test]
-fn cli_add_rejects_duplicate_ranges_within_args() -> Result<()> {
+fn cli_add_coalesces_duplicate_ranges_within_args() -> Result<()> {
+    // Slice 3: silent coalesce — last occurrence wins, exit 0.
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["add", "m", "file1.txt#L1-L2", "file1.txt#L1-L2"])?;
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("duplicate range location"),
-        "stderr={stderr}"
+        out.status.success(),
+        "expected success; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    // And nothing was staged.
     let status = staging_dump(&repo, "m");
-    assert!(!status.contains("L1-L2"), "status={status}");
+    let occurrences = status.matches("file1.txt#L1-L2").count();
+    assert_eq!(occurrences, 1, "expected one staged op; status={status}");
     Ok(())
 }
 
 #[test]
-fn cli_add_rejects_duplicate_against_already_staged() -> Result<()> {
+fn cli_add_supersedes_already_staged_duplicate() -> Result<()> {
+    // Slice 3: re-adding the same `(path, extent)` after an edit
+    // succeeds and supersedes the earlier add (sidecar reflects the
+    // newer bytes).
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L2"])?;
+    repo.write_file(
+        "file1.txt",
+        "lineONE\nlineTWO\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
     let out = repo.run_mesh(["add", "m", "file1.txt#L1-L2"])?;
-    assert!(!out.status.success());
+    assert!(
+        out.status.success(),
+        "expected success; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status = staging_dump(&repo, "m");
+    let occurrences = status.matches("add file1.txt#L1-L2").count();
+    assert_eq!(occurrences, 1, "expected one staged add; status={status}");
+    // Sidecar reflects the post-edit bytes.
+    let sidecar = std::fs::read_to_string(
+        repo.path()
+            .join(".git")
+            .join("mesh")
+            .join("staging")
+            .join("m.1"),
+    )?;
+    assert!(sidecar.starts_with("lineONE\n"), "sidecar={sidecar}");
     Ok(())
 }
 
