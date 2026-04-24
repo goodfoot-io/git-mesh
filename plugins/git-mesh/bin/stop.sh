@@ -80,6 +80,6 @@ emit_stop_context "$lines"
 # {"session_id":"abc123","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}
 #
 # Example additionalContext:
-# api-contract mesh: API charge contract is covered by its test.
-# - src/api.ts#L1-L3 [CHANGED]
-# - tests/api.test.ts#L1-L5
+# billing/checkout-request-flow mesh: Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.
+# - web/checkout.tsx#L88-L120
+# - api/charge.ts#L30-L76 [CHANGED]

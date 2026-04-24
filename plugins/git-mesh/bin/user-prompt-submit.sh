@@ -69,13 +69,13 @@ done
 emit_additional_context "UserPromptSubmit" "$lines"
 
 # Example stdin:
-# {"hook_event_name":"UserPromptSubmit","prompt":"Please edit src/api.ts."}
+# {"hook_event_name":"UserPromptSubmit","prompt":"Please edit api/charge.ts."}
 #
 # Example additionalContext:
-# api-contract mesh: API charge contract is covered by its test.
-# - src/api.ts#L1-L3 [CHANGED]
-# - tests/api.test.ts#L1-L5
+# billing/checkout-request-flow mesh: Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.
+# - web/checkout.tsx#L88-L120
+# - api/charge.ts#L30-L76 [CHANGED]
 #
-# request-schema mesh: Charge request schema is shared by client and server.
-# - src/api.ts#L1-L3 [CHANGED]
-# - server/routes.ts#L8-L21
+# billing/charge-amount-contract mesh: Charge amount contract shared between the browser payload and the server-side Stripe call.
+# - api/charge.ts#L30-L76 [CHANGED]
+# - server/stripe.ts#L12-L44

@@ -27,4 +27,4 @@ exit 0
 #
 # Example cache file at /tmp/git-mesh-claude-code/abc123.txt:
 # # porcelain v1
-# CHANGED	W	api-contract	src/api.ts	1	3	-
+# CHANGED	W	billing/checkout-request-flow	api/charge.ts	30	76	-
