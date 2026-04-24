@@ -1396,27 +1396,28 @@ mod tests {
         // Partner body that references the old symbol.
         let partner_body_text = "// calls old_name to compute value\nlet x = old_name();";
 
-        let mut ranges = Vec::new();
-        // Trigger range: written file a.rs
-        ranges.push(MeshRangeRow {
-            mesh: "auth/flow".to_string(),
-            path: "a.rs".to_string(),
-            start_line: Some(1),
-            end_line: Some(10),
-            status: "FRESH".to_string(),
-            source: "W".to_string(),
-            ack: false,
-        });
-        // Partner range: b.rs (same mesh, different file)
-        ranges.push(MeshRangeRow {
-            mesh: "auth/flow".to_string(),
-            path: "b.rs".to_string(),
-            start_line: Some(1),
-            end_line: Some(5),
-            status: "FRESH".to_string(),
-            source: "W".to_string(),
-            ack: false,
-        });
+        let ranges = vec![
+            // Trigger range: written file a.rs
+            MeshRangeRow {
+                mesh: "auth/flow".to_string(),
+                path: "a.rs".to_string(),
+                start_line: Some(1),
+                end_line: Some(10),
+                status: "FRESH".to_string(),
+                source: "W".to_string(),
+                ack: false,
+            },
+            // Partner range: b.rs (same mesh, different file)
+            MeshRangeRow {
+                mesh: "auth/flow".to_string(),
+                path: "b.rs".to_string(),
+                start_line: Some(1),
+                end_line: Some(5),
+                status: "FRESH".to_string(),
+                source: "W".to_string(),
+                ack: false,
+            },
+        ];
 
         let whys = WhyMap::new();
         let cands = detect_t6_inner(
