@@ -14,6 +14,7 @@
 //! * [`validation`]  — name validation (§3.5, §10.2).
 //! * [`cli`]         — clap surface; consumed by the binary.
 
+pub mod advice;
 pub mod cli;
 pub mod file_index;
 pub mod git;
