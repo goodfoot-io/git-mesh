@@ -1,4 +1,4 @@
-//! Phase 4 acceptance tests for `git mesh pre-commit-check`.
+//! Phase 4 acceptance tests for `git mesh pre-commit`.
 //!
 //! Each test maps to a bullet under `docs/stale-layers-plan.md`
 //! §"Phase 4". The hook runs the engine with `LayerSet { worktree:
@@ -30,7 +30,7 @@ fn index_drift_unacked_fails_commit() -> Result<()> {
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.run_git(["add", "file1.txt"])?;
-    let out = repo.run_mesh(["pre-commit-check"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
     assert_eq!(out.status.code(), Some(1), "stderr={}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }
@@ -48,7 +48,7 @@ fn index_drift_with_ack_passes() -> Result<()> {
     // Staged re-anchor matching the live (== staged) bytes acks via
     // range_id (see `pending::apply_acknowledgment`).
     let _ = repo.run_mesh(["add", "m", "file1.txt#L1-L5"])?;
-    let out = repo.run_mesh(["pre-commit-check"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
     assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }
@@ -64,7 +64,7 @@ fn worktree_only_drift_does_not_fail_commit() -> Result<()> {
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
-    let out = repo.run_mesh(["pre-commit-check"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
     assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }
@@ -82,7 +82,7 @@ fn pending_add_sidecar_mismatch_fails_commit() -> Result<()> {
         "DIFF1\nDIFF2\nDIFF3\nDIFF4\nDIFF5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\n",
     )?;
     repo.run_git(["add", "file2.txt"])?;
-    let out = repo.run_mesh(["pre-commit-check"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
     assert_eq!(out.status.code(), Some(1), "stderr={}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }
@@ -99,7 +99,7 @@ fn pending_message_only_does_not_fail_commit() -> Result<()> {
     // reason).
     repo.write_file("file2.txt", "additional line\n")?;
     repo.run_git(["add", "file2.txt"])?;
-    let out = repo.run_mesh(["pre-commit-check"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
     assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }
@@ -122,7 +122,7 @@ fn unrelated_index_drift_does_not_fail_commit() -> Result<()> {
     // Stage only file2.txt.
     repo.write_file("file2.txt", "additional\n")?;
     repo.run_git(["add", "file2.txt"])?;
-    let out = repo.run_mesh(["pre-commit-check"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
     assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }

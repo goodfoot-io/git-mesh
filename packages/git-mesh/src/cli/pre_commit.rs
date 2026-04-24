@@ -1,4 +1,4 @@
-//! `git mesh pre-commit-check` — Phase 4 of `docs/stale-layers-plan.md`.
+//! `git mesh pre-commit` — Phase 4 of `docs/stale-layers-plan.md`.
 //!
 //! Runs the resolver in pre-commit mode (HEAD + Index + Staged-mesh; no
 //! worktree), filters findings to those touching the in-flight commit's
@@ -24,7 +24,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-pub fn run_pre_commit_check(repo: &gix::Repository) -> Result<i32> {
+pub fn run_pre_commit(repo: &gix::Repository) -> Result<i32> {
     let options = EngineOptions {
         layers: LayerSet {
             worktree: false,
@@ -229,7 +229,7 @@ fn render_report(
     if findings.is_empty() && pending.is_empty() {
         return;
     }
-    println!("git mesh pre-commit-check: stale ranges in the in-flight commit");
+    println!("git mesh pre-commit: stale ranges in the in-flight commit");
     for m in meshes {
         let mesh_findings: Vec<&&Finding> =
             findings.iter().filter(|f| f.mesh == m.name).collect();
