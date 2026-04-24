@@ -291,10 +291,18 @@ fn collect_index_worktree_changes(
     // the on-disk file (or noting it as missing). This mirrors what
     // `git diff-files` reports for tracked entries; it intentionally
     // doesn't surface untracked files (matching prior behavior).
+    //
+    // Bytes are normalized through the clean (to-git) filter pipeline
+    // before hashing so that `filter=lfs`, `text`, and other core
+    // filters don't spuriously diverge from the index blob (e.g. LFS
+    // stores a pointer in the index while the worktree keeps the
+    // smudged content). The cached bytes are reused downstream by the
+    // hunk computation so we don't re-read and re-filter.
     struct WorktreeChange {
         path: String,
         old_blob: gix::ObjectId,
         new_blob: Option<gix::ObjectId>, // None ⇒ deleted on disk
+        new_bytes: Option<Vec<u8>>,      // Some iff new_blob.is_some()
     }
     let mut changes: Vec<WorktreeChange> = Vec::new();
     let mut seen_paths: HashSet<String> = HashSet::new();
@@ -308,13 +316,14 @@ fn collect_index_worktree_changes(
         let rel = entry.path(&index).to_str_lossy().into_owned();
         seen_paths.insert(rel.clone());
         let abs = workdir.join(&rel);
-        let bytes = match std::fs::read(&abs) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let bytes = match read_worktree_cleaned(repo, &abs, &rel) {
+            Ok(Some(b)) => b,
+            Ok(None) => {
                 changes.push(WorktreeChange {
                     path: rel,
                     old_blob: entry.id,
                     new_blob: None,
+                    new_bytes: None,
                 });
                 continue;
             }
@@ -326,6 +335,7 @@ fn collect_index_worktree_changes(
                 path: rel,
                 old_blob: entry.id,
                 new_blob: Some(new_id),
+                new_bytes: Some(bytes),
             });
         }
     }
@@ -382,11 +392,15 @@ fn collect_index_worktree_changes(
             if paired_dels.contains(&idx) || paired_adds.contains(&idx) {
                 continue;
             }
-            entries.push(worktree_change_to_entry(repo, ch.path, ch.old_blob, ch.new_blob)?);
+            entries.push(worktree_change_to_entry(
+                repo, ch.path, ch.old_blob, ch.new_blob, ch.new_bytes,
+            )?);
         }
     } else {
         for ch in changes {
-            entries.push(worktree_change_to_entry(repo, ch.path, ch.old_blob, ch.new_blob)?);
+            entries.push(worktree_change_to_entry(
+                repo, ch.path, ch.old_blob, ch.new_blob, ch.new_bytes,
+            )?);
         }
     }
 
@@ -398,6 +412,7 @@ fn worktree_change_to_entry(
     path: String,
     old_blob: gix::ObjectId,
     new_blob: Option<gix::ObjectId>,
+    new_bytes: Option<Vec<u8>>,
 ) -> Result<DiffEntry> {
     match new_blob {
         None => Ok(DiffEntry {
@@ -409,8 +424,7 @@ fn worktree_change_to_entry(
             intent_to_add: false,
         }),
         Some(new_id) => {
-            let workdir = git::work_dir(repo)?.to_path_buf();
-            let new_bytes = std::fs::read(workdir.join(&path)).unwrap_or_default();
+            let new_bytes = new_bytes.unwrap_or_default();
             let old_bytes = git::read_blob_bytes(repo, &old_blob.to_hex().to_string())
                 .unwrap_or_default();
             let hunks = compute_hunks_from_bytes(&old_bytes, &new_bytes);
@@ -433,6 +447,56 @@ fn worktree_change_to_entry(
 // ---------------------------------------------------------------------------
 // Hunk computation via imara-diff at -U0 (no context).
 // ---------------------------------------------------------------------------
+
+/// Read a worktree file applying the clean (to-git) filter pipeline so
+/// its bytes hash-match the index blob under core filters like
+/// `filter=lfs` or `text`. Returns `Ok(None)` when the file is missing.
+/// Symlinks return the link target as bytes (git's blob form for a
+/// symlink entry). Non-`ErrorKind::NotFound` IO errors surface.
+fn read_worktree_cleaned(
+    repo: &gix::Repository,
+    abs: &std::path::Path,
+    rel: &str,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let md = match std::fs::symlink_metadata(abs) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if md.file_type().is_symlink() {
+        let target = std::fs::read_link(abs)?;
+        return Ok(Some(target.to_string_lossy().into_owned().into_bytes()));
+    }
+    let file = std::fs::File::open(abs)?;
+    let Ok((mut pipeline, index)) = repo.filter_pipeline(None) else {
+        let mut buf = Vec::new();
+        let mut f = std::fs::File::open(abs)?;
+        use std::io::Read;
+        f.read_to_end(&mut buf)?;
+        return Ok(Some(buf));
+    };
+    let outcome = pipeline.convert_to_git(file, std::path::Path::new(rel), &index);
+    let Ok(outcome) = outcome else {
+        let mut buf = Vec::new();
+        let mut f = std::fs::File::open(abs)?;
+        use std::io::Read;
+        f.read_to_end(&mut buf)?;
+        return Ok(Some(buf));
+    };
+    use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
+    use std::io::Read;
+    let mut out = Vec::new();
+    match outcome {
+        ToGitOutcome::Unchanged(mut r) => {
+            r.read_to_end(&mut out)?;
+        }
+        ToGitOutcome::Buffer(buf) => out.extend_from_slice(buf),
+        ToGitOutcome::Process(mut r) => {
+            r.read_to_end(&mut out)?;
+        }
+    }
+    Ok(Some(out))
+}
 
 fn compute_blob_hunks(
     repo: &gix::Repository,
