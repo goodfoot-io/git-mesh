@@ -90,7 +90,10 @@ fn nul_bearing_file_rejects_line_range_add() -> Result<()> {
     std::fs::write(repo.path().join("data.bin"), b"abc\0def\n")?;
     repo.commit_all("seed")?;
     let out = repo.run_mesh(["add", "m", "data.bin#L1-L1"])?;
-    assert!(!out.status.success(), "line-range add on NUL file must fail");
+    assert!(
+        !out.status.success(),
+        "line-range add on NUL file must fail"
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("binary"),
@@ -102,6 +105,33 @@ fn nul_bearing_file_rejects_line_range_add() -> Result<()> {
         out2.status.success(),
         "whole-file add should accept NUL content: {}",
         String::from_utf8_lossy(&out2.stderr)
+    );
+    Ok(())
+}
+
+#[test]
+fn non_utf8_file_rejects_line_range_add() -> Result<()> {
+    let repo = TestRepo::new()?;
+    std::fs::write(repo.path().join("image.bin"), b"\x89PNG\r\n\x1a\noldbinary")?;
+    repo.run_git(["add", "image.bin"])?;
+    repo.run_git(["commit", "-m", "seed"])?;
+
+    let out = repo.run_mesh(["add", "m", "image.bin#L1-L1"])?;
+    assert!(
+        !out.status.success(),
+        "line-range add on non-UTF-8 content must fail"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("binary"),
+        "expected binary rejection, got: {err}"
+    );
+
+    let whole = repo.run_mesh(["add", "m", "image.bin"])?;
+    assert!(
+        whole.status.success(),
+        "whole-file pin should accept non-UTF-8 content: {}",
+        String::from_utf8_lossy(&whole.stderr)
     );
     Ok(())
 }
@@ -140,19 +170,42 @@ fn at_ordering_produces_identical_anchor() -> Result<()> {
     repo.commit_all("v2")?;
 
     // Order A: range before --at.
-    repo.run_mesh(["why", "ma", "-m", "x"])?.status.success().then_some(()).unwrap();
+    repo.run_mesh(["why", "ma", "-m", "x"])?
+        .status
+        .success()
+        .then_some(())
+        .unwrap();
     let out_a = repo.run_mesh(["add", "ma", "f.txt#L1-L1", "--at", &seed])?;
-    assert!(out_a.status.success(), "{}", String::from_utf8_lossy(&out_a.stderr));
+    assert!(
+        out_a.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out_a.stderr)
+    );
 
     // Order B: --at before range.
-    repo.run_mesh(["why", "mb", "-m", "x"])?.status.success().then_some(()).unwrap();
+    repo.run_mesh(["why", "mb", "-m", "x"])?
+        .status
+        .success()
+        .then_some(())
+        .unwrap();
     let out_b = repo.run_mesh(["add", "mb", "--at", &seed, "f.txt#L1-L1"])?;
-    assert!(out_b.status.success(), "{}", String::from_utf8_lossy(&out_b.stderr));
+    assert!(
+        out_b.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out_b.stderr)
+    );
 
     let staging_a = std::fs::read_to_string(repo.path().join(".git/mesh/staging/ma"))?;
     let staging_b = std::fs::read_to_string(repo.path().join(".git/mesh/staging/mb"))?;
     // Strip the mesh name; the line content should be identical.
-    assert_eq!(staging_a.trim(), staging_b.trim(), "anchors differ across orderings");
-    assert!(staging_a.contains(&seed), "staged anchor should be the resolved seed OID");
+    assert_eq!(
+        staging_a.trim(),
+        staging_b.trim(),
+        "anchors differ across orderings"
+    );
+    assert!(
+        staging_a.contains(&seed),
+        "staged anchor should be the resolved seed OID"
+    );
     Ok(())
 }

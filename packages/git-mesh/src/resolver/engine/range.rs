@@ -1,11 +1,11 @@
 //! Per-range layered resolution: HEAD walk + index/worktree hunk
 //! application + LFS short-circuit + slice comparison.
 
-use super::EngineState;
 use super::super::layers::{
     filter_short_circuit, is_lfs_path, read_worktree_normalized, resolve_lfs_range,
 };
 use super::super::walker::{Tracked, apply_hunks_to_range, resolve_at_head};
+use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
 use crate::types::{
@@ -68,8 +68,16 @@ fn slice_differs(
     let a_hi = (anchored_end as usize).min(anchored_lines.len());
     let c_lo = (tracked.start as usize).saturating_sub(1);
     let c_hi = (tracked.end as usize).min(current_lines.len());
-    let a_slice = if a_lo <= a_hi { &anchored_lines[a_lo..a_hi] } else { &[][..] };
-    let c_slice = if c_lo <= c_hi { &current_lines[c_lo..c_hi] } else { &[][..] };
+    let a_slice = if a_lo <= a_hi {
+        &anchored_lines[a_lo..a_hi]
+    } else {
+        &[][..]
+    };
+    let c_slice = if c_lo <= c_hi {
+        &current_lines[c_lo..c_hi]
+    } else {
+        &[][..]
+    };
     !lines_equal(a_slice, c_slice, ignore_ws)
 }
 
@@ -118,7 +126,10 @@ pub(crate) fn resolve_range_inner(
                 anchored,
                 current: Some(RangeLocation {
                     path: PathBuf::from(p),
-                    extent: RangeExtent::Lines { start: anchored_start, end: anchored_end },
+                    extent: RangeExtent::Lines {
+                        start: anchored_start,
+                        end: anchored_end,
+                    },
                     blob: None,
                 }),
                 status: RangeStatus::MergeConflict,
@@ -148,7 +159,11 @@ pub(crate) fn resolve_range_inner(
         } else {
             let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
             let new_path = entry.new_path.clone();
-            index_tracked = Some(Tracked { path: new_path, start: s, end: e });
+            index_tracked = Some(Tracked {
+                path: new_path,
+                start: s,
+                end: e,
+            });
             index_blob_oid = entry.new_blob.clone();
             index_hunk_applied = true;
         }
@@ -167,7 +182,11 @@ pub(crate) fn resolve_range_inner(
         } else {
             let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
             let new_path = entry.new_path.clone();
-            worktree_tracked = Some(Tracked { path: new_path, start: s, end: e });
+            worktree_tracked = Some(Tracked {
+                path: new_path,
+                start: s,
+                end: e,
+            });
             worktree_hunk_applied = true;
         }
     }
@@ -203,20 +222,32 @@ pub(crate) fn resolve_range_inner(
         None => None,
         Some(t) => {
             let (cur_text, cur_blob) = match deepest_layer {
-                DriftSource::Worktree => match read_worktree_normalized(repo, &mut state.custom_filters, &t.path) {
-                    Ok(bytes) => (string_from_utf8_lossy(&bytes), None),
-                    Err(Error::FilterFailed { filter }) => {
-                        return Ok(unavailable(range_id, &r, anchored, UnavailableReason::FilterFailed { filter }));
+                DriftSource::Worktree => {
+                    match read_worktree_normalized(repo, &mut state.custom_filters, &t.path) {
+                        Ok(bytes) => (string_from_utf8_lossy(&bytes), None),
+                        Err(Error::FilterFailed { filter }) => {
+                            return Ok(unavailable(
+                                range_id,
+                                &r,
+                                anchored,
+                                UnavailableReason::FilterFailed { filter },
+                            ));
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
-                },
+                }
                 DriftSource::Index => {
                     if let Some(filter) = filter_short_circuit(repo, &t.path)? {
-                        return Ok(unavailable(range_id, &r, anchored, UnavailableReason::FilterFailed { filter }));
+                        return Ok(unavailable(
+                            range_id,
+                            &r,
+                            anchored,
+                            UnavailableReason::FilterFailed { filter },
+                        ));
                     }
-                    let oid = index_blob_oid.clone().or_else(|| {
-                        head_blob_for(repo, &t.path).ok()
-                    });
+                    let oid = index_blob_oid
+                        .clone()
+                        .or_else(|| head_blob_for(repo, &t.path).ok());
                     match oid {
                         Some(o) => {
                             let txt = git::read_git_text(repo, &o).unwrap_or_default();
@@ -227,7 +258,12 @@ pub(crate) fn resolve_range_inner(
                 }
                 DriftSource::Head => {
                     if let Some(filter) = filter_short_circuit(repo, &t.path)? {
-                        return Ok(unavailable(range_id, &r, anchored, UnavailableReason::FilterFailed { filter }));
+                        return Ok(unavailable(
+                            range_id,
+                            &r,
+                            anchored,
+                            UnavailableReason::FilterFailed { filter },
+                        ));
                     }
                     let oid = head_blob_for(repo, &t.path).ok();
                     let txt = match &oid {
@@ -261,8 +297,16 @@ pub(crate) fn resolve_range_inner(
             let a_hi = (anchored_end as usize).min(anchored_lines.len());
             let c_lo = (t.start as usize).saturating_sub(1);
             let c_hi = (t.end as usize).min(current_lines.len());
-            let a_slice = if a_lo <= a_hi { &anchored_lines[a_lo..a_hi] } else { &[][..] };
-            let c_slice = if c_lo <= c_hi { &current_lines[c_lo..c_hi] } else { &[][..] };
+            let a_slice = if a_lo <= a_hi {
+                &anchored_lines[a_lo..a_hi]
+            } else {
+                &[][..]
+            };
+            let c_slice = if c_lo <= c_hi {
+                &current_lines[c_lo..c_hi]
+            } else {
+                &[][..]
+            };
             let equal = lines_equal(a_slice, c_slice, cfg.ignore_whitespace);
 
             // Compute per-layer drift: compare each enabled layer's content
@@ -296,7 +340,11 @@ pub(crate) fn resolve_range_inner(
                     source = inferred_source;
                     // MOVED means bytes are equal; per design requirement 4,
                     // keep the single-row shape (source=first drifting layer).
-                    layer_sources = if let Some(s) = inferred_source { vec![s] } else { vec![] };
+                    layer_sources = if let Some(s) = inferred_source {
+                        vec![s]
+                    } else {
+                        vec![]
+                    };
                 }
             } else {
                 status = RangeStatus::Changed;
@@ -309,13 +357,14 @@ pub(crate) fn resolve_range_inner(
             }
             current_loc = Some(RangeLocation {
                 path: PathBuf::from(t.path.clone()),
-                extent: RangeExtent::Lines { start: t.start, end: t.end },
+                extent: RangeExtent::Lines {
+                    start: t.start,
+                    end: t.end,
+                },
                 blob: if worktree_hunk_applied {
                     None
                 } else if state.layers.index && index_blob_oid.is_some() {
-                    index_blob_oid
-                        .as_deref()
-                        .and_then(|o| oid_from_hex(o).ok())
+                    index_blob_oid.as_deref().and_then(|o| oid_from_hex(o).ok())
                 } else {
                     cur_blob
                 },
@@ -402,7 +451,14 @@ fn compute_layer_sources(
                         Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
                         None => String::new(),
                     };
-                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                    slice_differs(
+                        &txt,
+                        t,
+                        anchored_lines,
+                        anchored_start,
+                        anchored_end,
+                        ignore_ws,
+                    )
                 }
             }
         };
@@ -420,12 +476,21 @@ fn compute_layer_sources(
             Some(t) => {
                 if index_hunk_applied {
                     // Index blob changed for this path; read the indexed blob.
-                    let oid = index_blob_oid.clone().or_else(|| head_blob_for(repo, &t.path).ok());
+                    let oid = index_blob_oid
+                        .clone()
+                        .or_else(|| head_blob_for(repo, &t.path).ok());
                     let txt = match &oid {
                         Some(o) => read_blob_text(repo, o),
                         None => String::new(),
                     };
-                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                    slice_differs(
+                        &txt,
+                        t,
+                        anchored_lines,
+                        anchored_start,
+                        anchored_end,
+                        ignore_ws,
+                    )
                 } else {
                     // No index hunk for this path: index content == head
                     // content at this position. Reuse the HEAD drift result
@@ -435,7 +500,14 @@ fn compute_layer_sources(
                         Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
                         None => String::new(),
                     };
-                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                    slice_differs(
+                        &txt,
+                        t,
+                        anchored_lines,
+                        anchored_start,
+                        anchored_end,
+                        ignore_ws,
+                    )
                 }
             }
         };
@@ -453,18 +525,34 @@ fn compute_layer_sources(
                     match read_worktree_normalized(repo, &mut state.custom_filters, &t.path) {
                         Ok(bytes) => {
                             let txt = string_from_utf8_lossy(&bytes);
-                            slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                            slice_differs(
+                                &txt,
+                                t,
+                                anchored_lines,
+                                anchored_start,
+                                anchored_end,
+                                ignore_ws,
+                            )
                         }
                         Err(_) => true, // fail-closed on unreadable
                     }
                 } else {
                     // No worktree hunk: worktree == index at this position.
-                    let oid = index_blob_oid.clone().or_else(|| head_blob_for(repo, &t.path).ok());
+                    let oid = index_blob_oid
+                        .clone()
+                        .or_else(|| head_blob_for(repo, &t.path).ok());
                     let txt = match &oid {
                         Some(o) => read_blob_text(repo, o),
                         None => String::new(),
                     };
-                    slice_differs(&txt, t, anchored_lines, anchored_start, anchored_end, ignore_ws)
+                    slice_differs(
+                        &txt,
+                        t,
+                        anchored_lines,
+                        anchored_start,
+                        anchored_end,
+                        ignore_ws,
+                    )
                 }
             }
         };

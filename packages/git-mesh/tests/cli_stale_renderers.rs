@@ -153,3 +153,64 @@ fn github_actions_emits_annotation_with_path() -> Result<()> {
     assert!(s.contains("CHANGED"));
     Ok(())
 }
+
+#[test]
+fn human_pending_ops_render_range_addresses() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    repo.mesh_stdout(["add", "m", "file2.txt#L1-L5"])?;
+    repo.mesh_stdout(["rm", "m", "file1.txt#L1-L5"])?;
+
+    let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
+    assert!(out.contains("ADD    file2.txt#L1-L5"), "stdout={out}");
+    assert!(out.contains("REMOVE file1.txt#L1-L5"), "stdout={out}");
+    assert!(
+        !out.contains("file2.txt L1-L5") && !out.contains("file1.txt L1-L5"),
+        "pending ops should use range-address syntax: {out}"
+    );
+    assert!(
+        !out.contains("()"),
+        "empty range-id parentheses should not be rendered: {out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn human_stat_mode_prints_change_counts() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    drift_in_head(&repo)?;
+    let out = repo.run_mesh(["stale", "m", "--stat"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("file1.txt#L1-L5 | +1 -1"), "stdout={text}");
+    Ok(())
+}
+
+#[test]
+fn human_patch_mode_prints_unified_diff() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    drift_in_head(&repo)?;
+    let out = repo.run_mesh(["stale", "m", "--patch"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("--- file1.txt#L1-L5 (anchored)"),
+        "stdout={text}"
+    );
+    assert!(text.contains("+++ file1.txt#L1-L5"), "stdout={text}");
+    assert!(text.contains("@@"), "stdout={text}");
+    Ok(())
+}
+
+#[test]
+fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
+    let out = repo.mesh_stdout(["stale", "new-mesh", "--no-exit-code"])?;
+    assert!(out.contains("mesh new-mesh"), "stdout={out}");
+    assert!(out.contains("Pending mesh ops:"), "stdout={out}");
+    assert!(out.contains("ADD    file1.txt#L1-L5"), "stdout={out}");
+    Ok(())
+}

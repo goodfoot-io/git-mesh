@@ -26,9 +26,7 @@ use git_mesh::types::{
     ContentRef, DriftSource, EngineOptions, LayerSet, PendingDrift, RangeExtent, RangeStatus,
     Scope, UnavailableReason,
 };
-use git_mesh::{
-    append_add, commit_mesh, resolve_mesh, resolve_range, set_why, stale_meshes,
-};
+use git_mesh::{append_add, commit_mesh, resolve_mesh, resolve_range, set_why, stale_meshes};
 use std::path::PathBuf;
 use support::TestRepo;
 
@@ -271,6 +269,36 @@ fn ack_survives_moved_via_range_id() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn commit_reanchor_replaces_moved_range_instead_of_adding_duplicate() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "m")?;
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("shift")?;
+
+    let out = repo.run_mesh(["stale", "m"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("MOVED file1.txt#L1-L5"), "stdout={stdout}");
+
+    repo.mesh_stdout(["add", "m", "file1.txt#L3-L7"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    let mesh = git_mesh::read_mesh(&repo.gix_repo()?, "m")?;
+    assert_eq!(mesh.ranges.len(), 1, "re-anchor must replace old range");
+    let range = git_mesh::read_range(&repo.gix_repo()?, &mesh.ranges[0])?;
+    assert_eq!(range.path, "file1.txt");
+    assert_eq!(
+        range.extent,
+        git_mesh::types::RangeExtent::Lines { start: 3, end: 7 }
+    );
+    let stale = repo.run_mesh(["stale", "m"])?;
+    assert_eq!(stale.status.code(), Some(0));
+    Ok(())
+}
+
 /// Plan bullet: Sidecar captured before a `.gitattributes` EOL change: re-normalized
 /// on read still acknowledges.
 #[test]
@@ -458,7 +486,11 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
     // Line-range pin on a symlink must be rejected at add time.
     let rej = repo.run_mesh(["add", "n", "link#L1-L1"])?;
-    assert_ne!(rej.status.code(), Some(0), "line-range on symlink must fail");
+    assert_ne!(
+        rej.status.code(),
+        Some(0),
+        "line-range on symlink must fail"
+    );
     Ok(())
 }
 
@@ -542,9 +574,7 @@ fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()>
     // git for many things) but excludes `git-lfs`, so the filter-process
     // spawn fails with ENOENT.
     let sandbox = tempfile::tempdir()?;
-    let git_src = std::process::Command::new("which")
-        .arg("git")
-        .output()?;
+    let git_src = std::process::Command::new("which").arg("git").output()?;
     let git_path = String::from_utf8_lossy(&git_src.stdout).trim().to_string();
     std::os::unix::fs::symlink(&git_path, sandbox.path().join("git"))?;
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
@@ -666,10 +696,7 @@ fn git_mv_across_pinned_file_reports_moved_new_path() -> Result<()> {
 fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Create a new file staged with -N — zero-OID index entry.
-    repo.write_file(
-        "new.txt",
-        "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n",
-    )?;
+    repo.write_file("new.txt", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n")?;
     repo.run_git(["add", "-N", "new.txt"])?;
     // Append-add without commit would fail because HEAD has no blob; to
     // get a mesh whose anchored path maps to an intent-to-add file on

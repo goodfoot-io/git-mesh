@@ -107,9 +107,11 @@ pub(crate) fn resolve_whole_file(
     // Determine which layers independently show drift (blob OID != anchor blob).
     let head_drifts = head_blob.as_deref() != Some(r.blob.as_str());
     let index_drifts = state.layers.index && index_blob.as_deref() != Some(r.blob.as_str());
-    let worktree_drifts = state.layers.worktree && worktree_blob.as_ref()
-        .map(|b| b.as_deref() != Some(r.blob.as_str()))
-        .unwrap_or(false);
+    let worktree_drifts = state.layers.worktree
+        && worktree_blob
+            .as_ref()
+            .map(|b| b.as_deref() != Some(r.blob.as_str()))
+            .unwrap_or(false);
 
     let deepest = if state.layers.worktree {
         DriftSource::Worktree
@@ -147,9 +149,15 @@ pub(crate) fn resolve_whole_file(
             source = Some(deepest);
             // Collect all drifting layers in I → W → H order.
             let mut ls: Vec<DriftSource> = Vec::new();
-            if index_drifts { ls.push(DriftSource::Index); }
-            if worktree_drifts { ls.push(DriftSource::Worktree); }
-            if head_drifts { ls.push(DriftSource::Head); }
+            if index_drifts {
+                ls.push(DriftSource::Index);
+            }
+            if worktree_drifts {
+                ls.push(DriftSource::Worktree);
+            }
+            if head_drifts {
+                ls.push(DriftSource::Head);
+            }
             layer_sources = if ls.is_empty() { vec![deepest] } else { ls };
         }
     }
@@ -205,10 +213,7 @@ fn follow_path_to_head(
     for commit_id in commits {
         let commit = repo.find_commit(commit_id).ok()?;
         let new_tree = commit.tree().ok()?;
-        let parents: Vec<gix::ObjectId> = commit
-            .parent_ids()
-            .map(|p| p.detach())
-            .collect();
+        let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
         // Mirror `git log --follow`'s heuristic: first parent only.
         let old_tree = match parents.first() {
             Some(pid) => repo.find_commit(*pid).ok()?.tree().ok()?,
@@ -239,11 +244,7 @@ fn follow_path_to_head(
     if current == path { None } else { Some(current) }
 }
 
-fn tree_entry_for(
-    repo: &gix::Repository,
-    commit: &str,
-    path: &str,
-) -> Option<(String, String)> {
+fn tree_entry_for(repo: &gix::Repository, commit: &str, path: &str) -> Option<(String, String)> {
     let (mode, oid) = git::tree_entry_at(repo, commit, std::path::Path::new(path)).ok()??;
     let mut buf = [0u8; 6];
     let mode_str = mode.as_bytes(&mut buf).to_string();

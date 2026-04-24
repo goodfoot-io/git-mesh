@@ -9,11 +9,7 @@ use support::TestRepo;
 /// for assertion purposes — replaces the deleted `git mesh status`
 /// view used by these tests to check what was staged.
 fn staging_dump(repo: &TestRepo, mesh: &str) -> String {
-    let dir = repo
-        .path()
-        .join(".git")
-        .join("mesh")
-        .join("staging");
+    let dir = repo.path().join(".git").join("mesh").join("staging");
     let mut out = String::new();
     if !dir.exists() {
         return out;

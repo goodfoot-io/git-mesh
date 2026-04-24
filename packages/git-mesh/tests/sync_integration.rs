@@ -59,7 +59,7 @@ fn ensure_refspec_configured_is_idempotent() -> Result<()> {
 fn ensure_refspec_errors_on_missing_remote() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let err = ensure_refspec_configured(&repo.gix_repo()?, "absent").unwrap_err();
-    assert!(matches!(err, git_mesh::Error::RefspecMissing { .. }));
+    assert!(matches!(err, git_mesh::Error::RemoteNotFound { .. }));
     Ok(())
 }
 

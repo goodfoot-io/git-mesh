@@ -17,8 +17,8 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::types::{CopyDetection, EngineOptions, RangeStatus};
 use git_mesh::StagedConfig;
+use git_mesh::types::{CopyDetection, EngineOptions, RangeStatus};
 use git_mesh::{append_add, append_config, commit_mesh, resolve_mesh, set_why};
 use support::TestRepo;
 
@@ -127,7 +127,14 @@ fn any_file_in_commit_diverges_from_same_commit() -> Result<()> {
     repo_afic.write_file("a.ts", &content)?;
     repo_afic.commit_all("init")?;
 
-    setup_mesh(&repo_afic, "m", "a.ts", 1, 20, CopyDetection::AnyFileInCommit)?;
+    setup_mesh(
+        &repo_afic,
+        "m",
+        "a.ts",
+        1,
+        20,
+        CopyDetection::AnyFileInCommit,
+    )?;
 
     repo_afic.write_file("b.ts", &content)?;
     repo_afic.commit_all("add b.ts copying a.ts (a.ts unchanged)")?;
@@ -267,7 +274,11 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     {
         let gix = repo_sc.gix_repo()?;
         append_add(&gix, "m", "seed.ts", 1, 1, Some(&anchor_sha_sc))?;
-        append_config(&gix, "m", &StagedConfig::CopyDetection(CopyDetection::SameCommit))?;
+        append_config(
+            &gix,
+            "m",
+            &StagedConfig::CopyDetection(CopyDetection::SameCommit),
+        )?;
         set_why(&gix, "m", "test")?;
         commit_mesh(&gix, "m")?;
     }
@@ -299,7 +310,11 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     {
         let gix = repo_afir.gix_repo()?;
         append_add(&gix, "m", "seed.ts", 1, 1, Some(&anchor_sha_afir))?;
-        append_config(&gix, "m", &StagedConfig::CopyDetection(CopyDetection::AnyFileInRepo))?;
+        append_config(
+            &gix,
+            "m",
+            &StagedConfig::CopyDetection(CopyDetection::AnyFileInRepo),
+        )?;
         set_why(&gix, "m", "test")?;
         commit_mesh(&gix, "m")?;
     }
@@ -354,7 +369,11 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     {
         let gix = repo_final.gix_repo()?;
         append_add(&gix, "sc", "unrelated.ts", 1, 5, Some(&anchor_sha_final))?;
-        append_config(&gix, "sc", &StagedConfig::CopyDetection(CopyDetection::SameCommit))?;
+        append_config(
+            &gix,
+            "sc",
+            &StagedConfig::CopyDetection(CopyDetection::SameCommit),
+        )?;
         set_why(&gix, "sc", "test")?;
         commit_mesh(&gix, "sc")?;
 
@@ -656,7 +675,10 @@ fn any_file_in_repo_sees_source_on_other_ref() -> Result<()> {
             // For this test, we assert that AnyFileInRepo at least produces a
             // non-error result and the status is coherent.
             assert!(
-                matches!(status, RangeStatus::Fresh | RangeStatus::Moved | RangeStatus::Changed),
+                matches!(
+                    status,
+                    RangeStatus::Fresh | RangeStatus::Moved | RangeStatus::Changed
+                ),
                 "AnyFileInRepo mode={mode:?}: unexpected status {status:?}"
             );
         } else {
@@ -687,7 +709,11 @@ fn any_file_in_repo_warns_on_budget_downgrade() -> Result<()> {
     {
         let gix = repo.gix_repo()?;
         append_add(&gix, "m", "a.ts", 1, 20, Some(&anchor))?;
-        append_config(&gix, "m", &StagedConfig::CopyDetection(CopyDetection::AnyFileInRepo))?;
+        append_config(
+            &gix,
+            "m",
+            &StagedConfig::CopyDetection(CopyDetection::AnyFileInRepo),
+        )?;
         set_why(&gix, "m", "test")?;
         commit_mesh(&gix, "m")?;
     }
@@ -715,7 +741,14 @@ fn any_file_in_repo_warns_on_budget_downgrade() -> Result<()> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(repo.path())
         .env("GIT_MESH_RENAME_BUDGET", "2")
-        .args(["stale", "m", "--format=porcelain", "--no-index", "--no-worktree", "--no-staged-mesh"])
+        .args([
+            "stale",
+            "m",
+            "--format=porcelain",
+            "--no-index",
+            "--no-worktree",
+            "--no-staged-mesh",
+        ])
         .output()?;
 
     let stderr = String::from_utf8_lossy(&out.stderr);

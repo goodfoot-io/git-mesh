@@ -13,10 +13,7 @@ use crate::{Error, Result};
 /// `path`. Returns `Some(name)` when the driver is unknown — neither on
 /// the core-filter allowlist nor backed by a `filter.<name>.process` —
 /// i.e. fail-loud short-circuit.
-pub(crate) fn filter_short_circuit(
-    repo: &gix::Repository,
-    path: &str,
-) -> Result<Option<String>> {
+pub(crate) fn filter_short_circuit(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
     let workdir = git::work_dir(repo)?;
     match types::path_filter_attribute(workdir, std::path::Path::new(path))? {
         Some(name) if types::is_core_filter(&name) => Ok(None),
@@ -34,8 +31,7 @@ pub(crate) fn read_worktree_normalized(
     rel_path: &str,
 ) -> Result<Vec<u8>> {
     let workdir = git::work_dir(repo)?;
-    if let Some(name) =
-        types::path_filter_attribute(workdir, std::path::Path::new(rel_path))?
+    if let Some(name) = types::path_filter_attribute(workdir, std::path::Path::new(rel_path))?
         && !types::is_core_filter(&name)
     {
         let abs = workdir.join(rel_path);

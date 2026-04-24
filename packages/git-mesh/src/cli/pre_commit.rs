@@ -13,13 +13,13 @@
 //! `Message` and `ConfigChange` pending ops never drive exit code (per
 //! plan §B3).
 
+use crate::Error;
 use crate::mesh::read::list_mesh_names;
 use crate::resolver::{build_pending_findings, resolve_mesh};
 use crate::types::{
     DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
-    RangeStatus,
+    RangeExtent, RangeStatus,
 };
-use crate::Error;
 use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -147,9 +147,9 @@ pub fn run_pre_commit(repo: &gix::Repository) -> Result<i32> {
     render_report(&meshes, &kept_findings, &kept_pending);
 
     // Exit logic per Phase 4.
-    let index_drift_unacked = kept_findings.iter().any(|f| {
-        f.source == Some(DriftSource::Index) && f.acknowledged_by.is_none()
-    });
+    let index_drift_unacked = kept_findings
+        .iter()
+        .any(|f| f.source == Some(DriftSource::Index) && f.acknowledged_by.is_none());
     let pending_drift = kept_pending.iter().any(|p| {
         matches!(
             p,
@@ -245,18 +245,13 @@ fn staged_paths(repo: &gix::Repository) -> Result<HashSet<PathBuf>> {
     Ok(set)
 }
 
-fn render_report(
-    meshes: &[MeshResolved],
-    findings: &[&Finding],
-    pending: &[&PendingFinding],
-) {
+fn render_report(meshes: &[MeshResolved], findings: &[&Finding], pending: &[&PendingFinding]) {
     if findings.is_empty() && pending.is_empty() {
         return;
     }
     println!("git mesh pre-commit: stale ranges in the in-flight commit");
     for m in meshes {
-        let mesh_findings: Vec<&&Finding> =
-            findings.iter().filter(|f| f.mesh == m.name).collect();
+        let mesh_findings: Vec<&&Finding> = findings.iter().filter(|f| f.mesh == m.name).collect();
         let mesh_pending: Vec<&&PendingFinding> = pending
             .iter()
             .filter(|p| pending_mesh(p) == m.name.as_str())
@@ -293,7 +288,11 @@ fn render_report(
                         Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
                         None => "",
                     };
-                    println!("    + ADD    {}{}", op.path, note);
+                    println!(
+                        "    + ADD    {}{}",
+                        render_pending_address(&op.path, op.extent),
+                        note
+                    );
                 }
                 PendingFinding::Remove { op, drift, .. } => {
                     let note = match drift {
@@ -301,11 +300,22 @@ fn render_report(
                         Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
                         None => "",
                     };
-                    println!("    - REMOVE {}{}", op.path, note);
+                    println!(
+                        "    - REMOVE {}{}",
+                        render_pending_address(&op.path, op.extent),
+                        note
+                    );
                 }
                 _ => {}
             }
         }
+    }
+}
+
+fn render_pending_address(path: &str, extent: RangeExtent) -> String {
+    match extent {
+        RangeExtent::Whole => format!("{path}  (whole)"),
+        RangeExtent::Lines { start, end } => format!("{path}#L{start}-L{end}"),
     }
 }
 

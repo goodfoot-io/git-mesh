@@ -2,7 +2,7 @@
 
 use crate::cli::{AddArgs, CommitArgs, ConfigArgs, RmArgs, WhyArgs};
 use crate::staging::{StagedConfig, append_prepared_add, parse_address, prepare_add};
-use crate::types::{validate_add_target, CopyDetection, RangeExtent};
+use crate::types::{CopyDetection, EngineOptions, RangeExtent, validate_add_target};
 use crate::{append_config, append_remove, commit_mesh, read_mesh, set_why};
 use anyhow::{Context, Result, anyhow};
 
@@ -12,9 +12,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // Parse every address first; fail-closed with no partial staging.
     let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
     for addr in &args.ranges {
-        let p = parse_address(addr).ok_or_else(|| {
-            anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]")
-        })?;
+        let p = parse_address(addr)
+            .ok_or_else(|| anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]"))?;
         parsed.push(p);
     }
 
@@ -52,9 +51,11 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     }
 
     // Resolve the existing range_id for this `(path, extent)` in the
-    // mesh, so the staged add can later be matched as an ack by the
-    // engine via `range_id` (plan §B2 — stable across `Moved`).
-    let mesh_ranges_lookup = mesh_range_id_lookup(repo, &args.name);
+    // mesh. Include resolved current locations so `git mesh add` over a
+    // moved range's new address re-anchors the existing range instead of
+    // creating a second range.
+    let mut mesh_ranges_lookup = mesh_current_range_id_lookup(repo, &args.name);
+    mesh_ranges_lookup.extend(mesh_range_id_lookup(repo, &args.name));
 
     let mut prepared = Vec::with_capacity(parsed.len());
     for (path, extent) in &parsed {
@@ -83,14 +84,31 @@ fn mesh_range_id_lookup(
     out
 }
 
+fn mesh_current_range_id_lookup(
+    repo: &gix::Repository,
+    mesh_name: &str,
+) -> std::collections::HashMap<(String, RangeExtent), String> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(resolved) = crate::resolver::resolve_mesh(repo, mesh_name, EngineOptions::full()) else {
+        return out;
+    };
+    for r in resolved.ranges {
+        let Some(current) = r.current else { continue };
+        out.insert(
+            (current.path.to_string_lossy().into_owned(), current.extent),
+            r.range_id,
+        );
+    }
+    out
+}
+
 pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
     let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
     for addr in &args.ranges {
-        let p = parse_address(addr).ok_or_else(|| {
-            anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]")
-        })?;
+        let p = parse_address(addr)
+            .ok_or_else(|| anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]"))?;
         parsed.push(p);
     }
 
@@ -120,9 +138,7 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
 
     let mut effective = present.clone();
     for (path, extent) in &parsed {
-        let idx = effective
-            .iter()
-            .position(|(p, e)| p == path && e == extent);
+        let idx = effective.iter().position(|(p, e)| p == path && e == extent);
         match idx {
             Some(i) => {
                 effective.remove(i);
@@ -173,11 +189,7 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs) -> Result<i32> {
     run_why_editor(repo, &args.name)
 }
 
-fn run_why_reader(
-    repo: &gix::Repository,
-    name: &str,
-    at: Option<&str>,
-) -> Result<i32> {
+fn run_why_reader(repo: &gix::Repository, name: &str, at: Option<&str>) -> Result<i32> {
     crate::validation::validate_mesh_name(name)?;
     // Resolution path: read the mesh commit at HEAD (or `--at <commit-ish>`)
     // on `refs/meshes/v1/<name>` and print its commit message — the
@@ -283,10 +295,8 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
     let mut staged: Vec<String> = Vec::new();
     for name in candidates {
         let s = crate::staging::read_staging(repo, &name).unwrap_or_default();
-        let has_anything = !s.adds.is_empty()
-            || !s.removes.is_empty()
-            || !s.configs.is_empty()
-            || s.why.is_some();
+        let has_anything =
+            !s.adds.is_empty() || !s.removes.is_empty() || !s.configs.is_empty() || s.why.is_some();
         if has_anything {
             staged.push(name);
         }
@@ -322,7 +332,6 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
         ))
     }
 }
-
 
 pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
     // Read mesh config.

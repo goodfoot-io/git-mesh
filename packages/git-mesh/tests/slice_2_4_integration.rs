@@ -44,8 +44,15 @@ fn whole_file_binary_re_anchor_acks_with_high_bytes() -> Result<()> {
 
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(stdout.contains("(ack)"), "expected (ack) in stale output, got: {stdout}");
-    assert_eq!(out.status.code(), Some(0), "stale must exit 0 after ack: {stdout}");
+    assert!(
+        stdout.contains("(ack)"),
+        "expected (ack) in stale output, got: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stale must exit 0 after ack: {stdout}"
+    );
     Ok(())
 }
 
@@ -128,9 +135,16 @@ fn commit_fails_on_tampered_sidecar() -> Result<()> {
     repo.run_mesh(["why", "m", "-m", "seed"])?;
     tamper_sidecar(&repo, "m", 1)?;
     let out = repo.run_mesh(["commit", "m"])?;
-    assert_ne!(out.status.code(), Some(0), "commit must fail on tampered sidecar");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "commit must fail on tampered sidecar"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    assert!(stderr.contains("tampered"), "expected tampered message, got: {stderr}");
+    assert!(
+        stderr.contains("tampered"),
+        "expected tampered message, got: {stderr}"
+    );
     Ok(())
 }
 
@@ -146,8 +160,15 @@ fn stale_surfaces_tampered_drift() -> Result<()> {
     tamper_sidecar(&repo, "m", 1)?;
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(stdout.contains("tampered"), "expected tampered, got: {stdout}");
-    assert_ne!(out.status.code(), Some(0), "stale must exit non-zero on tamper");
+    assert!(
+        stdout.contains("tampered"),
+        "expected tampered, got: {stdout}"
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "stale must exit non-zero on tamper"
+    );
     Ok(())
 }
 
@@ -158,7 +179,10 @@ fn doctor_reports_tampered_sidecar() -> Result<()> {
     tamper_sidecar(&repo, "m", 1)?;
     let out = repo.run_mesh(["doctor"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(stdout.contains("SidecarTampered"), "expected SidecarTampered finding, got: {stdout}");
+    assert!(
+        stdout.contains("SidecarTampered"),
+        "expected SidecarTampered finding, got: {stdout}"
+    );
     Ok(())
 }
 

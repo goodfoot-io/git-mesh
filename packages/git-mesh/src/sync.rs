@@ -83,7 +83,7 @@ fn run_git(wd: &Path, args: &[&str]) -> Result<()> {
 pub fn ensure_refspec_configured(repo: &gix::Repository, remote: &str) -> Result<()> {
     // Fail-closed: remote must exist before we add config lines.
     if get_remote_url(repo, remote).is_none() {
-        return Err(Error::RefspecMissing {
+        return Err(Error::RemoteNotFound {
             remote: remote.into(),
         });
     }
@@ -218,7 +218,11 @@ mod tests {
     use std::process::Command;
 
     fn run_git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
         assert!(
             out.status.success(),
             "git {:?} failed: {}",
@@ -257,7 +261,10 @@ mod tests {
             .iter()
             .filter(|s| s.contains("refs/ranges/") || s.contains("refs/meshes/"))
             .count();
-        assert_eq!(mesh_fetch_count, 2, "fetch refspecs not idempotent: {fetch:?}");
+        assert_eq!(
+            mesh_fetch_count, 2,
+            "fetch refspecs not idempotent: {fetch:?}"
+        );
         assert_eq!(mesh_push_count, 2, "push refspecs not idempotent: {push:?}");
     }
 
@@ -293,8 +300,7 @@ mod tests {
             1
         );
         assert_eq!(
-            push
-                .iter()
+            push.iter()
                 .filter(|s| s.as_str() == "+refs/meshes/*:refs/meshes/*")
                 .count(),
             1

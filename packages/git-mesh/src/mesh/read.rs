@@ -23,6 +23,7 @@ pub(crate) fn resolve_mesh_revision(
     name: &str,
     commit_ish: Option<&str>,
 ) -> Result<String> {
+    let wd = work_dir(repo)?;
     let mesh_ref = mesh_ref(name);
     let revision = match commit_ish {
         None => mesh_ref.clone(),
@@ -37,7 +38,17 @@ pub(crate) fn resolve_mesh_revision(
     };
     repo.rev_parse_single(revision.as_str())
         .map(|id| id.detach().to_string())
-        .map_err(|_| Error::MeshNotFound(name.to_string()))
+        .map_err(|_| {
+            if let Some(value) = commit_ish
+                && resolve_ref_oid_optional(wd, &mesh_ref)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            {
+                return Error::Git(format!("invalid mesh revision `{value}` for `{name}`"));
+            }
+            Error::MeshNotFound(name.to_string())
+        })
 }
 
 pub fn list_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {

@@ -121,6 +121,24 @@ fn show_missing_mesh_errors() -> Result<()> {
 }
 
 #[test]
+fn show_at_bad_revision_reports_revision_not_missing_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "alpha")?;
+    let out = repo.run_mesh(["alpha", "--at", "does-not-exist"])?;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("invalid mesh revision `does-not-exist`"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("mesh not found: alpha"),
+        "stderr should not blame existing mesh name: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 
 fn ls_all_lists_every_file_with_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;

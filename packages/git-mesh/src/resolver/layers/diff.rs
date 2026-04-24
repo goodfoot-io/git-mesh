@@ -211,10 +211,7 @@ enum RawIndexChange {
     },
 }
 
-fn materialize_index_entry(
-    repo: &gix::Repository,
-    change: RawIndexChange,
-) -> Result<DiffEntry> {
+fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Result<DiffEntry> {
     match change {
         RawIndexChange::Added {
             path,
@@ -393,13 +390,21 @@ fn collect_index_worktree_changes(
                 continue;
             }
             entries.push(worktree_change_to_entry(
-                repo, ch.path, ch.old_blob, ch.new_blob, ch.new_bytes,
+                repo,
+                ch.path,
+                ch.old_blob,
+                ch.new_blob,
+                ch.new_bytes,
             )?);
         }
     } else {
         for ch in changes {
             entries.push(worktree_change_to_entry(
-                repo, ch.path, ch.old_blob, ch.new_blob, ch.new_bytes,
+                repo,
+                ch.path,
+                ch.old_blob,
+                ch.new_blob,
+                ch.new_bytes,
             )?);
         }
     }
@@ -425,8 +430,8 @@ fn worktree_change_to_entry(
         }),
         Some(new_id) => {
             let new_bytes = new_bytes.unwrap_or_default();
-            let old_bytes = git::read_blob_bytes(repo, &old_blob.to_hex().to_string())
-                .unwrap_or_default();
+            let old_bytes =
+                git::read_blob_bytes(repo, &old_blob.to_hex().to_string()).unwrap_or_default();
             let hunks = compute_hunks_from_bytes(&old_bytes, &new_bytes);
             // Worktree layer historically doesn't fill `new_blob` (the
             // old text parser only populated it for the index layer
@@ -510,7 +515,7 @@ fn compute_blob_hunks(
 
 fn compute_hunks_from_bytes(old_bytes: &[u8], new_bytes: &[u8]) -> Vec<(u32, u32, u32, u32)> {
     use gix::diff::blob::sources::byte_lines;
-    use gix::diff::blob::{diff, intern::InternedInput, Algorithm};
+    use gix::diff::blob::{Algorithm, diff, intern::InternedInput};
 
     let input = InternedInput::new(byte_lines(old_bytes), byte_lines(new_bytes));
     let mut hunks: Vec<(u32, u32, u32, u32)> = Vec::new();
@@ -527,8 +532,16 @@ fn compute_hunks_from_bytes(old_bytes: &[u8], new_bytes: &[u8]) -> Vec<(u32, u32
             //   * the after-range follows symmetrically.
             let oc = before.end - before.start;
             let nc = after.end - after.start;
-            let os = if oc == 0 { before.start } else { before.start + 1 };
-            let ns = if nc == 0 { after.start } else { after.start + 1 };
+            let os = if oc == 0 {
+                before.start
+            } else {
+                before.start + 1
+            };
+            let ns = if nc == 0 {
+                after.start
+            } else {
+                after.start + 1
+            };
             hunks.push((os, oc, ns, nc));
         },
     );

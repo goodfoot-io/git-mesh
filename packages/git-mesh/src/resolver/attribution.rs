@@ -2,9 +2,9 @@
 //! that produced `current.blob`. Only meaningful when the drift `source`
 //! is HEAD; non-HEAD drift returns `None`.
 
+use crate::Result;
 use crate::git;
 use crate::types::{DriftSource, RangeResolved};
-use crate::Result;
 
 /// Blame the commit in `anchor..HEAD` that produced `current.blob`, when
 /// the drift `source` is HEAD (plan §B2). For non-HEAD drift sources or
@@ -17,10 +17,7 @@ use crate::Result;
 /// `path` — so we walk newest-first and stop at the first commit whose
 /// tree-vs-first-parent diff mentions the path. This matches `git log`'s
 /// default path-filter semantics (no `--follow`) used at the call site.
-pub fn culprit_commit(
-    repo: &gix::Repository,
-    resolved: &RangeResolved,
-) -> Result<Option<String>> {
+pub fn culprit_commit(repo: &gix::Repository, resolved: &RangeResolved) -> Result<Option<String>> {
     if resolved.source != Some(DriftSource::Head) {
         return Ok(None);
     }
@@ -74,8 +71,7 @@ pub fn culprit_commit(
         // not rename pairing (matches `git log -- <path>` defaults).
         let mut opts = gix::diff::Options::default();
         opts.track_rewrites(None);
-        let changes = match repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(opts))
-        {
+        let changes = match repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(opts)) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -91,10 +87,7 @@ pub fn culprit_commit(
                     source_location,
                     location,
                     ..
-                } => {
-                    source_location.as_slice() == path_bytes
-                        || location.as_slice() == path_bytes
-                }
+                } => source_location.as_slice() == path_bytes || location.as_slice() == path_bytes,
             }
         });
         if touches {

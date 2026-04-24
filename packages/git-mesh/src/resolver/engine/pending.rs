@@ -7,11 +7,7 @@ use crate::types::{
 };
 
 /// Acknowledgment matching by `range_id` (plan §B2).
-pub(crate) fn apply_acknowledgment(
-    repo: &gix::Repository,
-    mesh_name: &str,
-    r: &mut RangeResolved,
-) {
+pub(crate) fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &mut RangeResolved) {
     if r.status == RangeStatus::Fresh {
         return;
     }
@@ -82,8 +78,16 @@ fn slice_eq_at(
     let live_lines: Vec<&str> = live_text.lines().collect();
     let s_hi = s_hi.min(side_lines.len());
     let l_hi = l_hi.min(live_lines.len());
-    let side_slice: &[&str] = if s_lo <= s_hi { &side_lines[s_lo..s_hi] } else { &[] };
-    let live_slice: &[&str] = if l_lo <= l_hi { &live_lines[l_lo..l_hi] } else { &[] };
+    let side_slice: &[&str] = if s_lo <= s_hi {
+        &side_lines[s_lo..s_hi]
+    } else {
+        &[]
+    };
+    let live_slice: &[&str] = if l_lo <= l_hi {
+        &live_lines[l_lo..l_hi]
+    } else {
+        &[]
+    };
     side_slice == live_slice
 }
 
@@ -177,10 +181,7 @@ fn read_live_for_range(repo: &gix::Repository, r: &RangeResolved) -> Option<Vec<
     }
 }
 
-pub fn build_pending_findings(
-    repo: &gix::Repository,
-    mesh_name: &str,
-) -> Vec<PendingFinding> {
+pub fn build_pending_findings(repo: &gix::Repository, mesh_name: &str) -> Vec<PendingFinding> {
     let mut out = Vec::new();
     let ops = match crate::staging::read_staged_ops(repo, mesh_name) {
         Ok(v) => v,
@@ -273,5 +274,9 @@ fn pending_add_drift(
             s == l
         }
     };
-    if equal { None } else { Some(PendingDrift::SidecarMismatch) }
+    if equal {
+        None
+    } else {
+        Some(PendingDrift::SidecarMismatch)
+    }
 }

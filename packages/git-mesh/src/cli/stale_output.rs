@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use crate::cli::{StaleArgs, StaleFormat};
-use crate::resolver::{resolve_mesh, stale_meshes};
+use crate::resolver::{build_pending_findings, resolve_mesh, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
     DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
@@ -45,8 +45,42 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     };
 
     let meshes = match &args.name {
-        Some(n) => vec![resolve_mesh(repo, n, options)?],
-        None => stale_meshes(repo, options)?,
+        Some(n) => match resolve_mesh(repo, n, options) {
+            Ok(mesh) => vec![mesh],
+            Err(crate::Error::MeshNotFound(_)) if layers.staged_mesh => {
+                let pending = build_pending_findings(repo, n);
+                if pending.is_empty() {
+                    return Err(crate::Error::MeshNotFound(n.clone()).into());
+                }
+                vec![MeshResolved {
+                    name: n.clone(),
+                    message: String::new(),
+                    ranges: Vec::new(),
+                    pending,
+                }]
+            }
+            Err(e) => return Err(e.into()),
+        },
+        None => {
+            let mut meshes = stale_meshes(repo, options)?;
+            if layers.staged_mesh {
+                for name in staging_only_mesh_names(repo)? {
+                    if meshes.iter().any(|m| m.name == name) {
+                        continue;
+                    }
+                    let pending = build_pending_findings(repo, &name);
+                    if !pending.is_empty() {
+                        meshes.push(MeshResolved {
+                            name,
+                            message: String::new(),
+                            ranges: Vec::new(),
+                            pending,
+                        });
+                    }
+                }
+            }
+            meshes
+        }
     };
 
     // Adapter: engine output (`MeshResolved`) → renderer input
@@ -137,12 +171,16 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
 
     match args.format {
         StaleFormat::Human => render_human(
+            repo,
             &meshes,
             &findings,
             &pending,
-            args.oneline,
-            args.stat,
-            show_src_column,
+            HumanRenderOptions {
+                oneline: args.oneline,
+                stat: args.stat,
+                patch: args.patch,
+                show_src: show_src_column,
+            },
         )?,
         StaleFormat::Porcelain => render_porcelain(&findings, show_src_column),
         StaleFormat::Json => render_json(&meshes, &findings, &pending)?,
@@ -156,6 +194,24 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         1
     };
     Ok(exit)
+}
+
+fn staging_only_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
+    let workdir = crate::git::work_dir(repo)?;
+    let dir = workdir.join(".git").join("mesh").join("staging");
+    let mut out = Vec::new();
+    if !dir.is_dir() {
+        return Ok(out);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.contains('.') {
+            out.push(name);
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,13 +253,6 @@ fn source_marker(src: Option<DriftSource>) -> &'static str {
     }
 }
 
-fn extent_str(extent: RangeExtent) -> String {
-    match extent {
-        RangeExtent::Whole => "whole".into(),
-        RangeExtent::Lines { start, end } => format!("L{start}-L{end}"),
-    }
-}
-
 /// Human-facing `(path, extent)` render. Whole-file pins read
 /// `hero.png  (whole)`; line ranges read `src/foo.rs#L1-L10`.
 fn render_path_extent_human(path: &std::path::Path, extent: RangeExtent) -> String {
@@ -215,27 +264,41 @@ fn render_path_extent_human(path: &std::path::Path, extent: RangeExtent) -> Stri
     }
 }
 
+fn render_pending_range_id(range_id: &str) -> String {
+    if range_id.is_empty() {
+        String::new()
+    } else {
+        format!(" ({range_id})")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Human renderer.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug)]
+struct HumanRenderOptions {
+    oneline: bool,
+    stat: bool,
+    patch: bool,
+    show_src: bool,
+}
+
 fn render_human(
+    repo: &gix::Repository,
     meshes: &[MeshResolved],
     findings: &[Finding],
     pending: &[PendingFinding],
-    oneline: bool,
-    stat: bool,
-    show_src: bool,
+    options: HumanRenderOptions,
 ) -> Result<()> {
     for m in meshes {
-        let mesh_findings: Vec<&Finding> =
-            findings.iter().filter(|f| f.mesh == m.name).collect();
+        let mesh_findings: Vec<&Finding> = findings.iter().filter(|f| f.mesh == m.name).collect();
         let mesh_pending: Vec<&PendingFinding> = pending
             .iter()
             .filter(|p| pending_mesh(p) == m.name.as_str())
             .collect();
 
-        if oneline {
+        if options.oneline {
             for f in &mesh_findings {
                 println!(
                     "{:<8}  {}",
@@ -252,12 +315,21 @@ fn render_human(
         println!();
         println!("{mesh_stale} stale of {mesh_total} ranges:");
         println!();
-        if stat {
+        if options.stat {
+            for f in &mesh_findings {
+                let (insertions, deletions) = diff_counts(repo, f);
+                println!(
+                    "  {} | +{} -{}",
+                    render_path_extent_human(&f.anchored.path, f.anchored.extent),
+                    insertions,
+                    deletions
+                );
+            }
             continue;
         }
         for f in &mesh_findings {
             let mut line = String::new();
-            if show_src {
+            if options.show_src {
                 line.push_str(source_marker(f.source));
                 line.push(' ');
             }
@@ -271,6 +343,12 @@ fn render_human(
                 line.push_str("  (ack)");
             }
             println!("  {line}");
+            if options.patch {
+                let diff = render_patch(repo, f);
+                if !diff.trim().is_empty() {
+                    println!("{diff}");
+                }
+            }
         }
         // Pending adds/removes (trailing in the mesh's section).
         let pending_drift_section: Vec<&&PendingFinding> = mesh_pending
@@ -288,26 +366,30 @@ fn render_human(
             for p in &pending_drift_section {
                 match p {
                     PendingFinding::Add {
-                        range_id, op, drift, ..
+                        range_id,
+                        op,
+                        drift,
+                        ..
                     } => {
                         let drift_note = drift_note(drift.as_ref());
                         println!(
-                            "  ADD    {} {} ({}){}",
-                            op.path,
-                            extent_str(op.extent),
-                            range_id,
+                            "  ADD    {}{}{}",
+                            render_path_extent_human(std::path::Path::new(&op.path), op.extent),
+                            render_pending_range_id(range_id),
                             drift_note,
                         );
                     }
                     PendingFinding::Remove {
-                        range_id, op, drift, ..
+                        range_id,
+                        op,
+                        drift,
+                        ..
                     } => {
                         let drift_note = drift_note(drift.as_ref());
                         println!(
-                            "  REMOVE {} {} ({}){}",
-                            op.path,
-                            extent_str(op.extent),
-                            range_id,
+                            "  REMOVE {}{}{}",
+                            render_path_extent_human(std::path::Path::new(&op.path), op.extent),
+                            render_pending_range_id(range_id),
                             drift_note,
                         );
                     }
@@ -343,6 +425,85 @@ fn render_human(
         println!();
     }
     Ok(())
+}
+
+fn diff_counts(repo: &gix::Repository, finding: &Finding) -> (usize, usize) {
+    let (old, new) = finding_text_pair(repo, finding);
+    let diff = similar::TextDiff::from_lines(&old, &new);
+    let mut insertions = 0;
+    let mut deletions = 0;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Delete => deletions += 1,
+            similar::ChangeTag::Insert => insertions += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    (insertions, deletions)
+}
+
+fn render_patch(repo: &gix::Repository, finding: &Finding) -> String {
+    let (old, new) = finding_text_pair(repo, finding);
+    let old_header = format!(
+        "{} (anchored)",
+        render_path_extent_human(&finding.anchored.path, finding.anchored.extent)
+    );
+    let new_header = finding
+        .current
+        .as_ref()
+        .map(|c| render_path_extent_human(&c.path, c.extent))
+        .unwrap_or_else(|| "(missing)".to_string());
+    similar::TextDiff::from_lines(&old, &new)
+        .unified_diff()
+        .header(&old_header, &new_header)
+        .to_string()
+}
+
+fn finding_text_pair(repo: &gix::Repository, finding: &Finding) -> (String, String) {
+    let old = read_location_text(repo, &finding.anchored);
+    let new = finding
+        .current
+        .as_ref()
+        .map(|current| read_location_text(repo, current))
+        .unwrap_or_default();
+    (old, new)
+}
+
+fn read_location_text(repo: &gix::Repository, location: &RangeLocation) -> String {
+    let bytes = if let Some(blob) = location.blob {
+        read_blob_bytes(repo, blob).unwrap_or_default()
+    } else {
+        let Some(workdir) = repo.workdir() else {
+            return String::new();
+        };
+        std::fs::read(workdir.join(&location.path)).unwrap_or_default()
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    match location.extent {
+        RangeExtent::Whole => text.into_owned(),
+        RangeExtent::Lines { start, end } => slice_lines(&text, start, end),
+    }
+}
+
+fn read_blob_bytes(repo: &gix::Repository, oid: gix::ObjectId) -> Option<Vec<u8>> {
+    repo.find_object(oid)
+        .ok()
+        .map(|object| object.into_blob().detach().data)
+}
+
+fn slice_lines(text: &str, start: u32, end: u32) -> String {
+    let start_idx = start.saturating_sub(1) as usize;
+    let count = end.saturating_sub(start).saturating_add(1) as usize;
+    let mut out = text
+        .lines()
+        .skip(start_idx)
+        .take(count)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
 }
 
 fn drift_note(drift: Option<&PendingDrift>) -> String {

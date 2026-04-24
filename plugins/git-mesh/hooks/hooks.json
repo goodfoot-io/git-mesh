@@ -1,14 +1,13 @@
 {
   "description": "Surface git-mesh relationship context and drift findings to Claude during edits and at turn boundaries.",
   "hooks": {
-    "PreToolUse": [
+    "SessionStart": [
       {
-        "matcher": "Edit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/pre-tool-use.sh",
-            "timeout": 10
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/session-start.sh",
+            "timeout": 20
           }
         ]
       }

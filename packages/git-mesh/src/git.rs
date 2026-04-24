@@ -693,9 +693,7 @@ pub(crate) fn write_local_config_value(
 
 /// Read a single config string by full key (e.g. `"filter.lfs.process"`).
 pub fn config_string(repo: &gix::Repository, key: &str) -> Option<String> {
-    repo.config_snapshot()
-        .string(key)
-        .map(|v| v.to_string())
+    repo.config_snapshot().string(key).map(|v| v.to_string())
 }
 
 pub fn update_ref_cas(
@@ -739,8 +737,17 @@ mod gix_helper_tests {
     use std::process::Command;
 
     fn run_git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
-        assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn seed_repo() -> (tempfile::TempDir, gix::Repository, String) {
@@ -751,12 +758,24 @@ mod gix_helper_tests {
         run_git(dir, &["config", "user.name", "t"]);
         run_git(dir, &["config", "commit.gpgsign", "false"]);
         std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
-        std::fs::write(dir.join(".gitattributes"), "*.bin binary\n*.tx filter=foo\n").unwrap();
+        std::fs::write(
+            dir.join(".gitattributes"),
+            "*.bin binary\n*.tx filter=foo\n",
+        )
+        .unwrap();
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "init"]);
         let head = String::from_utf8(
-            Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout,
-        ).unwrap().trim().to_string();
+            Command::new("git")
+                .current_dir(dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
         let repo = gix::open(dir).unwrap();
         (td, repo, head)
     }
@@ -783,7 +802,11 @@ mod gix_helper_tests {
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.contains(&"a.txt"));
         assert!(paths.contains(&".gitattributes"));
-        assert!(entries.iter().all(|e| e.stage == gix::index::entry::Stage::Unconflicted));
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.stage == gix::index::entry::Stage::Unconflicted)
+        );
     }
 
     #[test]
@@ -822,7 +845,10 @@ mod gix_helper_tests {
     #[test]
     fn config_string_reads_value() {
         let (td, repo, _head) = seed_repo();
-        run_git(td.path(), &["config", "filter.lfs.process", "git-lfs filter-process"]);
+        run_git(
+            td.path(),
+            &["config", "filter.lfs.process", "git-lfs filter-process"],
+        );
         let repo = gix::open(repo.path()).unwrap();
         assert_eq!(
             config_string(&repo, "filter.lfs.process").as_deref(),

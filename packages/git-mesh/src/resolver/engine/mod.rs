@@ -244,5 +244,3 @@ fn orphaned_placeholder(range_id: &str) -> RangeResolved {
         culprit: None,
     }
 }
-
-

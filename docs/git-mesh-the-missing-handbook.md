@@ -279,19 +279,31 @@ decide whether the existing mesh still tells the truth. If the bytes
 changed, review the partner ranges and update code, tests, docs, or the
 mesh.
 
-To re-anchor a changed range, stage a fresh `add` over the new location
-and commit:
+To re-anchor a range, stage an `add` and commit. Two cases:
+
+**Same `(path, extent)` — bytes changed, lines did not move.**
+`git mesh add` over the identical span is a re-anchor: the later op
+supersedes any previous staged add for that location (last-write-wins).
+The staged add's sidecar captures the current bytes, which acknowledges
+the drift in `git mesh stale` output until the mesh is committed.
+No explicit `rm` is required.
 
 ```bash
+git mesh add frontend-backend-sync server/routes.ts#L13-L34
+git mesh commit frontend-backend-sync
+```
+
+**Different line span — the range moved.**
+A span that does not exactly match an existing range is treated as a
+*new* range. To replace, remove the old span first:
+
+```bash
+git mesh rm  frontend-backend-sync server/routes.ts#L13-L34
 git mesh add frontend-backend-sync server/routes.ts#L15-L36
 git mesh commit frontend-backend-sync
 ```
 
-`git mesh add` on an existing range's `(path, extent)` is a re-anchor:
-the later op supersedes any previous staged add for that location
-(last-write-wins). The staged add's sidecar captures the current bytes,
-which acknowledges the drift in `git mesh stale` output until the mesh
-is committed. No explicit `rm` is required for re-anchoring.
+This is the only time `git mesh rm` appears in a re-anchor workflow.
 
 **The why is the relationship, not a changelog.** Do not stage a new
 `git mesh why` for a routine re-anchor — the previous why is inherited
@@ -301,8 +313,8 @@ unchanged; the why should not be rewritten. Update it only when the
 *relationship itself* changes (different partner ranges, different
 contract, different owner, different review trigger).
 
-Use `git mesh rm` only when you intend to remove a range from the mesh
-entirely, not as a prelude to re-adding it.
+Otherwise, use `git mesh rm` only to remove a range from the mesh
+entirely — not as a prelude to re-adding the same `(path, extent)`.
 
 ### Changing the relationship description
 
@@ -372,7 +384,7 @@ itself should no longer exist.
 
 ## Reading meshes
 
-List meshes:
+List meshes (one line per mesh: name, tip commit, range count):
 
 ```bash
 git mesh
@@ -390,7 +402,14 @@ Show a historical state:
 
 ```bash
 git mesh frontend-backend-sync --at HEAD~3
+git mesh frontend-backend-sync --at <mesh-ref-sha>
 ```
+
+`--at` accepts any commit-ish git understands. When you pass a *source*
+commit-ish (a branch, tag, or `HEAD~N`), git-mesh resolves to the mesh
+state that was current when that source commit was HEAD. When you pass
+a *mesh-ref* commit SHA directly, git-mesh uses that mesh commit as-is.
+Both forms work for `git mesh <name> --at` and `git mesh why <name> --at`.
 
 Walk mesh history:
 
@@ -467,6 +486,23 @@ HEAD is always on; it is the floor. There is no convenience alias for
 `CONTENT_UNAVAILABLE` findings carry a reason: `LfsNotFetched`,
 `LfsNotInstalled`, `PromisorMissing`, `SparseExcluded`, `FilterFailed`,
 or `IoError`. The resolver never auto-fetches.
+
+### Before a mesh's first commit
+
+A mesh ref does not exist until `git mesh commit <name>` succeeds the
+first time. Before that point:
+
+```bash
+git mesh stale              # workspace-wide scan; surfaces staged ops
+                            # for the not-yet-committed mesh under the
+                            # "staged mesh ops" trailing section
+git mesh stale <new-name>   # errors: mesh ref not found
+```
+
+For a first inspection, run `git mesh stale` with no name, or commit
+the mesh once so the name resolves. `git mesh <new-name>` before the
+first commit also errors for the same reason; use `git mesh ls` to
+confirm which ranges you have staged so far.
 
 ### Acknowledging drift with a staged re-anchor
 

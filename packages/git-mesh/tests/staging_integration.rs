@@ -5,9 +5,7 @@ mod support;
 use anyhow::Result;
 use git_mesh::staging::StagedConfig;
 use git_mesh::types::CopyDetection;
-use git_mesh::{
-    append_add, append_config, append_remove, clear_staging, read_staging, set_why,
-};
+use git_mesh::{append_add, append_config, append_remove, clear_staging, read_staging, set_why};
 use support::TestRepo;
 
 #[test]
@@ -141,4 +139,3 @@ fn read_staging_empty_when_no_file() -> Result<()> {
     assert!(s.why.is_none());
     Ok(())
 }
-

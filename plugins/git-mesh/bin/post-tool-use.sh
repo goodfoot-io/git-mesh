@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# PostToolUse hook: after an Edit/Write, report mesh drift for the file.
-# If partner ranges are now out of sync, surface them so Claude opens them
-# before claiming the task done.
+# PostToolUse hook: after an Edit/Write, inject the same related mesh context
+# shape as UserPromptSubmit for the file that was edited.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=_lib.sh
+# shellcheck source=plugins/git-mesh/bin/_lib.sh
 source "$HERE/_lib.sh"
 require_env
 
@@ -26,20 +25,43 @@ rel="${file#"$repo_root"/}"
 mapfile -t meshes < <(meshes_for_path "$rel")
 [[ "${#meshes[@]}" -eq 0 ]] && exit 0
 
-output=""
+lines=""
 for m in "${meshes[@]}"; do
+  [[ -z "$m" ]] && continue
+  why="$(git mesh why "$m" 2>/dev/null || true)"
+  summary="$(render_mesh_summary "$m")"
   stale="$(render_stale "$m")"
-  [[ -z "$stale" ]] && continue
-  # Only surface meshes that report actual drift (CHANGED/MOVED/ORPHANED/...).
-  if grep -Eq '^(CHANGED|MOVED|ORPHANED|MERGE_CONFLICT|SUBMODULE|CONTENT_UNAVAILABLE)' <<<"$stale"; then
-    output+="• $m"$'\n'
-    output+="$(sed 's/^/    /' <<<"$stale")"$'\n\n'
-    partners="$(render_mesh_summary "$m")"
-    [[ -n "$partners" ]] && output+="    partners: $partners"$'\n\n'
+
+  [[ -n "$lines" ]] && lines+=$'\n'
+  lines+="$m mesh: $why"$'\n'
+  if [[ -n "$summary" ]]; then
+    while IFS= read -r range_line; do
+      [[ -z "$range_line" ]] && continue
+      range="${range_line##* }"
+      status="$(
+        awk -v range="$range" '$NF == range && $1 != "FRESH" { print $1; exit }' <<<"$stale"
+      )"
+      if [[ -n "$status" ]]; then
+        lines+="- $range [$status]"$'\n'
+      else
+        lines+="- $range"$'\n'
+      fi
+    done <<<"$summary"
   fi
 done
 
-[[ -z "$output" ]] && exit 0
+[[ -z "$lines" ]] && exit 0
 
-body="git-mesh drift after editing $rel — partner ranges may need review:"$'\n\n'"$output"
-emit_additional_context "PostToolUse" "$body"
+emit_additional_context "PostToolUse" "$lines"
+
+# Example stdin:
+# {"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/repo/src/api.ts"}}
+#
+# Example additionalContext:
+# api-contract mesh: API charge contract is covered by its test.
+# - src/api.ts#L1-L3 [CHANGED]
+# - tests/api.test.ts#L1-L5
+#
+# request-schema mesh: Charge request schema is shared by client and server.
+# - src/api.ts#L1-L3 [CHANGED]
+# - server/routes.ts#L8-L21

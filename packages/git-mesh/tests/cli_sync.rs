@@ -19,6 +19,28 @@ fn push_with_missing_remote_errors() -> Result<()> {
     seed(&repo, "m")?;
     let out = repo.run_mesh(["push", "absent"])?;
     assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("remote not found: absent"),
+        "stderr={stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn default_origin_missing_remote_errors_as_missing_remote() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["fetch"])?;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("remote not found: origin"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("refspec missing"),
+        "missing remote should not be reported as missing refspec: {stderr}"
+    );
     Ok(())
 }
 

@@ -56,7 +56,10 @@ fn whole_pin_oneline_renders_whole() -> Result<()> {
     seed_whole_file_drift(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--oneline"])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("(whole)"), "oneline missing `(whole)`:\n{text}");
+    assert!(
+        text.contains("(whole)"),
+        "oneline missing `(whole)`:\n{text}"
+    );
     assert!(!text.contains("#L0-L0"));
     Ok(())
 }
@@ -84,10 +87,7 @@ fn whole_pin_junit_name_uses_whole() -> Result<()> {
     seed_whole_file_drift(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--format=junit"])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("(whole)"),
-        "junit missing `(whole)`:\n{text}"
-    );
+    assert!(text.contains("(whole)"), "junit missing `(whole)`:\n{text}");
     assert!(!text.contains("#L0-L0"));
     Ok(())
 }

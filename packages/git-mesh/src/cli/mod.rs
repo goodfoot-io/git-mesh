@@ -30,7 +30,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "git-mesh",
     about = "Attach tracked, updatable metadata to line ranges in a git repo.",
-    version
+    version,
+    after_help = "Bare invocations:\n  git mesh                 list every mesh in the repo\n  git mesh <name>          show one mesh (ranges, why, config)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -46,52 +47,52 @@ pub enum Commands {
     #[command(name = "show", hide = true)]
     Show(ShowArgs),
 
-    /// List files / ranges via the file index (§3.4).
+    /// List files and ranges currently tracked by a mesh.
     Ls(LsArgs),
 
-    /// Run the resolver and report drift (§10.4).
+    /// Report ranges whose content has drifted from their anchored state.
     Stale(StaleArgs),
 
-    /// Stage ranges to add on the next mesh commit (§6.3).
+    /// Stage ranges to add on the next mesh commit.
     Add(AddArgs),
 
-    /// Stage ranges to remove on the next mesh commit (§6.3).
+    /// Stage ranges to remove on the next mesh commit.
     Rm(RmArgs),
 
-    /// Read or stage the mesh's why text (§6.3, §10.2; plan
-    /// `docs/why-plan.md`). Bare `git mesh why <name>` prints the current
-    /// why; the writer flags `-m`/`-F`/`--edit` stage a new one.
+    /// Read or stage the mesh's why text.
+    ///
+    /// Bare `git mesh why <name>` prints the current why; the writer
+    /// flags `-m`/`-F`/`--edit` stage a new one.
     Why(WhyArgs),
 
-    /// Resolve staged operations and write a mesh commit (§6.2).
+    /// Resolve staged operations and write a mesh commit.
     Commit(CommitArgs),
 
-    /// Clear the staging area (§6.8).
+    /// Clear the staging area.
     Restore(RestoreArgs),
 
-    /// Fast-forward a mesh to a past state (§6.6).
+    /// Fast-forward a mesh to a past state.
     Revert(RevertArgs),
 
-    /// Delete a mesh ref (§6.8).
+    /// Delete a mesh ref.
     Delete(DeleteArgs),
 
-    /// Rename a mesh ref (§6.8).
+    /// Rename a mesh ref.
     Mv(MvArgs),
 
-    /// Read or stage mesh-level resolver options (§10.5).
+    /// Read or stage mesh-level resolver options.
     Config(ConfigArgs),
 
-    /// Fetch mesh and range refs from a remote (§7).
+    /// Fetch mesh and range refs from a remote.
     Fetch(FetchArgs),
 
-    /// Push mesh and range refs to a remote (§7).
+    /// Push mesh and range refs to a remote.
     Push(PushArgs),
 
-    /// Audit the local mesh setup (§6.7).
+    /// Audit the local mesh setup.
     Doctor(DoctorArgs),
 
-    /// Pre-commit hook body — fail the commit if the in-flight changes
-    /// would leave the mesh stale (plan §"Phase 4").
+    /// Fail the current commit if the in-flight changes would leave any mesh stale.
     #[command(name = "pre-commit")]
     PreCommit,
 }
@@ -104,11 +105,11 @@ pub struct ShowArgs {
     /// every mesh).
     pub name: String,
 
-    /// One line per Range, no commit header (§10.4).
+    /// One line per Range, no commit header.
     #[arg(long)]
     pub oneline: bool,
 
-    /// Format-string override (§10.4).
+    /// Format-string override.
     #[arg(long, value_name = "FMT")]
     pub format: Option<String>,
 
@@ -116,7 +117,10 @@ pub struct ShowArgs {
     #[arg(long)]
     pub no_abbrev: bool,
 
-    /// Show state at a past revision of the mesh ref.
+    /// Show state at a past commit. Accepts either a source commit-ish
+    /// (e.g. HEAD~3, a branch, a source SHA) — which selects the mesh
+    /// state that was current at that source commit — or a mesh-ref
+    /// commit SHA directly.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
 
@@ -124,14 +128,14 @@ pub struct ShowArgs {
     #[arg(long)]
     pub log: bool,
 
-    /// Cap the `--log` walk (§6.6).
+    /// Cap the `--log` walk.
     #[arg(long, value_name = "N", requires = "log")]
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct LsArgs {
-    /// Optional `<path>` or `<path>#L<s>-L<e>` to filter by (§3.4).
+    /// Optional `<path>` or `<path>#L<start>-L<end>` to filter by.
     pub target: Option<String>,
 }
 
@@ -147,43 +151,45 @@ pub enum StaleFormat {
 
 #[derive(Debug, clap::Args)]
 pub struct StaleArgs {
-    /// Optional mesh name; omit for workspace-wide scan (§10.4).
+    /// Optional mesh name; omit for a workspace-wide scan.
     pub name: Option<String>,
 
     #[arg(long, value_enum, default_value_t = StaleFormat::Human)]
     pub format: StaleFormat,
 
-    /// Force exit 0 even with findings (§10.4).
+    /// Exit 0 even when drift is found (report-only mode).
     #[arg(long)]
     pub no_exit_code: bool,
 
-    /// Disable the worktree layer (plan §B4 — part of the HEAD-only CI fast path).
+    /// Skip the working-tree layer; scan only HEAD (and the index unless `--no-index`).
     #[arg(long)]
     pub no_worktree: bool,
 
-    /// Disable the index layer.
+    /// Skip the index layer.
     #[arg(long)]
     pub no_index: bool,
 
-    /// Disable the staged-mesh layer (`.git/mesh/staging/`).
+    /// Skip the staged-mesh layer (`.git/mesh/staging/`).
     #[arg(long)]
     pub no_staged_mesh: bool,
 
-    /// Downgrade `ContentUnavailable` findings: they print but do not
-    /// drive the exit code (plan §B3).
+    /// Report unreadable content as informational instead of failing.
     #[arg(long)]
     pub ignore_unavailable: bool,
 
+    /// One line per finding: `<STATUS> <path>#L<start>-L<end>`.
     #[arg(long, conflicts_with_all = ["stat", "patch"])]
     pub oneline: bool,
 
+    /// Per-range summary with line counts added/removed relative to the anchor.
     #[arg(long, conflicts_with_all = ["oneline", "patch"])]
     pub stat: bool,
 
+    /// Show the diff between the anchored content and the current content.
     #[arg(long, conflicts_with_all = ["oneline", "stat"])]
     pub patch: bool,
 
-    /// Only ranges anchored at or after this commit (§10.4).
+    /// Only ranges anchored at or after this commit.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub since: Option<String>,
 }
@@ -193,23 +199,31 @@ pub struct AddArgs {
     /// Mesh name to stage into.
     pub name: String,
 
-    /// One or more `<path>#L<start>-L<end>` ranges.
-    ///
-    /// Annotated `trailing_var_arg = false` + `allow_hyphen_values = false`
-    /// so a trailing `--at <commit-ish>` is parsed as the named flag,
-    /// not greedily consumed into `ranges` (Slice 6e of the review plan).
-    #[arg(required = true, trailing_var_arg = false, allow_hyphen_values = false)]
+    // Annotated `trailing_var_arg = false` + `allow_hyphen_values = false`
+    // so a trailing `--at <commit-ish>` is parsed as the named flag,
+    // not greedily consumed into `ranges`.
+    #[arg(
+        required = true,
+        trailing_var_arg = false,
+        allow_hyphen_values = false,
+        help = "One or more targets to stage (<path> for whole-file, or <path>#L<start>-L<end> for line range)",
+        long_help = "One or more targets to stage. Each is either:\n  <path>                       whole-file pin\n  <path>#L<start>-L<end>       line range (1-indexed, inclusive)\n\nExample: git mesh add api-contract src/api.ts#L1-L3 tests/api.test.ts"
+    )]
     pub ranges: Vec<String>,
 
     /// Anchor every staged range in this invocation at `<commit-ish>`.
-    /// Default is HEAD resolved at commit time (§6.3).
+    /// Default is HEAD resolved at commit time.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct RmArgs {
+    /// Mesh to stage the removal into.
     pub name: String,
+
+    /// Range(s) to remove, as `<path>` or `<path>#L<start>-L<end>`
+    /// (must match an existing range on the mesh).
     #[arg(required = true)]
     pub ranges: Vec<String>,
 }
@@ -222,6 +236,8 @@ pub struct RmArgs {
         .multiple(false)
 ))]
 pub struct WhyArgs {
+    /// Mesh whose why text to read (no writer flag) or stage
+    /// (`-m` / `-F` / `--edit`).
     pub name: String,
 
     /// Inline why text (`-m "..."`). Writer flag.
@@ -236,8 +252,11 @@ pub struct WhyArgs {
     #[arg(long, conflicts_with = "at")]
     pub edit: bool,
 
-    /// Reader-only: print the why text at a historical commit on the
-    /// mesh ref. Requires no writer flag (`-m`/`-F`/`--edit`).
+    /// Reader-only: print the why text as of a past commit. Accepts
+    /// either a source commit-ish (e.g. HEAD~3, a branch, a source SHA)
+    /// — which selects the mesh state that was current at that source
+    /// commit — or a mesh-ref commit SHA directly. Mutually exclusive
+    /// with `-m`/`-F`/`--edit`.
     #[arg(long, value_name = "COMMIT-ISH", conflicts_with_all = ["m", "file", "edit"])]
     pub at: Option<String>,
 }
@@ -245,64 +264,82 @@ pub struct WhyArgs {
 #[derive(Debug, clap::Args)]
 pub struct CommitArgs {
     /// Mesh name to commit. Omit to commit every mesh that has a
-    /// non-empty staging area (post-commit hook path, §10.2).
+    /// non-empty staging area.
     pub name: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct RestoreArgs {
+    /// Mesh whose pending staging area should be cleared.
     pub name: String,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct RevertArgs {
+    /// Mesh ref to move.
     pub name: String,
+
+    /// Prior mesh commit (or source commit-ish) to fast-forward the mesh to.
     #[arg(value_name = "COMMIT-ISH")]
     pub commit_ish: String,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct DeleteArgs {
+    /// Mesh ref to delete (removes `refs/meshes/v1/<name>`).
     pub name: String,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct MvArgs {
+    /// Existing mesh name.
     pub old: String,
+
+    /// New mesh name (must not already exist).
     pub new: String,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct ConfigArgs {
+    /// Mesh whose resolver options to read or stage.
     pub name: String,
-    /// Config key (e.g. `copy-detection`, `ignore-whitespace`).
+
+    #[arg(
+        help = "Config key. Omit to print all keys. Known: copy-detection, ignore-whitespace",
+        long_help = "Config key. Omit to print all keys. Known keys:\n  copy-detection     off | same-file | same-commit | any\n  ignore-whitespace  true | false"
+    )]
     pub key: Option<String>,
-    /// If present, stage a mutation. Otherwise read-only.
+
+    /// Value to stage for `<KEY>`. Omit to read the current value.
     pub value: Option<String>,
-    /// Stage a reset to the built-in default for `<key>` (§10.5).
+
+    /// Stage a reset to the built-in default for `<key>`.
     #[arg(long, value_name = "KEY", conflicts_with_all = ["key", "value"])]
     pub unset: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct FetchArgs {
-    /// Override `mesh.defaultRemote`.
+    /// Remote to fetch from.
+    /// Defaults to `mesh.defaultRemote`, or `origin` if unset.
     pub remote: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct PushArgs {
+    /// Remote to push to.
+    /// Defaults to `mesh.defaultRemote`, or `origin` if unset.
     pub remote: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
 pub struct DoctorArgs {
-    /// Promote INFO and WARN findings to a non-zero exit (§6.7).
+    /// Promote INFO and WARN findings to a non-zero exit.
     #[arg(long)]
     pub strict: bool,
 }
 
-/// Parse a `<path>#L<start>-L<end>` range address (§10.3).
+/// Parse a `<path>#L<start>-L<end>` range address.
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
 /// concern — the library side takes already-split `(path, start, end)`

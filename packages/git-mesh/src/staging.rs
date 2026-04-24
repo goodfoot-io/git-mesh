@@ -423,6 +423,11 @@ fn validate_add_target(
         }
     };
     if let RangeExtent::Lines { start, end } = extent {
+        if std::str::from_utf8(&bytes).is_err() {
+            return Err(Error::Parse(format!(
+                "line-range pin rejected on binary path: {path}"
+            )));
+        }
         if start < 1 || end < start {
             return Err(Error::InvalidRange { start, end });
         }
@@ -702,11 +707,7 @@ fn path_exists_in_tree(repo: &gix::Repository, commit_sha: &str, path: &str) -> 
 /// Read the sidecar metadata file (stamp + range_id) for `<mesh>.<N>`.
 /// Returns `None` if the file is missing or malformed (treat as
 /// "captured under unknown rules — re-normalize before comparing").
-pub(crate) fn read_sidecar_meta(
-    repo: &gix::Repository,
-    name: &str,
-    n: u32,
-) -> Option<SidecarMeta> {
+pub(crate) fn read_sidecar_meta(repo: &gix::Repository, name: &str, n: u32) -> Option<SidecarMeta> {
     let p = sidecar_meta_path(repo, name, n).ok()?;
     let bytes = fs::read(&p).ok()?;
     serde_json::from_slice(&bytes).ok()

@@ -1,9 +1,7 @@
 //! LFS first-class reader. Routes `filter=lfs` paths through a managed
 //! `git-lfs filter-process` subprocess (lazy spawn, reused per run).
 
-use super::filter_process::{
-    FilterProcess, FilterSpawnError, filter_smudge, spawn_lfs_process,
-};
+use super::filter_process::{FilterProcess, FilterSpawnError, filter_smudge, spawn_lfs_process};
 use crate::git;
 use crate::types::{
     self, DriftSource, Range, RangeExtent, RangeLocation, RangeResolved, RangeStatus,
@@ -108,18 +106,28 @@ pub(crate) fn resolve_lfs_range(
     let workdir = match git::work_dir(repo) {
         Ok(w) => w,
         Err(_) => {
-            return lfs_terminal(range_id, r, anchored, UnavailableReason::IoError {
-                message: "no workdir".into(),
-            });
+            return lfs_terminal(
+                range_id,
+                r,
+                anchored,
+                UnavailableReason::IoError {
+                    message: "no workdir".into(),
+                },
+            );
         }
     };
 
     let anchored_pointer = match git::read_blob_bytes(repo, &r.blob) {
         Ok(b) => b,
         Err(_) => {
-            return lfs_terminal(range_id, r, anchored, UnavailableReason::IoError {
-                message: format!("cannot read anchored blob {}", r.blob),
-            });
+            return lfs_terminal(
+                range_id,
+                r,
+                anchored,
+                UnavailableReason::IoError {
+                    message: format!("cannot read anchored blob {}", r.blob),
+                },
+            );
         }
     };
 
@@ -155,16 +163,31 @@ pub(crate) fn resolve_lfs_range(
     let same_path_extent = tracked.path == r.path
         && matches!(r.extent, RangeExtent::Lines { start, end } if start == tracked.start && end == tracked.end);
     if anchored_oid.is_some() && anchored_oid == current_oid {
-        let status = if same_path_extent { RangeStatus::Fresh } else { RangeStatus::Moved };
-        let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
-        let layer_sources = if source.is_some() { vec![deepest_layer] } else { vec![] };
+        let status = if same_path_extent {
+            RangeStatus::Fresh
+        } else {
+            RangeStatus::Moved
+        };
+        let source = if status == RangeStatus::Fresh {
+            None
+        } else {
+            Some(deepest_layer)
+        };
+        let layer_sources = if source.is_some() {
+            vec![deepest_layer]
+        } else {
+            vec![]
+        };
         return RangeResolved {
             range_id: range_id.into(),
             anchor_sha: r.anchor_sha.clone(),
             anchored,
             current: Some(RangeLocation {
                 path: PathBuf::from(&tracked.path),
-                extent: RangeExtent::Lines { start: tracked.start, end: tracked.end },
+                extent: RangeExtent::Lines {
+                    start: tracked.start,
+                    end: tracked.end,
+                },
                 blob: oid_from_hex(&r.blob),
             }),
             status,
@@ -198,19 +221,34 @@ pub(crate) fn resolve_lfs_range(
     let c_smudged_oid = lfs_pointer_oid(&current_smudged);
     if a_smudged_oid.is_some() || c_smudged_oid.is_some() {
         let status = if a_smudged_oid == c_smudged_oid {
-            if same_path_extent { RangeStatus::Fresh } else { RangeStatus::Moved }
+            if same_path_extent {
+                RangeStatus::Fresh
+            } else {
+                RangeStatus::Moved
+            }
         } else {
             RangeStatus::Changed
         };
-        let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
-        let layer_sources = if source.is_some() { vec![deepest_layer] } else { vec![] };
+        let source = if status == RangeStatus::Fresh {
+            None
+        } else {
+            Some(deepest_layer)
+        };
+        let layer_sources = if source.is_some() {
+            vec![deepest_layer]
+        } else {
+            vec![]
+        };
         return RangeResolved {
             range_id: range_id.into(),
             anchor_sha: r.anchor_sha.clone(),
             anchored,
             current: Some(RangeLocation {
                 path: PathBuf::from(&tracked.path),
-                extent: RangeExtent::Lines { start: tracked.start, end: tracked.end },
+                extent: RangeExtent::Lines {
+                    start: tracked.start,
+                    end: tracked.end,
+                },
                 blob: None,
             }),
             status,
@@ -233,23 +271,46 @@ pub(crate) fn resolve_lfs_range(
     let a_hi = (a_end as usize).min(a_lines.len());
     let c_lo = (tracked.start as usize).saturating_sub(1);
     let c_hi = (tracked.end as usize).min(c_lines.len());
-    let a_slice = if a_lo <= a_hi { &a_lines[a_lo..a_hi] } else { &[][..] };
-    let c_slice = if c_lo <= c_hi { &c_lines[c_lo..c_hi] } else { &[][..] };
+    let a_slice = if a_lo <= a_hi {
+        &a_lines[a_lo..a_hi]
+    } else {
+        &[][..]
+    };
+    let c_slice = if c_lo <= c_hi {
+        &c_lines[c_lo..c_hi]
+    } else {
+        &[][..]
+    };
     let equal = a_slice == c_slice;
     let status = if equal {
-        if same_path_extent { RangeStatus::Fresh } else { RangeStatus::Moved }
+        if same_path_extent {
+            RangeStatus::Fresh
+        } else {
+            RangeStatus::Moved
+        }
     } else {
         RangeStatus::Changed
     };
-    let source = if status == RangeStatus::Fresh { None } else { Some(deepest_layer) };
-    let layer_sources = if source.is_some() { vec![deepest_layer] } else { vec![] };
+    let source = if status == RangeStatus::Fresh {
+        None
+    } else {
+        Some(deepest_layer)
+    };
+    let layer_sources = if source.is_some() {
+        vec![deepest_layer]
+    } else {
+        vec![]
+    };
     RangeResolved {
         range_id: range_id.into(),
         anchor_sha: r.anchor_sha.clone(),
         anchored,
         current: Some(RangeLocation {
             path: PathBuf::from(&tracked.path),
-            extent: RangeExtent::Lines { start: tracked.start, end: tracked.end },
+            extent: RangeExtent::Lines {
+                start: tracked.start,
+                end: tracked.end,
+            },
             blob: None,
         }),
         status,

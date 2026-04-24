@@ -31,7 +31,12 @@ fn index_drift_unacked_fails_commit() -> Result<()> {
     )?;
     repo.run_git(["add", "file1.txt"])?;
     let out = repo.run_mesh(["pre-commit"])?;
-    assert_eq!(out.status.code(), Some(1), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }
 
@@ -49,7 +54,12 @@ fn index_drift_with_ack_passes() -> Result<()> {
     // range_id (see `pending::apply_acknowledgment`).
     let _ = repo.run_mesh(["add", "m", "file1.txt#L1-L5"])?;
     let out = repo.run_mesh(["pre-commit"])?;
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }
 
@@ -65,7 +75,12 @@ fn worktree_only_drift_does_not_fail_commit() -> Result<()> {
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     let out = repo.run_mesh(["pre-commit"])?;
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }
 
@@ -83,7 +98,45 @@ fn pending_add_sidecar_mismatch_fails_commit() -> Result<()> {
     )?;
     repo.run_git(["add", "file2.txt"])?;
     let out = repo.run_mesh(["pre-commit"])?;
-    assert_eq!(out.status.code(), Some(1), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("+ ADD    file2.txt#L1-L5"),
+        "stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("file2.txt L1-L5"),
+        "pending add should use range-address syntax: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn pending_remove_report_uses_range_address() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "m")?;
+    let _ = repo.run_mesh(["rm", "m", "file1.txt#L1-L5"])?;
+    repo.write_file(
+        "file1.txt",
+        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.run_git(["add", "file1.txt"])?;
+
+    let out = repo.run_mesh(["pre-commit"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("- REMOVE file1.txt#L1-L5"),
+        "stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("file1.txt L1-L5"),
+        "pending remove should use range-address syntax: {stdout}"
+    );
     Ok(())
 }
 
@@ -100,7 +153,12 @@ fn pending_message_only_does_not_fail_commit() -> Result<()> {
     repo.write_file("file2.txt", "additional line\n")?;
     repo.run_git(["add", "file2.txt"])?;
     let out = repo.run_mesh(["pre-commit"])?;
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }
 
@@ -123,6 +181,11 @@ fn unrelated_index_drift_does_not_fail_commit() -> Result<()> {
     repo.write_file("file2.txt", "additional\n")?;
     repo.run_git(["add", "file2.txt"])?;
     let out = repo.run_mesh(["pre-commit"])?;
-    assert_eq!(out.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }

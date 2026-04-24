@@ -110,7 +110,11 @@ pub(crate) fn advance(
     if deleted {
         if let Some(p) = next_path {
             let (s, e) = compute_new_range(repo, parent, commit, loc, &p)?;
-            return Ok(Change::Updated(Tracked { path: p, start: s, end: e }));
+            return Ok(Change::Updated(Tracked {
+                path: p,
+                start: s,
+                end: e,
+            }));
         }
         return Ok(Change::Deleted);
     }
@@ -119,7 +123,11 @@ pub(crate) fn advance(
     }
     let p = next_path.unwrap_or_else(|| loc.path.clone());
     let (s, e) = compute_new_range(repo, parent, commit, loc, &p)?;
-    Ok(Change::Updated(Tracked { path: p, start: s, end: e }))
+    Ok(Change::Updated(Tracked {
+        path: p,
+        start: s,
+        end: e,
+    }))
 }
 
 pub(crate) fn compute_new_range(
@@ -460,7 +468,9 @@ fn match_copies_from_pool(
     let added_blobs: Vec<(String, String)> = added_paths
         .iter()
         .filter_map(|p| {
-            git::path_blob_at(repo, commit, p).ok().map(|oid| (p.clone(), oid))
+            git::path_blob_at(repo, commit, p)
+                .ok()
+                .map(|oid| (p.clone(), oid))
         })
         .collect();
 
@@ -591,9 +601,15 @@ fn collect_changes<'a>(
         .for_each_to_obtain_tree(new_tree, |change| -> Result<std::ops::ControlFlow<()>> {
             use gix::object::tree::diff::Change as DC;
             match change {
-                DC::Addition { location, .. } => out.push(NS::Added { path: location.to_string() }),
-                DC::Deletion { location, .. } => out.push(NS::Deleted { path: location.to_string() }),
-                DC::Modification { location, .. } => out.push(NS::Modified { path: location.to_string() }),
+                DC::Addition { location, .. } => out.push(NS::Added {
+                    path: location.to_string(),
+                }),
+                DC::Deletion { location, .. } => out.push(NS::Deleted {
+                    path: location.to_string(),
+                }),
+                DC::Modification { location, .. } => out.push(NS::Modified {
+                    path: location.to_string(),
+                }),
                 DC::Rewrite {
                     source_location,
                     location,
@@ -632,8 +648,17 @@ mod scope_tests {
     use tempfile::tempdir;
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
-        let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
-        assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// Unit test: verifies that `name_status` with `AnyFileInCommit` produces a
@@ -646,22 +671,38 @@ mod scope_tests {
         run_git(dir, &["config", "user.email", "t@t"]);
         run_git(dir, &["config", "user.name", "t"]);
         run_git(dir, &["config", "commit.gpgsign", "false"]);
-        
+
         let content: String = (1..=20).map(|i| format!("content_line_{i}\n")).collect();
         std::fs::write(dir.join("a.ts"), &content).unwrap();
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "init"]);
         let parent = String::from_utf8(
-            Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout
-        ).unwrap().trim().to_string();
-        
+            Command::new("git")
+                .current_dir(dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
         std::fs::write(dir.join("b.ts"), &content).unwrap();
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "add b.ts"]);
         let commit = String::from_utf8(
-            Command::new("git").current_dir(dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout
-        ).unwrap().trim().to_string();
-        
+            Command::new("git")
+                .current_dir(dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
         let repo = gix::open(dir).unwrap();
         let mut warnings = Vec::new();
         let entries = name_status(

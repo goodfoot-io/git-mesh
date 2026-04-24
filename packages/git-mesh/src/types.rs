@@ -90,8 +90,12 @@ pub enum UnavailableReason {
     PromisorMissing,
     /// Sparse-checkout excluded path.
     SparseExcluded,
-    FilterFailed { filter: String },
-    IoError { message: String },
+    FilterFailed {
+        filter: String,
+    },
+    IoError {
+        message: String,
+    },
 }
 
 /// Declaration order is best → worst; `Ord` derives a total order so
@@ -214,7 +218,9 @@ pub enum Error {
     StagingEmpty(String),
 
     /// First commit on a new mesh requires a staged why (§6.2, §10.2).
-    #[error("why required for first commit on mesh `{0}`: stage one with `git mesh why {0} -m \"…\"`")]
+    #[error(
+        "why required for first commit on mesh `{0}`: stage one with `git mesh why {0} -m \"…\"`"
+    )]
     WhyRequired(String),
 
     /// `anchor_sha` is not reachable; resolver classifies the range as
@@ -227,6 +233,10 @@ pub enum Error {
     /// configured, and lazy-config refused to add it (§7.1, §6.7 doctor).
     #[error("refspec missing for remote: {remote}")]
     RefspecMissing { remote: String },
+
+    /// The selected remote name is not configured.
+    #[error("remote not found: {remote}")]
+    RemoteNotFound { remote: String },
 
     /// `git mesh commit` aborted because the staged config value matches
     /// the committed value and no other meaningful change is staged (§6.2).
@@ -678,7 +688,10 @@ pub fn validate_add_target(
             if is_symlink {
                 return Err(AddPrecheckError::LineRangeOnSymlink { path: path_str });
             }
-            if matches!(submodule_kind, SubmoduleKind::Inside | SubmoduleKind::Gitlink) {
+            if matches!(
+                submodule_kind,
+                SubmoduleKind::Inside | SubmoduleKind::Gitlink
+            ) {
                 return Err(AddPrecheckError::LineRangeInSubmodule { path: path_str });
             }
             // Slice 6b: content-blind binary detection. After the
@@ -689,6 +702,9 @@ pub fn validate_add_target(
             // no opt-in config: line-range pins on NUL-bearing content
             // can never resolve cleanly anyway.
             if !is_lfs && content_sniff_binary(&abs) {
+                return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
+            }
+            if !is_lfs && content_sniff_non_utf8(&abs) {
                 return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
             }
         }
@@ -742,9 +758,8 @@ fn submodule_classify(
     path: &str,
 ) -> std::result::Result<SubmoduleKind, AddPrecheckError> {
     // Read all gitlinks once.
-    let repo = gix::open(workdir).map_err(|e| {
-        AddPrecheckError::Io(std::io::Error::other(format!("open repo: {e}")))
-    })?;
+    let repo = gix::open(workdir)
+        .map_err(|e| AddPrecheckError::Io(std::io::Error::other(format!("open repo: {e}"))))?;
     let entries = match crate::git::index_entries(&repo) {
         Ok(e) => e,
         Err(_) => return Ok(SubmoduleKind::None),
@@ -798,6 +813,13 @@ fn content_sniff_binary(abs: &std::path::Path) -> bool {
         Err(_) => return false,
     };
     buf[..n].contains(&0u8)
+}
+
+fn content_sniff_non_utf8(abs: &std::path::Path) -> bool {
+    let Ok(bytes) = std::fs::read(abs) else {
+        return false;
+    };
+    std::str::from_utf8(&bytes).is_err()
 }
 
 fn parse_lfs_pointer_oid(bytes: &[u8]) -> Option<String> {

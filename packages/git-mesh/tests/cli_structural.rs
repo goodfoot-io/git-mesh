@@ -105,10 +105,7 @@ fn install_hooks(repo: &TestRepo) -> Result<()> {
     let hooks = repo.path().join(".git").join("hooks");
     std::fs::create_dir_all(&hooks)?;
     std::fs::write(hooks.join("post-commit"), "#!/bin/sh\ngit mesh commit\n")?;
-    std::fs::write(
-        hooks.join("pre-commit"),
-        "#!/bin/sh\ngit mesh pre-commit\n",
-    )?;
+    std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\ngit mesh pre-commit\n")?;
     Ok(())
 }
 

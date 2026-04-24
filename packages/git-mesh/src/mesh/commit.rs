@@ -64,6 +64,21 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             })?;
         snapshots.remove(idx);
     }
+    // A staged add can carry the range_id it supersedes in its sidecar
+    // metadata. This is what makes re-anchoring a moved range work: the
+    // new address may not match the old `(path, extent)`, but it still
+    // replaces the same durable range relationship.
+    for a in &staging.adds {
+        let Some(meta) = staging::read_sidecar_meta(repo, name, a.line_number) else {
+            continue;
+        };
+        let Some(range_id) = meta.range_id else {
+            continue;
+        };
+        if let Some(idx) = snapshots.iter().position(|(id, _, _)| id == &range_id) {
+            snapshots.remove(idx);
+        }
+    }
     // Adds that collide with an existing range at `(path, extent)` are
     // dedup-overrides per §D5: drop the prior snapshot, keep the staged
     // add.
@@ -186,8 +201,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     }
     for a in &staging.adds {
         let anchor = a.anchor.clone().unwrap_or_else(|| head_sha.clone());
-        let id =
-            create_range_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
+        let id = create_range_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
         new_range_ids.push(id);
     }
 
@@ -209,8 +223,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             combined.push((id.clone(), r.path, r.extent));
         }
         combined.sort_by(|a, b| {
-            (a.1.as_str(), extent_sort_key(&a.2))
-                .cmp(&(b.1.as_str(), extent_sort_key(&b.2)))
+            (a.1.as_str(), extent_sort_key(&a.2)).cmp(&(b.1.as_str(), extent_sort_key(&b.2)))
         });
         let final_ids: Vec<String> = combined.iter().map(|(id, _, _)| id.clone()).collect();
 
@@ -366,12 +379,9 @@ fn dedup_staged_adds(mut staging: Staging) -> Staging {
             *entry = a.line_number;
         }
     }
-    staging.adds.retain(|a| {
-        last_for_key
-            .get(&(a.path.clone(), a.extent))
-            .copied()
-            == Some(a.line_number)
-    });
+    staging
+        .adds
+        .retain(|a| last_for_key.get(&(a.path.clone(), a.extent)).copied() == Some(a.line_number));
     staging
 }
 

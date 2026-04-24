@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
-  "name": "goodfoot",
+  "name": "git-mesh",
   "owner": {
     "name": "goodfoot",
     "url": "https://github.com/goodfoot-io"
@@ -8,8 +8,8 @@
   "description": "Claude Code plugins from the goodfoot team.",
   "plugins": [
     {
-      "name": "git-mesh",
-      "source": "./plugins/git-mesh",
+      "name": "handbook",
+      "source": "./plugins/handbook",
       "description": "Record and audit durable relationships between exact line ranges in a Git repository.",
       "version": "0.1.0",
       "category": "git",

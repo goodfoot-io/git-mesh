@@ -41,9 +41,21 @@ impl Drop for FilterProcess {
 fn finalize_filter_process(
     mut child: Child,
 ) -> std::result::Result<FilterProcess, FilterSpawnError> {
-    let stdin = child.stdin.take().ok_or(FilterSpawnError::HandshakeFailed)?;
-    let stdout = BufReader::new(child.stdout.take().ok_or(FilterSpawnError::HandshakeFailed)?);
-    let mut p = FilterProcess { child, stdin: Some(stdin), stdout };
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or(FilterSpawnError::HandshakeFailed)?;
+    let stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or(FilterSpawnError::HandshakeFailed)?,
+    );
+    let mut p = FilterProcess {
+        child,
+        stdin: Some(stdin),
+        stdout,
+    };
     if filter_handshake(&mut p).is_err() {
         return Err(FilterSpawnError::HandshakeFailed);
     }
@@ -163,8 +175,8 @@ fn pkt_read(r: &mut BufReader<ChildStdout>) -> std::io::Result<Option<Vec<u8>>> 
     let mut hdr = [0u8; 4];
     r.read_exact(&mut hdr)?;
     let hex = std::str::from_utf8(&hdr).map_err(|e| std::io::Error::other(format!("hdr: {e}")))?;
-    let len = u32::from_str_radix(hex, 16)
-        .map_err(|e| std::io::Error::other(format!("hdr len: {e}")))?;
+    let len =
+        u32::from_str_radix(hex, 16).map_err(|e| std::io::Error::other(format!("hdr len: {e}")))?;
     if len == 0 {
         return Ok(None);
     }
@@ -191,10 +203,7 @@ pub(crate) enum CustomFilterOutcome {
     FilterFailed,
 }
 
-fn lookup_custom_filter_process_command(
-    workdir: &std::path::Path,
-    name: &str,
-) -> Option<String> {
+fn lookup_custom_filter_process_command(workdir: &std::path::Path, name: &str) -> Option<String> {
     let key = format!("filter.{name}.process");
     let repo = gix::open(workdir).ok()?;
     let v = git::config_string(&repo, &key)?;
