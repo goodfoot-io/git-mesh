@@ -565,6 +565,13 @@ pub struct PendingState {
 pub struct EngineOptions {
     pub layers: LayerSet,
     pub ignore_unavailable: bool,
+    /// Slice 5 of the review plan: `--since <commit-ish>` already
+    /// resolved to a commit OID. The engine includes a range only when
+    /// `since` is an ancestor of (or equal to) the range's anchor —
+    /// i.e. the range is anchored "at or after" `since`. Orphaned
+    /// anchors are always included (the filter is for scoping, not
+    /// hiding orphans).
+    pub since: Option<gix::ObjectId>,
 }
 
 impl EngineOptions {
@@ -573,6 +580,7 @@ impl EngineOptions {
         Self {
             layers: LayerSet::full(),
             ignore_unavailable: false,
+            since: None,
         }
     }
 
@@ -581,6 +589,7 @@ impl EngineOptions {
         Self {
             layers: LayerSet::committed_only(),
             ignore_unavailable: false,
+            since: None,
         }
     }
 }
@@ -667,6 +676,16 @@ pub fn validate_add_target(
             }
             if matches!(submodule_kind, SubmoduleKind::Inside | SubmoduleKind::Gitlink) {
                 return Err(AddPrecheckError::LineRangeInSubmodule { path: path_str });
+            }
+            // Slice 6b: content-blind binary detection. After the
+            // attribute-driven check, sniff the first 8 KiB of the
+            // worktree file for a NUL byte — git's own heuristic for
+            // "binary". Reject line-range pins; whole-file pins are
+            // still allowed (handled by the outer `match`). Default-on,
+            // no opt-in config: line-range pins on NUL-bearing content
+            // can never resolve cleanly anyway.
+            if !is_lfs && content_sniff_binary(&abs) {
+                return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
             }
         }
         RangeExtent::Whole => {
@@ -757,6 +776,24 @@ fn check_binary_attribute(
         Ok(None) => Ok(false),
         Err(_) => Ok(false),
     }
+}
+
+/// Slice 6b: returns true if the first ~8 KiB of `abs` contains a NUL
+/// byte. Mirrors git's own binary heuristic. Returns false on any I/O
+/// error (callers already handled symlink / submodule paths) — the
+/// attribute check is the authoritative reject; this is a fallback for
+/// content with no `binary` attribute set.
+fn content_sniff_binary(abs: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(abs) else {
+        return false;
+    };
+    let mut buf = [0u8; 8192];
+    let n = match f.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    buf[..n].contains(&0u8)
 }
 
 fn parse_lfs_pointer_oid(bytes: &[u8]) -> Option<String> {

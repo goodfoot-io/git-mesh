@@ -16,6 +16,9 @@ similar = "2.7.0"
 thiserror = "2.0.9"
 uuid = { version = "1.23.1", features = ["v4"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [build-dependencies]
 serde_json = "1.0.149"
 

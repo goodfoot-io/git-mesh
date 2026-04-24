@@ -194,7 +194,11 @@ pub struct AddArgs {
     pub name: String,
 
     /// One or more `<path>#L<start>-L<end>` ranges.
-    #[arg(required = true)]
+    ///
+    /// Annotated `trailing_var_arg = false` + `allow_hyphen_values = false`
+    /// so a trailing `--at <commit-ish>` is parsed as the named flag,
+    /// not greedily consumed into `ranges` (Slice 6e of the review plan).
+    #[arg(required = true, trailing_var_arg = false, allow_hyphen_values = false)]
     pub ranges: Vec<String>,
 
     /// Anchor every staged range in this invocation at `<commit-ish>`.

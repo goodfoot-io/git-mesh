@@ -635,6 +635,62 @@ pub fn attr_for(
     Ok(None)
 }
 
+/// Slice 6d: read the effective value of `core.logAllRefUpdates`.
+///
+/// Returns `Some("always" | "true" | "false")` when set, or `None` when
+/// unset. Custom refs outside `refs/heads`, `refs/remotes`, `refs/notes`,
+/// and `HEAD` only get a reflog when this is set to `always`.
+pub fn log_all_ref_updates_value(repo: &gix::Repository) -> Option<String> {
+    repo.config_snapshot()
+        .string("core.logAllRefUpdates")
+        .map(|v| v.to_string())
+}
+
+/// Slice 6d: ensure `core.logAllRefUpdates` is set to a value that
+/// covers refs outside the standard set (i.e. `always`). Idempotent —
+/// if the value already covers `refs/meshes/*` (`always`) we leave it
+/// alone.
+///
+/// Greenfield: we do not migrate `true` → `always` automatically; the
+/// resolver's reflog story for mesh refs requires `always`, full stop.
+pub fn ensure_log_all_ref_updates_always(repo: &gix::Repository) -> Result<()> {
+    if log_all_ref_updates_value(repo).as_deref() == Some("always") {
+        return Ok(());
+    }
+    write_local_config_value(repo, "core", None, "logAllRefUpdates", "always")
+}
+
+/// Slice 6c/6d helper: write a single key to the local `.git/config`,
+/// replacing any existing value(s) for that key. Used for scalar config
+/// values; multi-valued lists like `remote.<name>.fetch` need their own
+/// helper.
+pub(crate) fn write_local_config_value(
+    repo: &gix::Repository,
+    section: &'static str,
+    subsection: Option<&str>,
+    key: &'static str,
+    value: &str,
+) -> Result<()> {
+    let wd = work_dir(repo)?;
+    let path = wd.join(".git").join("config");
+    let mut file =
+        gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)
+            .map_err(|e| Error::Git(format!("load config: {e}")))?;
+    let sub_bstr = subsection.map(|s| s.as_bytes().into());
+    let mut section_mut = file
+        .section_mut_or_create_new(section, sub_bstr)
+        .map_err(|e| Error::Git(format!("section: {e}")))?;
+    section_mut.set(
+        key.try_into()
+            .map_err(|e| Error::Git(format!("key `{key}`: {e}")))?,
+        value.as_bytes().into(),
+    );
+    let bytes = file.to_bstring();
+    std::fs::write(&path, bytes.as_slice())
+        .map_err(|e| Error::Git(format!("write config: {e}")))?;
+    Ok(())
+}
+
 /// Read a single config string by full key (e.g. `"filter.lfs.process"`).
 pub fn config_string(repo: &gix::Repository, key: &str) -> Option<String> {
     repo.config_snapshot()

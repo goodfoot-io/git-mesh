@@ -25,9 +25,23 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         staged_mesh: !args.no_staged_mesh,
     };
     let show_src_column = layers.worktree || layers.index;
+    // Slice 5: resolve `--since <commit-ish>` once, fail-closed on
+    // unresolvable input (no silent fallback per `<fail-closed>`).
+    let since = match args.since.as_deref() {
+        Some(s) => Some(
+            crate::git::resolve_commit(repo, s)
+                .map(|hex| {
+                    use std::str::FromStr;
+                    gix::ObjectId::from_str(&hex).expect("resolve_commit returns valid hex")
+                })
+                .map_err(|e| anyhow::anyhow!("--since `{s}`: {e}"))?,
+        ),
+        None => None,
+    };
     let options = EngineOptions {
         layers,
         ignore_unavailable: args.ignore_unavailable,
+        since,
     };
 
     let meshes = match &args.name {

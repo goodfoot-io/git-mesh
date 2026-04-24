@@ -271,6 +271,10 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 new_oid: candidate.clone(),
             },
         };
+        // Slice 6d: lazily ensure `core.logAllRefUpdates = always` so
+        // refs under `refs/meshes/*` get reflog entries. Doctor reports
+        // an INFO finding when it would set this.
+        crate::git::ensure_log_all_ref_updates_always(repo)?;
         match apply_ref_transaction(wd, &[update]) {
             Ok(()) => {
                 new_commit = candidate;

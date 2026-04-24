@@ -37,6 +37,14 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         parsed = coalesced;
     }
 
+    // Slice 6e: resolve `--at <commit-ish>` to a full OID up front so
+    // the stage-time precheck and the prepare_add path operate on the
+    // same anchor (independent of clap arg ordering).
+    let anchor_oid: Option<String> = match args.at.as_deref() {
+        Some(s) => Some(crate::git::resolve_commit(repo, s)?),
+        None => None,
+    };
+
     // Stage-time precheck (plan §"CLI and `git mesh add` prechecks").
     for (path, extent) in &parsed {
         validate_add_target(repo, std::path::Path::new(path), extent)
@@ -50,7 +58,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
 
     let mut prepared = Vec::with_capacity(parsed.len());
     for (path, extent) in &parsed {
-        prepared.push(prepare_add(repo, path, *extent, args.at.as_deref())?);
+        prepared.push(prepare_add(repo, path, *extent, anchor_oid.as_deref())?);
     }
     for (add, (path, extent)) in prepared.iter().zip(parsed.iter()) {
         let range_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();

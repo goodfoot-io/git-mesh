@@ -104,14 +104,36 @@ pub fn resolve_mesh(
     let mut state = EngineState::new(repo, options.layers)?;
     let mesh = read_mesh(repo, name)?;
     let mut ranges = Vec::with_capacity(mesh.ranges.len());
+    let mut filtered_by_since: usize = 0;
     for id in &mesh.ranges {
         match read_range(repo, id) {
-            Ok(r) => ranges.push(resolve_range_inner(repo, &mut state, &mesh.config, id, r)?),
+            Ok(r) => {
+                // Slice 5: `--since` filter. Skip ranges whose anchor is
+                // strictly older than `since`. Orphaned anchors (whose
+                // commit is unreachable / unparseable) are always
+                // included — the filter scopes by history, it does not
+                // hide orphans.
+                if let Some(since_oid) = options.since
+                    && !range_anchor_at_or_after(repo, &r.anchor_sha, since_oid)
+                {
+                    filtered_by_since += 1;
+                    continue;
+                }
+                ranges.push(resolve_range_inner(repo, &mut state, &mesh.config, id, r)?)
+            }
             Err(Error::RangeNotFound(_)) => {
                 ranges.push(orphaned_placeholder(id));
             }
             Err(e) => return Err(e),
         }
+    }
+    if filtered_by_since > 0
+        && let Some(since_oid) = options.since
+    {
+        state.warnings.push(format!(
+            "filtered {filtered_by_since} ranges anchored before {}",
+            since_oid
+        ));
     }
     let pending = if state.layers.staged_mesh {
         for r in &mut ranges {
@@ -180,6 +202,29 @@ fn status_rank(a: &RangeStatus, b: &RangeStatus) -> std::cmp::Ordering {
         }
     }
     rank(a).cmp(&rank(b))
+}
+
+/// Slice 5: returns true when the range should pass the `--since`
+/// filter. The semantic is "anchored at or after `since`" — i.e.
+/// `since` is an ancestor of (or equal to) `anchor_sha`. Anchors that
+/// don't parse / aren't reachable fall through as `true` (orphans are
+/// not hidden by `--since`).
+fn range_anchor_at_or_after(
+    repo: &gix::Repository,
+    anchor_sha: &str,
+    since: gix::ObjectId,
+) -> bool {
+    use std::str::FromStr;
+    let Ok(anchor_id) = gix::ObjectId::from_str(anchor_sha) else {
+        return true;
+    };
+    if anchor_id == since {
+        return true;
+    }
+    match repo.merge_base(anchor_id, since) {
+        Ok(base) => base.detach() == since,
+        Err(_) => true,
+    }
 }
 
 fn orphaned_placeholder(range_id: &str) -> RangeResolved {

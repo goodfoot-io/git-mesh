@@ -6,6 +6,17 @@ use git_mesh::cli::{self, Cli, Commands, ShowArgs};
 use git_mesh::validation::RESERVED_MESH_NAMES;
 
 fn main() {
+    // Slice 6a: restore the default Unix SIGPIPE handler so a broken
+    // downstream pipe (`git mesh ... | head`) becomes a clean exit
+    // rather than a Rust panic on `println!`.
+    #[cfg(unix)]
+    // SAFETY: `signal` with `SIG_DFL` is async-signal-safe and is the
+    // canonical recipe for restoring the default disposition that Rust
+    // overrides on startup. Called once before any I/O.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     match run() {
         Ok(code) => std::process::exit(code),
         Err(error) => {

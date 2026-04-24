@@ -56,6 +56,14 @@ pub enum DoctorCode {
     FileIndexRebuilt,
     DanglingRangeRef,
     SidecarTampered,
+    /// Slice 6c: pre-existing duplicate mesh refspecs in
+    /// `remote.<name>.{fetch,push}`. Doctor collapses them in-place and
+    /// reports an INFO finding when it does.
+    DuplicateRefspec,
+    /// Slice 6d: `core.logAllRefUpdates` is not set to `always` (or is
+    /// unset entirely), so refs under `refs/meshes/*` would not get
+    /// reflog entries. Doctor sets it lazily and reports INFO.
+    LogAllRefUpdatesSet,
 }
 
 const POST_COMMIT_HOOK_BODY: &str = "#!/bin/sh\ngit mesh commit\n";
@@ -99,6 +107,32 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
                 remediation: Some("run `git mesh push` or `fetch` once to bootstrap".into()),
             });
         }
+        // Slice 6c: collapse duplicate mesh refspecs in place.
+        if let Ok((fd, pd)) = crate::sync::dedupe_mesh_refspecs(repo, &remote)
+            && (fd > 0 || pd > 0)
+        {
+            out.push(DoctorFinding {
+                code: DoctorCode::DuplicateRefspec,
+                severity: Severity::Info,
+                message: format!(
+                    "collapsed duplicate mesh refspecs on remote `{remote}` (fetch: {fd}, push: {pd})"
+                ),
+                remediation: None,
+            });
+        }
+    }
+
+    // ---- Reflog coverage for mesh refs (Slice 6d) -------------------
+    if crate::git::log_all_ref_updates_value(repo).as_deref() != Some("always")
+        && crate::git::ensure_log_all_ref_updates_always(repo).is_ok()
+    {
+        out.push(DoctorFinding {
+            code: DoctorCode::LogAllRefUpdatesSet,
+            severity: Severity::Info,
+            message: "set `core.logAllRefUpdates = always` so refs/meshes/* get reflog entries"
+                .into(),
+            remediation: None,
+        });
     }
 
     // ---- Staging area corruption -------------------------------------
