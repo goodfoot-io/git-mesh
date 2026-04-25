@@ -54,21 +54,22 @@ pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation
     }
 
     if documentation {
-        // §12.11 — per-reason appendix. Fires for each reason-kind that
-        // appeared in this flush.
+        // §12.11 — per-reason hint appendix. One short sentence per
+        // distinct reason-kind that appeared in this flush, pointing at
+        // the reconciling `git mesh` command. Hints are deduped per flush
+        // by reason-kind. They re-appear on every flush that carries the
+        // corresponding reason — they ARE the documentation.
         let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         let mut appendix = String::new();
         for c in candidates {
-            let Some(topic) = c.reason_kind.doc_topic() else {
+            let key = c.reason_kind.as_str();
+            if !seen.insert(key) {
+                continue;
+            }
+            let Some(hint) = render_hint(c.reason_kind) else {
                 continue;
             };
-            if !seen.insert(topic) {
-                continue;
-            }
-            if !appendix.is_empty() {
-                appendix.push_str("#\n");
-            }
-            appendix.push_str(&render_doc_topic(topic));
+            appendix.push_str(&hint);
         }
         if !appendix.is_empty() {
             blocks.push(appendix);
@@ -394,41 +395,211 @@ fn truncate_line_plain(line: &str) -> String {
     }
 }
 
+// §12.12 doc-topic blocks, verbatim modulo the `# ` prefix added by
+// `render_doc_topic`. Each block is a single source of truth — the test
+// suite asserts the literal text fragments.
+const TOPIC_BASELINE: &str = "\
+A mesh names a subsystem, flow, or concern that spans line ranges in
+several files. The mesh description states what those ranges do
+together. Invariants, caveats, and ownership belong in source comments,
+commit messages, CODEOWNERS, and PR descriptions — not here.
+
+Inspect a mesh:
+  git mesh show <name>           # ranges, description, history
+  git mesh ls <path>             # meshes that touch a file
+  git mesh stale                 # ranges whose bytes have drifted
+";
+
+const TOPIC_T2: &str = "\
+When a range in a mesh changes, the other ranges in the same mesh may
+need matching changes. The excerpt below is the related range — the
+code on the other side of the relationship. Compare, then either update
+it or accept that the relationship has shifted and re-record the mesh.
+
+A second `git mesh add` over the identical (path, extent) is a
+re-record — last-write-wins, no `rm` needed:
+
+  git mesh add <name> <path>#L<s>-L<e>
+  git mesh commit <name>              # finalized by the post-commit hook
+";
+
+const TOPIC_T3: &str = "\
+A related range contains the old path as a literal string. A renamed
+file still works for callers that import it by symbol, but hard-coded
+paths — markup src, fetch URLs, doc links — do not follow a rename.
+Update the literal, or move the mesh to the new path:
+
+  git mesh rm  <name> <old-path>
+  git mesh add <name> <new-path>
+  git mesh commit <name>
+";
+
+const TOPIC_T4: &str = "\
+The edit reduced a range to far fewer lines than were recorded. The
+mesh now pins less code than the relationship was about. When the line
+span changes, remove the old range first, then add the new one:
+
+  git mesh rm  <name> <path>#L<old-s>-L<old-e>
+  git mesh add <name> <path>#L<new-s>-L<new-e>
+  git mesh commit <name>
+";
+
+const TOPIC_T5: &str = "\
+Most ranges in this mesh no longer match what was recorded. When most
+of a mesh has drifted, the relationship itself has usually changed.
+Narrow the mesh to the ranges still in play, or retire it:
+
+  git mesh rm     <name> <path>          # drop a range
+  git mesh delete <name>                 # retire the mesh
+  git mesh revert <name> <commit-ish>    # restore a prior correct state
+";
+
+const TOPIC_T6: &str = "\
+An exported name changed inside one range. Other ranges reference the
+old name as a literal string, which a rename-aware refactor tool will
+not reach. Update the references, then re-record both sides in the
+same commit:
+
+  git mesh add <name> <path>#L<s>-L<e>
+  git mesh commit <name>
+";
+
+const TOPIC_T7: &str = "\
+These files move together: the session has touched them together and
+git history shows them co-changing. A mesh captures that so future
+edits on one side surface the others. Only record one if the
+relationship is real and not already enforced by a type, schema,
+validator, or test — those reject violations automatically and are
+strictly better than a mesh over the same surface.
+
+Record:
+  git mesh add <group-name> <path-1> <path-2> [...]
+  git mesh why <group-name> -m \"What the ranges do together.\"
+  git mesh commit <group-name>
+
+Name with a kebab-case slug that titles the subsystem, optionally
+prefixed by a category: billing/, platform/, experiments/, auth/.
+One relationship per mesh — if ranges split into two reasons to change
+together, record two meshes.
+";
+
+const TOPIC_T8: &str = "\
+A range staged on one mesh overlaps a range already recorded on
+another mesh in the same file. Both meshes will observe edits to the
+shared bytes independently. Confirm both relationships are real; if
+they describe the same thing, collapse them:
+
+  git mesh restore <name>                # drop staged changes on a mesh
+  git mesh delete  <name>                # retire the redundant mesh
+";
+
+const TOPIC_T9: &str = "\
+The staged removal would leave this mesh with no ranges. A mesh with
+nothing in it cannot surface drift. Either add a replacement range in
+the same commit, or retire the mesh:
+
+  git mesh add    <name> <path>[#L<s>-L<e>]
+  git mesh delete <name>
+";
+
+const TOPIC_T11: &str = "\
+A terminal marker means the resolver cannot evaluate this range at all.
+
+[ORPHANED]  — the recorded commit is unreachable. Usually a force-push
+              or a partial clone. Fetch and re-record if needed:
+                git fetch --all && git mesh fetch
+                git mesh add <name> <path>#L<s>-L<e>
+                git mesh commit <name>
+
+[CONFLICT]  — the file is mid-merge. Finish the merge first.
+
+[SUBMODULE] — the range points inside a submodule, which mesh does not
+              open. Pin the submodule root or a parent-repo path that
+              witnesses the same relationship:
+                git mesh rm  <name> <submodule>/inner/file.ts#L10-L20
+                git mesh add <name> <submodule>
+                git mesh commit <name>
+";
+
+/// Map a canonical topic name (§12.12 quoted titles, hyphen-separated)
+/// to its body. Returns `None` for unknown topics so the flush layer
+/// fails closed rather than emitting a stub.
+pub(crate) fn topic_body(topic: &str) -> Option<&'static str> {
+    Some(match topic {
+        "baseline" => TOPIC_BASELINE,
+        "editing-across-files" => TOPIC_T2,
+        "renames" => TOPIC_T3,
+        "shrinking-ranges" => TOPIC_T4,
+        "narrow-or-retire" => TOPIC_T5,
+        "exported-symbols" => TOPIC_T6,
+        "recording-a-group" => TOPIC_T7,
+        "cross-mesh-overlap" => TOPIC_T8,
+        "empty-groups" => TOPIC_T9,
+        "terminal-states" => TOPIC_T11,
+        _ => return None,
+    })
+}
+
 fn render_doc_topic(topic: &str) -> String {
-    // Short single-sentence doc topic per §12.6/§12.12. We render a
-    // compact version inline; the full blocks in advice-notes.md are
-    // verbose. Keep one sentence per reason-kind for readability.
-    let body: &str = match topic {
-        "editing across files" => {
-            "When a range in a mesh changes, the other ranges may need matching changes."
-        }
-        "renames" => {
-            "A related range contains the old path as a literal string. Hard-coded paths do not follow a rename."
-        }
-        "shrinking ranges" => {
-            "The edit reduced a range to far fewer lines than were recorded; remove the old range and re-add the new extent."
-        }
-        "narrow or retire" => {
-            "Most ranges in this mesh no longer match; narrow the mesh, or retire it."
-        }
-        "exported symbols" => {
-            "An exported name changed; other ranges may reference the old name as a literal string."
-        }
-        "recording a group" => {
-            "These files move together across session touches and recent history; a mesh can capture that."
-        }
-        "cross-mesh overlap" => {
-            "A staged range overlaps another mesh's range in the same file; confirm both relationships are real."
-        }
-        "empty groups" => {
-            "The staged removal would leave this mesh with no ranges; add a replacement or retire the mesh."
-        }
-        "terminal states" => {
-            "A terminal marker means the resolver cannot evaluate this range: ORPHANED, CONFLICT, or SUBMODULE."
-        }
-        _ => topic,
+    // §12.12 — full multi-paragraph block, every line `# `-prefixed
+    // (blank lines become a bare `#`, matching the §12.2 comment-prefix
+    // rule). Unknown topics produce empty output rather than a stub —
+    // fail-closed.
+    let Some(body) = topic_body(topic) else {
+        return String::new();
     };
-    format!("# {body}\n")
+    let mut out = String::new();
+    for line in body.lines() {
+        if line.is_empty() {
+            out.push_str("#\n");
+        } else {
+            out.push_str("# ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Per-reason `--documentation` hint sentence (§12.11). One short
+/// sentence per reason-kind, pointing at the reconciling `git mesh`
+/// command. Returns `None` for reason-kinds that intentionally have no
+/// hint (T10 — the post-commit hook handles re-anchoring on its own).
+fn render_hint(kind: ReasonKind) -> Option<String> {
+    let body: &str = match kind {
+        ReasonKind::Partner => {
+            "to re-record a range after edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
+        }
+        ReasonKind::WriteAcross => {
+            "to re-record a partner that needed matching edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
+        }
+        ReasonKind::RenameLiteral => {
+            "to follow a rename, run `git mesh add <name> <new-path>` and then `git mesh commit <name>`."
+        }
+        ReasonKind::RangeCollapse => {
+            "to re-record a shrunk extent, run `git mesh rm <name> <path>#L<old-s>-L<old-e>` and then `git mesh add <name> <path>#L<new-s>-L<new-e>`."
+        }
+        ReasonKind::LosingCoherence => {
+            "to narrow or retire a mesh, run `git mesh rm <name> <path>` or `git mesh delete <name>`."
+        }
+        ReasonKind::SymbolRename => {
+            "to re-record after a symbol rename, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
+        }
+        ReasonKind::NewGroup => {
+            "to record a candidate group, run `git mesh add <group-name> <path-1> <path-2>`, set `git mesh why <group-name> -m \"...\"`, then `git mesh commit <group-name>`."
+        }
+        ReasonKind::StagingCrossCut => {
+            "to resolve a cross-mesh overlap, run `git mesh restore <name>` or `git mesh delete <name>`."
+        }
+        ReasonKind::EmptyMesh => {
+            "to unblock an empty mesh, run `git mesh add <name> <path>` or `git mesh delete <name>`."
+        }
+        ReasonKind::PendingCommit => return None,
+        ReasonKind::Terminal => {
+            "to recover from a terminal state, see `git mesh fetch`, finish the merge, or pin the submodule root."
+        }
+    };
+    Some(format!("# {body}\n"))
 }
 
 #[cfg(test)]

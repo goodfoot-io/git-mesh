@@ -67,16 +67,16 @@ impl ReasonKind {
     pub fn doc_topic(self) -> Option<&'static str> {
         match self {
             ReasonKind::Partner => None, // L0 — no topic
-            ReasonKind::WriteAcross => Some("editing across files"),
+            ReasonKind::WriteAcross => Some("editing-across-files"),
             ReasonKind::RenameLiteral => Some("renames"),
-            ReasonKind::RangeCollapse => Some("shrinking ranges"),
-            ReasonKind::LosingCoherence => Some("narrow or retire"),
-            ReasonKind::SymbolRename => Some("exported symbols"),
-            ReasonKind::NewGroup => Some("recording a group"),
-            ReasonKind::StagingCrossCut => Some("cross-mesh overlap"),
-            ReasonKind::EmptyMesh => Some("empty groups"),
+            ReasonKind::RangeCollapse => Some("shrinking-ranges"),
+            ReasonKind::LosingCoherence => Some("narrow-or-retire"),
+            ReasonKind::SymbolRename => Some("exported-symbols"),
+            ReasonKind::NewGroup => Some("recording-a-group"),
+            ReasonKind::StagingCrossCut => Some("cross-mesh-overlap"),
+            ReasonKind::EmptyMesh => Some("empty-groups"),
             ReasonKind::PendingCommit => None, // L0 — no topic
-            ReasonKind::Terminal => Some("terminal states"),
+            ReasonKind::Terminal => Some("terminal-states"),
         }
     }
 

@@ -565,10 +565,16 @@ fn documentation_flag() -> Result<()> {
     run_advice(&repo, &session, &["add", "--write", "file1.txt"])?;
 
     let stdout = flush_stdout(&repo, &session, &["--documentation"])?;
-    // T2 (WriteAcross) → "editing across files" doc topic.
+    // T2 (WriteAcross) → §12.11 hint sentence pointing at the
+    // re-record command. Per slice 5 the topic block is the preamble,
+    // and `--documentation` appends the per-reason hint at the bottom.
     assert!(
-        stdout.contains("editing across files") || stdout.contains("ranges may need"),
-        "expected --documentation appendix, got:\n{stdout}"
+        stdout.contains("git mesh add <name> <path>#L<s>-L<e>"),
+        "expected --documentation hint, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("matching edits"),
+        "expected the WriteAcross hint wording, got:\n{stdout}"
     );
     Ok(())
 }

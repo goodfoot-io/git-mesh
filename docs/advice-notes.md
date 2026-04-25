@@ -626,7 +626,37 @@ Staging cross-cut (T8 / L2):
 ### 12.11 `--documentation`
 
 Appends one short sentence per reason-kind pointing at the reconciling
-command, in the same plain register. No prescription.
+command, in the same plain register. No prescription. Hints are deduped
+per flush by reason-kind so each sentence appears at most once per
+flush; they re-appear on every flush that carries the corresponding
+reason — they ARE the documentation, not session-once preambles.
+
+The full doc-topic blocks (§12.12) still fire as preambles on first use
+in the session — `--documentation` does not duplicate them. On an empty
+flush (no reason-kinds, no advice to give) `--documentation` adds
+nothing.
+
+Chosen wording, by reason-kind:
+
+```
+# to re-record a range after edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`.       (T1 partner)
+# to re-record a partner that needed matching edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`. (T2)
+# to follow a rename, run `git mesh add <name> <new-path>` and then `git mesh commit <name>`.                            (T3)
+# to re-record a shrunk extent, run `git mesh rm <name> <path>#L<old-s>-L<old-e>` and then `git mesh add <name> <path>#L<new-s>-L<new-e>`. (T4)
+# to narrow or retire a mesh, run `git mesh rm <name> <path>` or `git mesh delete <name>`.                               (T5)
+# to re-record after a symbol rename, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`.      (T6)
+# to record a candidate group, run `git mesh add <group-name> <path-1> <path-2>`, set `git mesh why <group-name> -m "..."`, then `git mesh commit <group-name>`. (T7)
+# to resolve a cross-mesh overlap, run `git mesh restore <name>` or `git mesh delete <name>`.                            (T8)
+# to unblock an empty mesh, run `git mesh add <name> <path>` or `git mesh delete <name>`.                                (T9)
+# (T10 has no hint — the post-commit hook re-anchors automatically.)
+# to recover from a terminal state, see `git mesh fetch`, finish the merge, or pin the submodule root.                   (T11)
+```
+
+Canonical topic-name strings used as the `flush_doc_topics` dedup key
+(lowercase, hyphen-separated form of the §12.12 quoted titles):
+`baseline`, `editing-across-files`, `renames`, `shrinking-ranges`,
+`narrow-or-retire`, `exported-symbols`, `recording-a-group`,
+`cross-mesh-overlap`, `empty-groups`, `terminal-states`.
 
 ### 12.12 Doc topics
 

@@ -53,13 +53,27 @@ pub fn run_flush(
     candidates = dedup_against_seen(&tx, candidates)?;
 
     // 5. Render. Doc topics filter down to first-use only, scoped to
-    //    reason-kinds that fired this flush.
-    let fired_topics: Vec<&'static str> = candidates
+    //    reason-kinds that fired this flush. Per §12.6/§12.12 the
+    //    "baseline" topic also fires once per session on the first L1
+    //    or L2 message of any kind, BEFORE per-reason topics.
+    let any_l1_l2 = candidates.iter().any(|c| {
+        matches!(
+            c.density,
+            crate::advice::intersections::Density::L1
+                | crate::advice::intersections::Density::L2
+        )
+    });
+    let mut fired_topics: Vec<&'static str> = Vec::new();
+    if any_l1_l2 {
+        fired_topics.push("baseline");
+    }
+    let per_reason: Vec<&'static str> = candidates
         .iter()
         .filter_map(|c| c.reason_kind.doc_topic())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
+    fired_topics.extend(per_reason);
     let unseen_topics = topics_not_yet_recorded(&tx, &fired_topics)?;
     let rendered = render::render(&candidates, &unseen_topics, documentation);
 
