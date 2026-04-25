@@ -32,7 +32,6 @@ fn fake_repo_dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: SessionStore::open is unimplemented"]
 fn open_creates_dir_mode_0700_acquires_lock_releases_on_drop() {
     let (_tmp, repo_root, git_dir) = fake_repo_dirs();
     let sid = session_id("open");
@@ -67,7 +66,6 @@ fn open_creates_dir_mode_0700_acquires_lock_releases_on_drop() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: acquire_lock / LockTimeout::Bounded is unimplemented"]
 fn bounded_lock_timeout_when_held() {
     use git_mesh::advice::store::{acquire_lock, advice_base_dir, repo_key};
 
@@ -89,7 +87,6 @@ fn bounded_lock_timeout_when_held() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: acquire_lock / LockTimeout::Blocking is unimplemented"]
 fn blocking_lock_waits_until_released() {
     use git_mesh::advice::store::{acquire_lock, advice_base_dir, repo_key};
     use std::sync::Arc;
@@ -121,7 +118,6 @@ fn blocking_lock_waits_until_released() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: atomic_write is unimplemented"]
 fn atomic_write_via_tmp_rename() {
     use git_mesh::advice::store::atomic_write;
 
@@ -143,7 +139,6 @@ fn atomic_write_via_tmp_rename() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: append_read / reads_since_cursor is unimplemented"]
 fn append_read_and_reads_since_cursor() {
     use git_mesh::advice::state::ReadRecord;
 
@@ -171,7 +166,6 @@ fn append_read_and_reads_since_cursor() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: reads_since_cursor error reporting is unimplemented"]
 fn malformed_jsonl_fails_closed_with_location() {
     let (_tmp, repo_root, git_dir) = fake_repo_dirs();
     let sid = session_id("malformed");
@@ -199,7 +193,6 @@ fn malformed_jsonl_fails_closed_with_location() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: repo_key / session directory derivation is unimplemented"]
 fn linked_worktree_different_repo_key() {
     use git_mesh::advice::store::repo_key;
 
@@ -224,7 +217,6 @@ fn linked_worktree_different_repo_key() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: BaselineState schema_version validation is unimplemented"]
 fn unknown_schema_version_returns_error() {
     use git_mesh::advice::store::atomic_write;
 

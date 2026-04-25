@@ -40,7 +40,6 @@ fn assert_success_silent(out: &Output) {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: snapshot handler is unimplemented"]
 fn snapshot_creates_state_files_and_empty_jsonls() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("create");
@@ -81,7 +80,6 @@ fn snapshot_creates_state_files_and_empty_jsonls() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: snapshot reset / truncate logic is unimplemented"]
 fn snapshot_resets_prior_session_state() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("reset");
@@ -113,7 +111,6 @@ fn snapshot_resets_prior_session_state() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: read handler is unimplemented"]
 fn read_appends_to_reads_jsonl_exits_0_silently() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("read-append");
@@ -136,7 +133,6 @@ fn read_appends_to_reads_jsonl_exits_0_silently() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: read-before-snapshot error path is unimplemented"]
 fn read_before_snapshot_nonzero_with_message() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("no-snap");
@@ -160,7 +156,6 @@ fn read_before_snapshot_nonzero_with_message() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: read path/range validation is unimplemented"]
 fn read_invalid_path_nonzero_no_append() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("invalid-path");
@@ -182,7 +177,6 @@ fn read_invalid_path_nonzero_no_append() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: lock-timeout contract for snapshot/read is unimplemented"]
 fn snapshot_uses_blocking_lock_read_uses_bounded_30s() {
     // This is a contract / documentation test: snapshot acquires the advisory
     // lock with LockTimeout::Blocking; read acquires it with

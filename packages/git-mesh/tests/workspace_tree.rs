@@ -11,7 +11,6 @@ use support::TestRepo;
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: capture and diff_trees are unimplemented"]
 fn tracked_edit_delete_rename_appear_in_diff_trees() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("edit.txt", "original\n")?;
@@ -54,7 +53,6 @@ fn tracked_edit_delete_rename_appear_in_diff_trees() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: capture with untracked/ignored handling is unimplemented"]
 fn untracked_included_ignored_excluded() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("tracked.txt", "base\n")?;
@@ -94,7 +92,6 @@ fn untracked_included_ignored_excluded() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: capture binary blob handling is unimplemented"]
 fn binary_blob_round_trips_through_temp_object_dir() -> Result<()> {
     let repo = TestRepo::new()?;
     let binary: Vec<u8> = (0u8..=255u8).collect();
@@ -118,7 +115,6 @@ fn binary_blob_round_trips_through_temp_object_dir() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: capture exec-bit / ModeChange detection is unimplemented"]
 fn exec_bit_change_yields_mode_change() -> Result<()> {
     #[cfg(unix)]
     {
@@ -162,7 +158,6 @@ fn exec_bit_change_yields_mode_change() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: submodule gitlink capture is unimplemented"]
 fn submodule_gitlink_captured_not_recursed() -> Result<()> {
     let repo = TestRepo::new()?;
 
@@ -179,6 +174,8 @@ fn submodule_gitlink_captured_not_recursed() -> Result<()> {
     }
 
     repo.run_git([
+        "-c",
+        "protocol.file.allow=always",
         "submodule",
         "add",
         sub_dir.path().to_str().unwrap(),
@@ -200,7 +197,6 @@ fn submodule_gitlink_captured_not_recursed() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: symlink mode 120000 capture is unimplemented"]
 fn symlink_mode_round_trips() -> Result<()> {
     #[cfg(unix)]
     {
@@ -223,7 +219,6 @@ fn symlink_mode_round_trips() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase-3-pending: capture must not mutate real index"]
 fn real_index_sha_unchanged_after_capture() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("a.txt", "hello\n")?;

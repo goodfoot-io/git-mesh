@@ -105,22 +105,139 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     }
     match args.command {
         Some(AdviceCommand::Add(add_args)) => run_advice_add(repo, &args.session_id, add_args),
-        Some(AdviceCommand::Snapshot) => run_advice_snapshot(args.session_id),
-        Some(AdviceCommand::Read { paths }) => run_advice_read(args.session_id, paths),
+        Some(AdviceCommand::Snapshot) => run_advice_snapshot(repo, args.session_id),
+        Some(AdviceCommand::Read { paths }) => run_advice_read(repo, args.session_id, paths),
         None => run_advice_flush(repo, &args.session_id, args.documentation),
     }
 }
 
+/// Recursively copy directory contents from `src` to `dst`.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)
+        .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", dst.display()))?;
+    for entry in std::fs::read_dir(src)
+        .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", src.display()))?
+    {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(&from, &to)
+                .map_err(|e| anyhow::anyhow!("copy `{}` -> `{}`: {e}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Capture the current workspace tree into the file-backed session store.
-#[allow(dead_code)]
-fn run_advice_snapshot(_session_id: String) -> Result<i32> {
-    unimplemented!()
+fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32> {
+    use crate::advice::session::SessionStore;
+    use crate::advice::session::state::BaselineState;
+    use crate::advice::workspace_tree;
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let mut store = SessionStore::open(wd, &gd, &session_id)?;
+
+    // Reset the JSONLs and any prior *.objects/.
+    store.reset()?;
+
+    // Capture into baseline.objects/.
+    let baseline_objects = store.baseline_objects_dir();
+    std::fs::create_dir_all(&baseline_objects)
+        .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", baseline_objects.display()))?;
+    let tree = workspace_tree::capture(repo, &baseline_objects)?;
+
+    // Compute index_sha (last 20 bytes of real index, hex).
+    let index_path = gd.join("index");
+    let index_sha = if let Ok(bytes) = std::fs::read(&index_path) {
+        if bytes.len() >= 20 {
+            let tail = &bytes[bytes.len() - 20..];
+            let mut s = String::with_capacity(40);
+            for b in tail {
+                s.push_str(&format!("{b:02x}"));
+            }
+            s
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let captured_at = chrono::Utc::now().to_rfc3339();
+    let state = BaselineState {
+        schema_version: crate::advice::session::SCHEMA_VERSION,
+        tree_sha: tree.tree_sha.clone(),
+        index_sha,
+        captured_at,
+    };
+    store.write_baseline(&state)?;
+
+    // Mirror baseline -> last-flush.
+    let last_flush_objects = store.last_flush_objects_dir();
+    if last_flush_objects.exists() {
+        std::fs::remove_dir_all(&last_flush_objects).ok();
+    }
+    copy_dir_recursive(&baseline_objects, &last_flush_objects)?;
+    store.write_last_flush(&state)?;
+
+    Ok(0)
 }
 
 /// Record read events in the file-backed session store.
-#[allow(dead_code)]
-fn run_advice_read(_session_id: String, _paths: Vec<String>) -> Result<i32> {
-    unimplemented!()
+fn run_advice_read(
+    repo: &gix::Repository,
+    session_id: String,
+    paths: Vec<String>,
+) -> Result<i32> {
+    use crate::advice::session::SessionStore;
+    use crate::advice::session::state::ReadRecord;
+    use crate::advice::session::store::LockTimeout;
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let store = SessionStore::open(wd, &gd, &session_id)?;
+
+    // Require baseline.state — fail closed.
+    if !store.dir().join("baseline.state").exists() {
+        bail!(
+            "no baseline for session `{session_id}`; run snapshot first \
+             (`git mesh advice {session_id} snapshot`)"
+        );
+    }
+
+    if paths.is_empty() {
+        bail!("git mesh advice <id> read: at least one path is required");
+    }
+
+    // Validate every path/range first; only append if all are valid.
+    for spec in &paths {
+        validate_read_write_spec(repo, spec, None)?;
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for spec in &paths {
+        let (path_str, range) = match spec.split_once("#L") {
+            Some((p, frag)) => {
+                let (s, e) = frag.split_once("-L").unwrap();
+                (p.to_string(), Some((s.parse::<u32>().unwrap(), e.parse::<u32>().unwrap())))
+            }
+            None => (spec.clone(), None),
+        };
+        let rec = ReadRecord {
+            path: path_str,
+            start_line: range.map(|(s, _)| s),
+            end_line: range.map(|(_, e)| e),
+            ts: now.clone(),
+        };
+        store.append_read(&rec, LockTimeout::Bounded(std::time::Duration::from_secs(30)))?;
+    }
+
+    Ok(0)
 }
 
 /// Reject session ids that would silently collide on disk or escape the
