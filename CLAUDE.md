@@ -122,8 +122,6 @@ git mesh add billing/checkout-request-flow api/charge.ts#L30-L76
 git mesh rm  billing/checkout-request-flow api/charge.ts#L30-L76
 git mesh add billing/checkout-request-flow api/charge.ts#L34-L82
 ```
-
-Lean toward creating meshes — they surface drift and cross-file context that nothing else in the repo makes visible. The only agreements to skip are those a compiler, schema, type, or test already enforces: a shared TypeScript type, a Protobuf message, a Zod validator imported by both sides, a contract test. Those mechanisms are strictly better than a mesh over the same surface because they reject violations automatically. Mesh everywhere those tools cannot reach: cross-language reimplementations of the same invariant, docs that promise specific code behavior, assets pinned next to the copy that describes them, client/server boundaries where neither side types the other, config values interpreted by multiple consumers. Prefer line ranges — they point a reviewer at the exact bytes. Use whole-file pins (omit `#L...`) only when the file has no meaningful line structure: binaries, images, submodule roots, generated assets. 
 </git-mesh>
 
 <validation>
