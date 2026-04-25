@@ -88,7 +88,7 @@
     "cards.management": {
       "source": {
         "source": "directory",
-        "path": "/home/node/.vscode-server/extensions/goodfoot.cards-1.0.48/dist/marketplace"
+        "path": "/home/node/.vscode-server/data/User/globalStorage/goodfoot.cards/marketplace"
       }
     }
   }
