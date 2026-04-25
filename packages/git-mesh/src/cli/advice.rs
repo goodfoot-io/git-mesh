@@ -46,6 +46,13 @@ pub struct AdviceArgs {
 pub enum AdviceCommand {
     /// Append a typed event to the session store.
     Add(AdviceAddArgs),
+    /// Capture the current workspace tree into the file-backed session store.
+    Snapshot,
+    /// Record one or more read events in the file-backed session store.
+    Read {
+        /// Paths (optionally range-qualified) to record as reads.
+        paths: Vec<String>,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -98,8 +105,22 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     }
     match args.command {
         Some(AdviceCommand::Add(add_args)) => run_advice_add(repo, &args.session_id, add_args),
+        Some(AdviceCommand::Snapshot) => run_advice_snapshot(args.session_id),
+        Some(AdviceCommand::Read { paths }) => run_advice_read(args.session_id, paths),
         None => run_advice_flush(repo, &args.session_id, args.documentation),
     }
+}
+
+/// Capture the current workspace tree into the file-backed session store.
+#[allow(dead_code)]
+fn run_advice_snapshot(_session_id: String) -> Result<i32> {
+    unimplemented!()
+}
+
+/// Record read events in the file-backed session store.
+#[allow(dead_code)]
+fn run_advice_read(_session_id: String, _paths: Vec<String>) -> Result<i32> {
+    unimplemented!()
 }
 
 /// Reject session ids that would silently collide on disk or escape the
