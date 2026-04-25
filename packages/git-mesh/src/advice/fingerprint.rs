@@ -5,7 +5,8 @@
 
 use crate::advice::candidates::Candidate;
 
-/// FNV-64 hash over byte sequence. Same algorithm as `blake_short` in flush.rs.
+/// FNV-64 hash over byte sequence.
+#[cfg(test)]
 fn fnv64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for &b in bytes {
@@ -15,20 +16,22 @@ fn fnv64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Feed a string slice into the running hash state, terminated by `\n`.
+/// Feed a string slice into the running hash state, terminated by `\0`.
+/// NUL is illegal in POSIX paths and Git path names, making it a safe
+/// field boundary that cannot be confused with path content.
 fn feed(h: &mut u64, s: &str) {
     for &b in s.as_bytes() {
         *h ^= b as u64;
         *h = h.wrapping_mul(0x100000001b3);
     }
-    // newline separator to prevent boundary collisions
-    *h ^= b'\n' as u64;
+    // NUL separator — safe field boundary
+    *h ^= 0u64;
     *h = h.wrapping_mul(0x100000001b3);
 }
 
 /// Return a lowercase-hex FNV-64 fingerprint of the structural fields of `c`.
 ///
-/// Hash inputs (fixed order, each terminated by `\n`):
+/// Hash inputs (fixed order, each terminated by `\0`):
 /// 1. reason_kind string
 /// 2. mesh name
 /// 3. partner_path
@@ -36,11 +39,13 @@ fn feed(h: &mut u64, s: &str) {
 /// 5. partner_end (decimal, or "0")
 /// 6. trigger_path
 /// 7. partner_marker
-/// 8. command (ASCII whitespace trimmed before hashing)
-/// 9. old_path (empty — field not yet on Candidate)
-/// 10. new_path (empty — field not yet on Candidate)
-/// 11. old_blob (empty — field not yet on Candidate)
-/// 12. new_blob (empty — field not yet on Candidate)
+/// 8. old_path (empty string when None)
+/// 9. new_path (empty string when None)
+/// 10. old_blob (empty string when None)
+/// 11. new_blob (empty string when None)
+///
+/// `command` is intentionally omitted — command is rendered text whose wording
+/// must not affect deduplication.
 #[allow(dead_code)]
 pub fn fingerprint(c: &Candidate) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -52,17 +57,10 @@ pub fn fingerprint(c: &Candidate) -> String {
     feed(&mut h, &c.partner_end.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
     feed(&mut h, &c.trigger_path);
     feed(&mut h, &c.partner_marker);
-    // Trim ASCII whitespace from command before hashing — canonicalizes
-    // leading/trailing spaces that may appear in generated command strings.
-    feed(&mut h, c.command.trim());
-    // Fields 9-12: old_path, new_path, old_blob, new_blob not yet on Candidate.
-    feed(&mut h, "");
-    feed(&mut h, "");
-    feed(&mut h, "");
-    feed(&mut h, "");
-
-    // Suppress unused warning on fnv64 — it's kept for readability
-    let _ = fnv64;
+    feed(&mut h, c.old_path.as_deref().unwrap_or(""));
+    feed(&mut h, c.new_path.as_deref().unwrap_or(""));
+    feed(&mut h, c.old_blob.as_deref().unwrap_or(""));
+    feed(&mut h, c.new_blob.as_deref().unwrap_or(""));
 
     format!("{h:016x}")
 }
@@ -93,6 +91,10 @@ mod tests {
             excerpt_of_path: String::new(),
             excerpt_start: None,
             excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
         }
     }
 
@@ -137,32 +139,24 @@ mod tests {
         assert_ne!(fingerprint(&a), fingerprint(&b));
     }
 
-    /// Leading/trailing whitespace in command must not change the fingerprint
-    /// (the implementation canonicalizes command text before hashing).
+    /// Any change to command text must NOT change the fingerprint — command is
+    /// rendered text and is intentionally excluded from the hash.
     #[test]
     fn whitespace_in_command_does_not_change_fingerprint() {
         let mut a = make_candidate();
         let mut b = make_candidate();
         a.command = "git mesh add foo src/bar.rs#L1-10".to_string();
-        b.command = "  git mesh add foo src/bar.rs#L1-10  ".to_string();
+        b.command = "  completely different command text  ".to_string();
         assert_eq!(fingerprint(&a), fingerprint(&b));
     }
 
-    /// Changing the command text that encodes blob identity (e.g. an OID
-    /// embedded in command) must change the fingerprint.
-    ///
-    /// Note: Candidate does not yet carry `old_blob`/`new_blob` fields
-    /// (Sub-card C will add them). Until then, blob identity is tested via
-    /// `command` text: if the command references different blob OIDs, the
-    /// fingerprint must differ. When `old_blob`/`new_blob` fields are added
-    /// in Sub-card C, this test should be updated to use those fields directly.
+    /// Changing new_blob must change the fingerprint (blob identity matters).
     #[test]
     fn blob_id_change_yields_different_fingerprint() {
         let mut a = make_candidate();
         let mut b = make_candidate();
-        // Embed distinct blob OIDs in command text as a proxy for blob identity
-        a.command = "git mesh add foo src/x.rs # blob:aabbccdd".to_string();
-        b.command = "git mesh add foo src/x.rs # blob:11223344".to_string();
+        a.new_blob = Some("oid-a".into());
+        b.new_blob = Some("oid-b".into());
         assert_ne!(fingerprint(&a), fingerprint(&b));
     }
 
@@ -174,5 +168,12 @@ mod tests {
         assert_eq!(fp.len(), 16, "expected 16 hex chars, got {:?}", fp);
         assert!(fp.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_uppercase()),
             "fingerprint must be lowercase hex, got {:?}", fp);
+    }
+
+    /// fnv64 is exercised in tests to prevent dead_code warnings.
+    #[test]
+    fn fnv64_is_deterministic() {
+        assert_eq!(fnv64(b"hello"), fnv64(b"hello"));
+        assert_ne!(fnv64(b"hello"), fnv64(b"world"));
     }
 }

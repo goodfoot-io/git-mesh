@@ -116,6 +116,14 @@ pub struct Candidate {
     pub excerpt_of_path: String,
     pub excerpt_start: Option<i64>,
     pub excerpt_end: Option<i64>,
+    /// Old blob OID (SHA) for this diff entry. None when not available.
+    pub old_blob: Option<String>,
+    /// New blob OID (SHA) for this diff entry. None when not available.
+    pub new_blob: Option<String>,
+    /// Old path before a rename. None when not a rename or not available.
+    pub old_path: Option<String>,
+    /// New path after a rename. None when not a rename or not available.
+    pub new_path: Option<String>,
 }
 
 impl Candidate {
@@ -145,6 +153,10 @@ impl Candidate {
             excerpt_of_path: String::new(),
             excerpt_start: None,
             excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
         }
     }
 }
@@ -1131,6 +1143,10 @@ pub(crate) fn detect_t7(
                 excerpt_of_path: String::new(),
                 excerpt_start: None,
                 excerpt_end: None,
+                old_blob: None,
+                new_blob: None,
+                old_path: None,
+                new_path: None,
             };
             // Put the two paths into the trigger/partner slots; give them
             // deterministic ordering for dedup.

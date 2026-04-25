@@ -653,6 +653,10 @@ mod tests {
             excerpt_of_path: String::new(),
             excerpt_start: None,
             excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
         }
     }
 

@@ -4,13 +4,13 @@
 //! `rusqlite::Connection`. The existing SQL-driven render path in
 //! `intersections.rs` is unchanged.
 //!
-//! ## Note on `detect_delta_intersects_mesh` hunk resolution
+//! ## Deferred detectors
 //!
-//! `DiffEntry::Modified` carries only old/new OIDs and path, not hunk ranges.
-//! Rather than shelling out for `git diff -U0`, this detector treats any
-//! `Modified` entry on a meshed path as overlapping every range in that path
-//! (over-emit, never under-emit). Sub-card C may tighten this with hunk
-//! parsing if needed.
+//! `detect_delta_intersects_mesh` and `detect_range_shrink` return empty vecs
+//! until sub-card C extends `DiffEntry` with hunk ranges and blob line counts
+//! respectively. Over-emitting without that data would burn fingerprints in the
+//! dedupe set before correct candidates are available (not recoverable without
+//! manual reset).
 
 pub use crate::advice::intersections::{Candidate, Density, ReasonKind};
 use crate::advice::session::state::{ReadRecord, TouchInterval};
@@ -88,6 +88,10 @@ fn bare_candidate(
         excerpt_of_path: String::new(),
         excerpt_start: None,
         excerpt_end: None,
+        old_blob: None,
+        new_blob: None,
+        old_path: None,
+        new_path: None,
     }
 }
 
@@ -116,6 +120,10 @@ fn is_filtered_path(path: &str) -> bool {
                 | "package-lock.json"
                 | "poetry.lock"
                 | "Gemfile.lock"
+                | "bun.lockb"
+                | "composer.lock"
+                | "pnpm-lock.yaml"
+                | "Pipfile.lock"
         )
     {
         return true;
@@ -137,6 +145,16 @@ fn is_filtered_path(path: &str) -> bool {
                 | ".so"
                 | ".dylib"
                 | ".dll"
+                // Binary fonts
+                | ".woff"
+                | ".woff2"
+                | ".ttf"
+                | ".otf"
+                // Binary media
+                | ".mp4"
+                | ".webm"
+                | ".wav"
+                | ".mp3"
         ) {
             return true;
         }
@@ -145,8 +163,14 @@ fn is_filtered_path(path: &str) -> bool {
     if path.ends_with(".log") {
         return true;
     }
-    // Generated: *.pb.go style
-    if path.ends_with(".pb.go") {
+    // Generated/minified patterns
+    if path.ends_with(".pb.go")
+        || path.ends_with(".pb.cc")
+        || path.ends_with("_pb2.py")
+        || path.ends_with(".min.js")
+        || path.ends_with(".min.css")
+        || path.ends_with(".snap")
+    {
         return true;
     }
     false
@@ -180,33 +204,13 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
     out
 }
 
-/// Emit `Partner` for `incr_delta` Modified/Deleted/Renamed entries whose path
-/// appears in `mesh_ranges`. Over-emit model: any match on path emits one
-/// Partner per overlapping mesh range without hunk parsing.
-pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate> {
-    let mut out = Vec::new();
-    for entry in input.incr_delta {
-        let path = match entry {
-            DiffEntry::Modified { path } => path.as_str(),
-            DiffEntry::Deleted { path } => path.as_str(),
-            DiffEntry::Renamed { from, .. } => from.as_str(),
-            DiffEntry::Added { .. } | DiffEntry::ModeChange { .. } => continue,
-        };
-        for range in input.mesh_ranges {
-            let range_path = range.path.to_string_lossy();
-            if path == range_path.as_ref() {
-                out.push(bare_candidate(
-                    &range.name,
-                    ReasonKind::Partner,
-                    &range_path,
-                    Some(range.start as i64),
-                    Some(range.end as i64),
-                    path,
-                ));
-            }
-        }
-    }
-    out
+/// Deferred — requires hunk-range parsing of `DiffEntry` to confirm overlap.
+/// Without hunk data, emitting `Partner` for every modified meshed path
+/// over-emits K candidates per file and burns fingerprints in the dedupe set
+/// before sub-card C can supply correct hunk ranges. Sub-card C will populate
+/// `DiffEntry` with hunk ranges and re-enable this detector.
+pub fn detect_delta_intersects_mesh(_input: &CandidateInput<'_>) -> Vec<Candidate> {
+    Vec::new()
 }
 
 /// Emit `Terminal` for `mesh_ranges` rows with Changed/Moved/Terminal status.
@@ -255,79 +259,54 @@ pub fn detect_rename_consequence(input: &CandidateInput<'_>) -> Vec<Candidate> {
     out
 }
 
-/// Emit `RangeCollapse` when a meshed path has a Modified entry in incr_delta.
-///
-/// Phase C note: `DiffEntry::Modified` does not carry old/new line counts.
-/// This detector emits `RangeCollapse` for any Modified entry on a meshed path,
-/// conservatively flagging that the blob may have shrunk below the mesh range.
-/// Sub-card C will extend `DiffEntry` with line-count metadata to make this
-/// precise.
-pub fn detect_range_shrink(input: &CandidateInput<'_>) -> Vec<Candidate> {
-    let mut out = Vec::new();
-    for entry in input.incr_delta {
-        let path = match entry {
-            DiffEntry::Modified { path } => path.as_str(),
-            _ => continue,
-        };
-        for range in input.mesh_ranges {
-            let range_path = range.path.to_string_lossy();
-            if path == range_path.as_ref() {
-                out.push(bare_candidate(
-                    &range.name,
-                    ReasonKind::RangeCollapse,
-                    &range_path,
-                    Some(range.start as i64),
-                    Some(range.end as i64),
-                    path,
-                ));
-            }
-        }
-    }
-    out
+/// Deferred — requires blob line-count comparison not yet provided by
+/// `DiffEntry`. Without line counts, emitting `RangeCollapse` on every
+/// `Modified` entry would pollute the dedupe set: once the correct collapse
+/// arrives in sub-card C, its fingerprint would already be burned. Sub-card C
+/// will populate `DiffEntry` with old/new line counts and re-enable this
+/// detector.
+pub fn detect_range_shrink(_input: &CandidateInput<'_>) -> Vec<Candidate> {
+    Vec::new()
 }
 
 /// Emit `NewGroup` for co-touch pairs from `touch_intervals` that exceed
 /// frequency thresholds, filtering generated/ignored/vendored/lockfile/binary.
 ///
-/// Threshold: a pair of paths must appear together at least 2 times.
-/// Pairs where both paths are covered by a mesh range in the same mesh are
-/// skipped.
+/// A pair (path_a, path_b) qualifies when each path appears in
+/// `touch_intervals` at least `THRESHOLD` times (a proxy for the pair
+/// co-occurring in at least that many intervals). Pairs where both paths are
+/// covered by a mesh range in the same mesh are skipped.
 ///
 /// TODO sub-card C: gate on historical co-change (git log lookup out of scope
-/// for unit tests).
+/// for this sub-card). Sub-card C will also refine interval grouping using
+/// real interval IDs once `TouchInterval` carries them.
 pub fn detect_session_co_touch(input: &CandidateInput<'_>) -> Vec<Candidate> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
-    // Collect unique paths, filtering noise
-    let paths: Vec<&str> = {
-        let mut seen = std::collections::HashSet::new();
-        input
-            .touch_intervals
-            .iter()
-            .map(|t| t.path.as_str())
-            .filter(|p| !is_filtered_path(p))
-            .filter(|p| seen.insert(*p))
-            .collect()
-    };
-
-    if paths.len() < 2 {
-        return Vec::new();
-    }
-
-    // Count co-touch frequency for each pair: number of touch intervals that
-    // overlap in time. We use a simple proxy: count how many touch records each
-    // path has, then count pair co-occurrences by considering all (path_a,
-    // path_b) combinations that appear in the intervals list.
-    let mut path_counts: HashMap<&str, u32> = HashMap::new();
+    // Count per-path occurrences across touch_intervals (filtered).
+    let mut path_counts: HashMap<&str, usize> = HashMap::new();
     for t in input.touch_intervals {
         if !is_filtered_path(&t.path) {
             *path_counts.entry(t.path.as_str()).or_default() += 1;
         }
     }
 
-    // Build set of (mesh_name, path) for existing mesh coverage check
+    // Paths that appear at least THRESHOLD times are candidates for pairing.
+    const THRESHOLD: usize = 2;
+    let mut qualified: Vec<&str> = path_counts
+        .iter()
+        .filter(|(_, count)| **count >= THRESHOLD)
+        .map(|(&p, _)| p)
+        .collect();
+    qualified.sort_unstable();
+
+    if qualified.len() < 2 {
+        return Vec::new();
+    }
+
+    // Build set of (mesh_name → paths) for existing mesh coverage check.
     // A pair is skipped if both paths appear in ranges under the same mesh name.
-    let mut mesh_paths: HashMap<&str, std::collections::HashSet<&str>> = HashMap::new();
+    let mut mesh_paths: HashMap<&str, HashSet<&str>> = HashMap::new();
     for range in input.mesh_ranges {
         let path_str = range.path.to_str().unwrap_or("");
         mesh_paths
@@ -336,20 +315,9 @@ pub fn detect_session_co_touch(input: &CandidateInput<'_>) -> Vec<Candidate> {
             .insert(path_str);
     }
 
-    let threshold: u32 = 2; // minimum co-touch count per path to qualify
     let mut out = Vec::new();
 
-    let qualified: Vec<&str> = paths
-        .iter()
-        .copied()
-        .filter(|&p| path_counts.get(p).copied().unwrap_or(0) >= threshold)
-        .collect();
-
-    if qualified.len() < 2 {
-        return Vec::new();
-    }
-
-    // Emit one NewGroup per qualifying pair, skipping pairs already in same mesh
+    // Enumerate unordered pairs and emit NewGroup for qualifying ones.
     for i in 0..qualified.len() {
         for j in (i + 1)..qualified.len() {
             let pa = qualified[i];
@@ -363,14 +331,7 @@ pub fn detect_session_co_touch(input: &CandidateInput<'_>) -> Vec<Candidate> {
                 continue;
             }
 
-            out.push(bare_candidate(
-                "",
-                ReasonKind::NewGroup,
-                pa,
-                None,
-                None,
-                pb,
-            ));
+            out.push(bare_candidate("", ReasonKind::NewGroup, pa, None, None, pb));
         }
     }
 
@@ -525,8 +486,9 @@ mod tests {
     // ── detect_delta_intersects_mesh ─────────────────────────────────────────
 
     /// A DiffEntry::Modified on a meshed path must produce at least one
-    /// Partner Candidate (over-emit model: entire mesh range is considered hit).
+    /// Partner Candidate — unskip when DiffEntry carries hunk ranges (sub-card C).
     #[test]
+    #[ignore = "deferred: detect_delta_intersects_mesh requires hunk-range data (sub-card C)"]
     fn delta_modify_intersects_mesh_emits_partner() {
         let ranges = [make_mesh_range("net-mesh", "src/net.rs", 1, 50)];
         let delta = [DiffEntry::Modified { path: "src/net.rs".to_string() }];
@@ -608,13 +570,10 @@ mod tests {
 
     // ── detect_range_shrink ──────────────────────────────────────────────────
 
-    /// When a meshed path's blob shrinks (old blob had more lines than new),
-    /// a RangeCollapse Candidate should be emitted.
-    ///
-    /// Note: DiffEntry::Modified carries no blob OIDs in this phase; the test
-    /// uses a Modified entry on a meshed path and documents the expected
-    /// behavior when Phase C extends DiffEntry with line-count metadata.
+    /// When a meshed path's blob shrinks, a RangeCollapse Candidate should be
+    /// emitted — unskip when DiffEntry carries blob line counts (sub-card C).
     #[test]
+    #[ignore = "deferred: detect_range_shrink requires blob line-count data (sub-card C)"]
     fn range_shrink_emits_range_collapse_when_blob_lines_decrease() {
         // DiffEntry::Modified on a path whose mesh range end > new blob line count
         let ranges = [make_mesh_range("shrink-mesh", "src/big.rs", 1, 200)];
