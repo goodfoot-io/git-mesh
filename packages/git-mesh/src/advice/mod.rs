@@ -3,6 +3,8 @@
 //! Public re-exports for the advice subsystem.
 
 pub mod audit;
+pub mod candidates;
+pub mod fingerprint;
 pub mod db;
 pub mod events;
 pub mod flush;
