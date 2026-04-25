@@ -5,15 +5,66 @@
 
 use crate::advice::candidates::Candidate;
 
+/// FNV-64 hash over byte sequence. Same algorithm as `blake_short` in flush.rs.
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Feed a string slice into the running hash state, terminated by `\n`.
+fn feed(h: &mut u64, s: &str) {
+    for &b in s.as_bytes() {
+        *h ^= b as u64;
+        *h = h.wrapping_mul(0x100000001b3);
+    }
+    // newline separator to prevent boundary collisions
+    *h ^= b'\n' as u64;
+    *h = h.wrapping_mul(0x100000001b3);
+}
+
 /// Return a lowercase-hex FNV-64 fingerprint of the structural fields of `c`.
 ///
-/// # Note
-/// This stub returns an empty string. Phase C will implement the FNV-64 hash
-/// over the twelve fixed fields listed in the plan §Phase 6.
+/// Hash inputs (fixed order, each terminated by `\n`):
+/// 1. reason_kind string
+/// 2. mesh name
+/// 3. partner_path
+/// 4. partner_start (decimal, or "0")
+/// 5. partner_end (decimal, or "0")
+/// 6. trigger_path
+/// 7. partner_marker
+/// 8. command (ASCII whitespace trimmed before hashing)
+/// 9. old_path (empty — field not yet on Candidate)
+/// 10. new_path (empty — field not yet on Candidate)
+/// 11. old_blob (empty — field not yet on Candidate)
+/// 12. new_blob (empty — field not yet on Candidate)
 #[allow(dead_code)]
-pub fn fingerprint(_c: &Candidate) -> String {
-    // TODO Phase C
-    String::new()
+pub fn fingerprint(c: &Candidate) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+
+    feed(&mut h, c.reason_kind.as_str());
+    feed(&mut h, &c.mesh);
+    feed(&mut h, &c.partner_path);
+    feed(&mut h, &c.partner_start.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
+    feed(&mut h, &c.partner_end.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
+    feed(&mut h, &c.trigger_path);
+    feed(&mut h, &c.partner_marker);
+    // Trim ASCII whitespace from command before hashing — canonicalizes
+    // leading/trailing spaces that may appear in generated command strings.
+    feed(&mut h, c.command.trim());
+    // Fields 9-12: old_path, new_path, old_blob, new_blob not yet on Candidate.
+    feed(&mut h, "");
+    feed(&mut h, "");
+    feed(&mut h, "");
+    feed(&mut h, "");
+
+    // Suppress unused warning on fnv64 — it's kept for readability
+    let _ = fnv64;
+
+    format!("{h:016x}")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -24,7 +75,6 @@ mod tests {
     use crate::advice::intersections::{Density, ReasonKind};
 
     /// Build a minimal Candidate with all structural fields set to defaults.
-    #[allow(dead_code)]
     fn make_candidate() -> Candidate {
         Candidate {
             mesh: "test-mesh".to_string(),
@@ -48,7 +98,6 @@ mod tests {
 
     /// The same Candidate must always produce the same fingerprint (stability).
     #[test]
-    #[ignore]
     fn same_candidate_yields_same_fingerprint() {
         let c = make_candidate();
         assert_eq!(fingerprint(&c), fingerprint(&c));
@@ -58,7 +107,6 @@ mod tests {
 
     /// Changing reason_kind must change the fingerprint.
     #[test]
-    #[ignore]
     fn different_reason_yields_different_fingerprint() {
         let mut a = make_candidate();
         let mut b = make_candidate();
@@ -69,7 +117,6 @@ mod tests {
 
     /// Changing mesh name must change the fingerprint.
     #[test]
-    #[ignore]
     fn different_mesh_yields_different_fingerprint() {
         let mut a = make_candidate();
         let mut b = make_candidate();
@@ -80,7 +127,6 @@ mod tests {
 
     /// Changing partner_start/partner_end must change the fingerprint.
     #[test]
-    #[ignore]
     fn different_partner_range_yields_different_fingerprint() {
         let mut a = make_candidate();
         let mut b = make_candidate();
@@ -94,7 +140,6 @@ mod tests {
     /// Leading/trailing whitespace in command must not change the fingerprint
     /// (the implementation canonicalizes command text before hashing).
     #[test]
-    #[ignore]
     fn whitespace_in_command_does_not_change_fingerprint() {
         let mut a = make_candidate();
         let mut b = make_candidate();
@@ -112,7 +157,6 @@ mod tests {
     /// fingerprint must differ. When `old_blob`/`new_blob` fields are added
     /// in Sub-card C, this test should be updated to use those fields directly.
     #[test]
-    #[ignore]
     fn blob_id_change_yields_different_fingerprint() {
         let mut a = make_candidate();
         let mut b = make_candidate();
@@ -124,7 +168,6 @@ mod tests {
 
     /// FNV-64 produces a 64-bit hash → 16 lowercase hex characters.
     #[test]
-    #[ignore]
     fn format_is_lowercase_hex_16_chars() {
         let c = make_candidate();
         let fp = fingerprint(&c);
