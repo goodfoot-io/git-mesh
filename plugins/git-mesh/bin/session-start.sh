@@ -12,7 +12,7 @@ payload="$(cat)"
 session_id="$(jq -r '.session_id // empty' <<<"$payload")"
 [[ -z "$session_id" ]] && exit 0
 
-git mesh advice "$session_id" add --snapshot 2>/dev/null || true
+git mesh advice "$session_id" snapshot 2>/dev/null || true
 output="$(git mesh advice "$session_id" 2>/dev/null || true)"
 [[ -n "$output" ]] && emit_additional_context "SessionStart" "$output"
 exit 0

@@ -6,7 +6,6 @@ build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.102"
-rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 gix = { version = "0.81.0", features = ["revision", "status", "sha1", "blame", "blob-diff"] }

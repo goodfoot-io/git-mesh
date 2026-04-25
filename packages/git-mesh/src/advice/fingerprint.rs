@@ -70,7 +70,7 @@ pub fn fingerprint(c: &Candidate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::advice::intersections::{Density, ReasonKind};
+    use crate::advice::candidates::{Density, ReasonKind};
 
     /// Build a minimal Candidate with all structural fields set to defaults.
     fn make_candidate() -> Candidate {

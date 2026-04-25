@@ -57,7 +57,6 @@ fn bare_render_after_snapshot_no_changes_is_silent() -> Result<()> {
 // bare render before snapshot: non-zero, message names `snapshot`.
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "phase-2-pending: bare-render-without-snapshot fails closed only after legacy SQL fallback is removed in phase 2"]
 fn bare_render_without_snapshot_fails_closed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("nosnap");

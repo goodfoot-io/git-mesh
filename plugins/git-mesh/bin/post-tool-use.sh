@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# PostToolUse hook: after an Edit/Write, record the write event and flush
-# mesh advice for the edited file.
+# PostToolUse hook: after an Edit/Write, run a bare advice render so
+# Claude sees mesh advice for the workspace delta. Writes are no longer
+# explicitly recorded — the file-backed pipeline derives them by diffing
+# the workspace tree against `last-flush.objects`.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -16,16 +18,9 @@ case "$tool" in
   *) exit 0 ;;
 esac
 
-file="$(jq -r '.tool_input.file_path // empty' <<<"$payload")"
-[[ -z "$file" ]] && exit 0
-
 session_id="$(jq -r '.session_id // empty' <<<"$payload")"
 [[ -z "$session_id" ]] && exit 0
 
-repo_root="$(git rev-parse --show-toplevel)"
-rel="${file#"$repo_root"/}"
-
-git mesh advice "$session_id" add --write "$rel" 2>/dev/null || true
 output="$(git mesh advice "$session_id" 2>/dev/null || true)"
 [[ -n "$output" ]] && emit_additional_context "PostToolUse" "$output"
 exit 0

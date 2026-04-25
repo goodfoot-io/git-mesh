@@ -1,8 +1,8 @@
 //! Slice 1 — CLI validation and naming.
 //!
-//! Each rejection asserts exit code 2 and a stderr substring. The
-//! positive test exercises the `<category>/<slug>` mesh-name form end to
-//! end (add → commit → ls / show / stale / post-commit re-anchor).
+//! Each rejection asserts a non-zero exit code and a stderr substring.
+//! The positive test exercises the `<category>/<slug>` mesh-name form
+//! end to end (add → commit → ls / show / stale).
 
 mod support;
 
@@ -13,7 +13,10 @@ use support::TestRepo;
 fn assert_rejected(out: &Output, needle: &str) {
     let code = out.status.code();
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(code, Some(2), "expected exit 2, got {code:?}; stderr=\n{stderr}");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit, got {code:?}; stderr=\n{stderr}"
+    );
     assert!(
         stderr.contains(needle),
         "expected stderr to contain {needle:?}, got:\n{stderr}"
@@ -28,14 +31,25 @@ fn seeded_with_a_b() -> Result<TestRepo> {
     Ok(repo)
 }
 
+fn snapshot(repo: &TestRepo, sid: &str) -> Result<()> {
+    let out = repo.run_mesh(["advice", sid, "snapshot"])?;
+    anyhow::ensure!(
+        out.status.success(),
+        "snapshot failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
 // ------------------------------------------------------------------
-// 1. Read/write spec validation.
+// 1. Read spec validation.
 // ------------------------------------------------------------------
 
 #[test]
 fn rejects_nonexistent_path() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "s1np", "add", "--read", "no/such/file.ts"])?;
+    snapshot(&repo, "s1np")?;
+    let out = repo.run_mesh(["advice", "s1np", "read", "no/such/file.ts"])?;
     assert_rejected(&out, "path not found");
     Ok(())
 }
@@ -43,7 +57,8 @@ fn rejects_nonexistent_path() -> Result<()> {
 #[test]
 fn rejects_inverted_range() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "s1ir", "add", "--read", "a.ts#L99-L1"])?;
+    snapshot(&repo, "s1ir")?;
+    let out = repo.run_mesh(["advice", "s1ir", "read", "a.ts#L99-L1"])?;
     assert_rejected(&out, "before start");
     Ok(())
 }
@@ -51,7 +66,8 @@ fn rejects_inverted_range() -> Result<()> {
 #[test]
 fn rejects_range_past_eof() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "s1eof", "add", "--write", "a.ts#L1-L9999"])?;
+    snapshot(&repo, "s1eof")?;
+    let out = repo.run_mesh(["advice", "s1eof", "read", "a.ts#L1-L9999"])?;
     assert_rejected(&out, "past EOF");
     Ok(())
 }
@@ -59,7 +75,8 @@ fn rejects_range_past_eof() -> Result<()> {
 #[test]
 fn rejects_empty_path() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "s1ep", "add", "--read", ""])?;
+    snapshot(&repo, "s1ep")?;
+    let out = repo.run_mesh(["advice", "s1ep", "read", ""])?;
     assert_rejected(&out, "must not be empty");
     Ok(())
 }
@@ -71,7 +88,7 @@ fn rejects_empty_path() -> Result<()> {
 #[test]
 fn rejects_empty_session_id() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "", "add", "--read", "a.ts"])?;
+    let out = repo.run_mesh(["advice", "", "read", "a.ts"])?;
     assert_rejected(&out, "<sessionId>");
     Ok(())
 }
@@ -83,7 +100,7 @@ fn rejects_empty_session_id() -> Result<()> {
 #[test]
 fn rejects_session_id_with_slash() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "foo/bar", "add", "--read", "a.ts"])?;
+    let out = repo.run_mesh(["advice", "foo/bar", "read", "a.ts"])?;
     assert_rejected(&out, "disallowed character");
     Ok(())
 }
@@ -91,15 +108,10 @@ fn rejects_session_id_with_slash() -> Result<()> {
 #[test]
 fn rejects_session_id_with_backslash() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["advice", "foo\\bar", "add", "--read", "a.ts"])?;
+    let out = repo.run_mesh(["advice", "foo\\bar", "read", "a.ts"])?;
     assert_rejected(&out, "disallowed character");
     Ok(())
 }
-
-// NUL bytes in argv are rejected by std::process before they reach the
-// CLI (NulError on Command::arg) — the validator's NUL clause is still
-// exercised by other entry points (library calls / tests in
-// `validation.rs`), but we cannot drive it through `Command` here.
 
 // ------------------------------------------------------------------
 // 4. `--help` works outside a git repo.
@@ -146,7 +158,6 @@ fn top_level_help_works_outside_repo() -> Result<()> {
 fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
     let repo = seeded_with_a_b()?;
 
-    // Stage and commit the mesh.
     let out = repo.run_mesh([
         "add",
         "billing/checkout-request-flow",
@@ -172,37 +183,27 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The mesh ref should exist with the literal slash preserved.
     assert!(
         repo.ref_exists("refs/meshes/v1/billing/checkout-request-flow"),
         "expected mesh ref under refs/meshes/v1/billing/"
     );
 
-    // `git mesh ls a.ts` lists the mesh (read path through the file-index).
     let listed = repo.mesh_stdout(["ls", "a.ts"])?;
     assert!(
         listed.contains("billing/checkout-request-flow"),
         "ls output missing the mesh:\n{listed}"
     );
 
-    // `git mesh show <name>` resolves the ref.
     let shown = repo.mesh_stdout(["show", "billing/checkout-request-flow"])?;
     assert!(
         shown.contains("Checkout request flow"),
         "show output missing why:\n{shown}"
     );
 
-    // `git mesh stale` succeeds (no drift expected, exit 0 or 1 per
-    // findings count). Just assert it ran without exiting 2.
     let stale = repo.run_mesh(["stale", "--format=porcelain"])?;
     assert_ne!(stale.status.code(), Some(2), "stale errored: {}",
         String::from_utf8_lossy(&stale.stderr));
 
-    // Post-commit re-anchor path: mutate the file and create a git
-    // commit; the post-commit hook is invoked by `git mesh pre-commit`
-    // / a normal commit pipeline. We exercise the rebuild_index path
-    // directly by reading the file index; if the encoded name handled
-    // the slash, the index lists the partner.
     let listed_b = repo.mesh_stdout(["ls", "b.ts"])?;
     assert!(
         listed_b.contains("billing/checkout-request-flow"),

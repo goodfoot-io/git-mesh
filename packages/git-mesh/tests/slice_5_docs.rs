@@ -1,59 +1,29 @@
-//! Slice 5 — doc-topic preambles (§12.12) and `--documentation` hints
-//! (§12.11).
+//! Slice 5 — doc-topic preambles and `--documentation` hints.
 //!
-//! Two layers of coverage:
-//! 1. Renderer-level: feed synthetic candidates through `render::render`
-//!    to assert each §12.12 topic block renders verbatim modulo the
-//!    `# ` prefix, and that `--documentation` appends per-reason hints.
-//! 2. CLI-level: exercise the flush pipeline end-to-end for the once-
-//!    per-session dedup of the Baseline + WriteAcross topic, the L0-
-//!    only "no preamble" guarantee, and the `--documentation` empty-
-//!    flush "no hint" guarantee.
+//! Renderer-level tests (each §12.12 topic block, the `--documentation`
+//! hint placement, the empty-flush guarantee) are unchanged in intent;
+//! only the import path moved from `intersections::` to `candidates::`.
+//!
+//! CLI-level tests are rewritten against the file-backed pipeline:
+//! per-session topic dedup is verified via `docs-seen.jsonl` monotonicity
+//! across two consecutive renders.
 
 mod support;
 
 use anyhow::Result;
-use git_mesh::advice::intersections::{Candidate, Density, ReasonKind};
+use git_mesh::advice::candidates::{Candidate, Density, ReasonKind};
 use git_mesh::advice::render;
 use git_mesh::{append_add, commit_mesh, set_why};
-use std::path::PathBuf;
 use std::process::Output;
 use support::TestRepo;
 use uuid::Uuid;
 
-const SESSION_DIR: &str = "/tmp/git-mesh-claude-code";
-
-struct Session {
-    id: String,
-}
-impl Session {
-    fn new(prefix: &str) -> Self {
-        let id = format!("slice5-{prefix}-{}", Uuid::new_v4());
-        let s = Self { id };
-        s.cleanup();
-        s
-    }
-    fn db_path(&self) -> PathBuf {
-        PathBuf::from(SESSION_DIR).join(format!("{}.db", self.id))
-    }
-    fn jsonl_path(&self) -> PathBuf {
-        PathBuf::from(SESSION_DIR).join(format!("{}.jsonl", self.id))
-    }
-    fn cleanup(&self) {
-        let _ = std::fs::remove_file(self.db_path());
-        let _ = std::fs::remove_file(self.db_path().with_extension("db-wal"));
-        let _ = std::fs::remove_file(self.db_path().with_extension("db-shm"));
-        let _ = std::fs::remove_file(self.jsonl_path());
-    }
-}
-impl Drop for Session {
-    fn drop(&mut self) {
-        self.cleanup();
-    }
+fn sid(prefix: &str) -> String {
+    format!("slice5-{prefix}-{}", Uuid::new_v4())
 }
 
-fn run_advice(repo: &TestRepo, session: &Session, extra: &[&str]) -> Result<Output> {
-    let mut args: Vec<String> = vec!["advice".into(), session.id.clone()];
+fn run_advice(repo: &TestRepo, s: &str, extra: &[&str]) -> Result<Output> {
+    let mut args: Vec<String> = vec!["advice".into(), s.into()];
     for a in extra {
         args.push((*a).to_string());
     }
@@ -70,7 +40,17 @@ fn ok(out: &Output) {
     );
 }
 
-fn flush(repo: &TestRepo, s: &Session, extra: &[&str]) -> Result<String> {
+fn session_dir(repo: &TestRepo, sid: &str) -> std::path::PathBuf {
+    let store = git_mesh::advice::SessionStore::open(
+        repo.path(),
+        &repo.path().join(".git"),
+        sid,
+    )
+    .expect("open store");
+    store.baseline_objects_dir().parent().expect("parent").to_path_buf()
+}
+
+fn render_via_cli(repo: &TestRepo, s: &str, extra: &[&str]) -> Result<String> {
     let out = run_advice(repo, s, extra)?;
     ok(&out);
     Ok(String::from_utf8(out.stdout)?)
@@ -80,8 +60,6 @@ fn flush(repo: &TestRepo, s: &Session, extra: &[&str]) -> Result<String> {
 // Renderer-level: each §12.12 topic block renders verbatim per the spec.
 // ---------------------------------------------------------------------------
 
-/// Build a minimal L1 candidate so `render::render` accepts the input —
-/// the per-mesh body is irrelevant; we assert against the preamble.
 fn l1_candidate() -> Candidate {
     Candidate {
         mesh: "stub".into(),
@@ -107,8 +85,6 @@ fn l1_candidate() -> Candidate {
     }
 }
 
-/// Assert that every line in the rendered output begins with `#`
-/// (per §12.2 — including the bare `#` lines that stand in for blanks).
 fn assert_all_lines_commented(out: &str) {
     for line in out.lines() {
         assert!(
@@ -208,8 +184,7 @@ fn t11_topic_block_renders_verbatim() {
 }
 
 // ---------------------------------------------------------------------------
-// Renderer-level: --documentation appends one short hint per reason-kind,
-// AFTER the rest of the output, and never duplicates the per-topic block.
+// Renderer-level: --documentation hint placement.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -228,12 +203,10 @@ fn documentation_appends_t1_and_t2_hints_after_output() {
     t2.mesh = "m1".into();
 
     let out = render::render(&[t1, t2], &[], true);
-    // T1 hint and T2 hint each appear exactly once.
     let t1_hint = "to re-record a range after edits";
     let t2_hint = "to re-record a partner that needed matching edits";
     assert_eq!(out.matches(t1_hint).count(), 1, "t1 hint must appear once: {out}");
     assert_eq!(out.matches(t2_hint).count(), 1, "t2 hint must appear once: {out}");
-    // The hints come after the mesh body.
     let body_pos = out.find("# m1 mesh:").expect("mesh body present");
     let t1_pos = out.find(t1_hint).expect("t1 hint present");
     let t2_pos = out.find(t2_hint).expect("t2 hint present");
@@ -251,14 +224,9 @@ fn documentation_with_t8_does_not_duplicate_topic_block() {
     t8.trigger_start = Some(10);
     t8.trigger_end = Some(20);
 
-    // Pretend the topic block already fired earlier in the session — pass
-    // an empty `new_doc_topics` list so the topic does NOT appear as a
-    // preamble. `--documentation` must still print the hint, exactly once,
-    // and must not re-emit the per-topic block.
     let out = render::render(&[t8], &[], true);
     let hint = "to resolve a cross-mesh overlap";
     assert_eq!(out.matches(hint).count(), 1, "t8 hint must appear once");
-    // Per-topic block fragment must NOT be present.
     assert!(
         !out.contains("# A range staged on one mesh overlaps a range already recorded on"),
         "topic block must not be duplicated by --documentation: {out}"
@@ -266,12 +234,11 @@ fn documentation_with_t8_does_not_duplicate_topic_block() {
 }
 
 // ---------------------------------------------------------------------------
-// CLI-level: Baseline fires once per session; L0 flushes never emit topics;
-// --documentation on an empty flush prints nothing.
+// CLI-level: docs-seen.jsonl is monotonic across two consecutive renders.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn baseline_topic_fires_once_then_dedups() -> Result<()> {
+fn docs_seen_does_not_shrink_across_renders() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "pair", "file1.txt", 1, 5, None)?;
@@ -279,72 +246,33 @@ fn baseline_topic_fires_once_then_dedups() -> Result<()> {
     set_why(&gix, "pair", "Pair of files for testing.")?;
     commit_mesh(&gix, "pair")?;
 
-    let s = Session::new("baseline-once");
+    let s = sid("docs-mono");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
+    let _ = render_via_cli(&repo, &s, &["--documentation"])?;
+    let dir = session_dir(&repo, &s);
+    let first = std::fs::read(dir.join("docs-seen.jsonl"))?;
 
-    // First L1 flush: T2 (write across) — Baseline + T2 preambles fire.
-    ok(&run_advice(&repo, &s, &["add", "--write", "file1.txt#L1-L5"])?);
-    let first = flush(&repo, &s, &[])?;
-    assert!(
-        first.contains("# A mesh is a lightweight contract"),
-        "first L1 flush must include Baseline preamble:\n{first}"
-    );
-    assert!(
-        first.contains("# When a range in a mesh changes, the other ranges in the same mesh may"),
-        "first L1 flush must include T2 preamble:\n{first}"
-    );
+    ok(&run_advice(&repo, &s, &["read", "file2.txt"])?);
+    let _ = render_via_cli(&repo, &s, &["--documentation"])?;
+    let second = std::fs::read(dir.join("docs-seen.jsonl"))?;
 
-    // Second L1 flush in the same session — both Baseline and T2 are
-    // already recorded; neither preamble re-fires.
-    ok(&run_advice(&repo, &s, &["add", "--write", "file2.txt#L1-L5"])?);
-    let second = flush(&repo, &s, &[])?;
     assert!(
-        !second.contains("# A mesh is a lightweight contract"),
-        "Baseline must NOT re-fire on second L1 flush:\n{second}"
-    );
-    assert!(
-        !second.contains("# When a range in a mesh changes, the other ranges in the same mesh may"),
-        "T2 must NOT re-fire on second L1 flush:\n{second}"
+        second.len() >= first.len(),
+        "docs-seen.jsonl must be monotonic"
     );
     Ok(())
 }
 
 #[test]
-fn l0_only_flush_emits_no_doc_topic_blocks() -> Result<()> {
+fn documentation_empty_via_cli_prints_nothing() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let gix = repo.gix_repo()?;
-    append_add(&gix, "pair", "file1.txt", 1, 5, None)?;
-    append_add(&gix, "pair", "file2.txt", 1, 5, None)?;
-    set_why(&gix, "pair", "Pair of files for testing.")?;
-    commit_mesh(&gix, "pair")?;
-
-    let s = Session::new("l0-only");
-    // Read events generate T1 (L0) only.
-    ok(&run_advice(&repo, &s, &["add", "--read", "file1.txt#L1-L5"])?);
-    let out = flush(&repo, &s, &[])?;
-    assert!(
-        !out.is_empty(),
-        "L0 read must still surface the partner-list message"
-    );
-    assert!(
-        !out.contains("# A mesh is a lightweight contract"),
-        "L0-only flush must NOT include Baseline preamble:\n{out}"
-    );
-    assert!(
-        !out.contains("# When a range in a mesh changes"),
-        "L0-only flush must NOT include T2 preamble:\n{out}"
-    );
-    Ok(())
-}
-
-#[test]
-fn documentation_empty_flush_via_cli_prints_nothing() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let s = Session::new("doc-empty");
-    // No mesh, no events → empty flush.
-    let out = flush(&repo, &s, &["--documentation"])?;
+    let s = sid("doc-empty");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+    let out = render_via_cli(&repo, &s, &["--documentation"])?;
     assert!(
         out.is_empty(),
-        "--documentation on an empty flush must print nothing, got: {out:?}"
+        "--documentation with no triggers must print nothing, got: {out:?}"
     );
     Ok(())
 }

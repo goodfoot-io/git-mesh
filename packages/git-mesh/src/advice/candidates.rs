@@ -12,9 +12,128 @@
 //! dedupe set before correct candidates are available (not recoverable without
 //! manual reset).
 
-pub use crate::advice::intersections::{Candidate, Density, ReasonKind};
 use crate::advice::session::state::{ReadRecord, TouchInterval};
 use crate::advice::workspace_tree::DiffEntry;
+
+// ── Candidate types (preserved from former `intersections.rs`) ───────────────
+
+/// Density ladder — §12.5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Density {
+    /// Partner list only.
+    L0,
+    /// Partner list + one excerpt.
+    L1,
+    /// Partner list + excerpt + ready-to-run command.
+    L2,
+}
+
+/// Reason-kind: matches the T1…T11 message-type inventory. Used as a
+/// stable dedup key and as the key for per-reason doc topics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReasonKind {
+    /// T1 partner list.
+    Partner,
+    /// T2 partner excerpt on write.
+    WriteAcross,
+    /// T3 rename literal in partner.
+    RenameLiteral,
+    /// T4 range collapse on partner.
+    RangeCollapse,
+    /// T5 losing coherence.
+    LosingCoherence,
+    /// T6 symbol rename hits in partner.
+    SymbolRename,
+    /// T7 new-group candidate.
+    NewGroup,
+    /// T8 staging cross-cut.
+    StagingCrossCut,
+    /// T9 empty-mesh risk.
+    EmptyMesh,
+    /// T10 pending-commit re-anchor.
+    PendingCommit,
+    /// T11 terminal status.
+    Terminal,
+}
+
+impl ReasonKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasonKind::Partner => "partner",
+            ReasonKind::WriteAcross => "write_across",
+            ReasonKind::RenameLiteral => "rename_literal",
+            ReasonKind::RangeCollapse => "range_collapse",
+            ReasonKind::LosingCoherence => "losing_coherence",
+            ReasonKind::SymbolRename => "symbol_rename",
+            ReasonKind::NewGroup => "new_group",
+            ReasonKind::StagingCrossCut => "staging_cross_cut",
+            ReasonKind::EmptyMesh => "empty_mesh",
+            ReasonKind::PendingCommit => "pending_commit",
+            ReasonKind::Terminal => "terminal",
+        }
+    }
+
+    pub fn doc_topic(self) -> Option<&'static str> {
+        match self {
+            ReasonKind::Partner => None, // L0 — no topic
+            ReasonKind::WriteAcross => Some("editing-across-files"),
+            ReasonKind::RenameLiteral => Some("renames"),
+            ReasonKind::RangeCollapse => Some("shrinking-ranges"),
+            ReasonKind::LosingCoherence => Some("narrow-or-retire"),
+            ReasonKind::SymbolRename => Some("exported-symbols"),
+            ReasonKind::NewGroup => Some("recording-a-group"),
+            ReasonKind::StagingCrossCut => Some("cross-mesh-overlap"),
+            ReasonKind::EmptyMesh => Some("empty-groups"),
+            ReasonKind::PendingCommit => None, // L0 — no topic
+            ReasonKind::Terminal => Some("terminal-states"),
+        }
+    }
+
+    pub fn default_density(self) -> Density {
+        match self {
+            ReasonKind::Partner | ReasonKind::PendingCommit | ReasonKind::Terminal => Density::L0,
+            ReasonKind::WriteAcross => Density::L1,
+            _ => Density::L2,
+        }
+    }
+}
+
+/// A surfacing candidate — one row per (mesh, reason, partner, trigger).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub mesh: String,
+    pub mesh_why: String,
+    pub reason_kind: ReasonKind,
+    pub partner_path: String,
+    pub partner_start: Option<i64>,
+    pub partner_end: Option<i64>,
+    /// The file the developer just touched (trigger range) — only used for
+    /// dedup and for the command text. May be empty.
+    pub trigger_path: String,
+    pub trigger_start: Option<i64>,
+    pub trigger_end: Option<i64>,
+    /// Bracket marker appended to the partner line (CHANGED, STAGED, …).
+    /// Empty = no marker.
+    pub partner_marker: String,
+    /// Prose clause after an em-dash on the partner line. Empty = none.
+    pub partner_clause: String,
+    pub density: Density,
+    /// Optional ready-to-run command (L2). Empty for L0/L1.
+    pub command: String,
+    /// L1/L2 excerpt block attached to a specific partner path+range. Empty
+    /// for L0.
+    pub excerpt_of_path: String,
+    pub excerpt_start: Option<i64>,
+    pub excerpt_end: Option<i64>,
+    /// Old blob OID (SHA) for this diff entry. None when not available.
+    pub old_blob: Option<String>,
+    /// New blob OID (SHA) for this diff entry. None when not available.
+    pub new_blob: Option<String>,
+    /// Old path before a rename. None when not a rename or not available.
+    pub old_path: Option<String>,
+    /// New path after a rename. None when not a rename or not available.
+    pub new_path: Option<String>,
+}
 
 // ── Pure-data types ──────────────────────────────────────────────────────────
 

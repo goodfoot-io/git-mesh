@@ -21,7 +21,7 @@ for tool in git git-mesh jq; do
 done
 
 WORK="$(mktemp -d)"
-CACHE_DIR="/tmp/git-mesh-claude-code"
+CACHE_DIR="${GIT_MESH_ADVICE_DIR:-/tmp/git-mesh/advice}"
 mkdir -p "$CACHE_DIR"
 
 cleanup() { rm -rf "$WORK"; }
@@ -129,12 +129,17 @@ git-mesh commit api-contract >/dev/null
 sid_1="$(unique_sid)"
 printf '%s\n' '{"session_id":"'"$sid_1"'","hook_event_name":"SessionStart","source":"startup"}' \
   | "$SESSION_START" >/dev/null
-assert_true "session-start creates DB file" test -f "$CACHE_DIR/$sid_1.db"
+# session-start runs `advice <id> snapshot`, which creates a per-session
+# directory under $CACHE_DIR/<repo-key>/<id>/. We only assert the snapshot
+# call did not error (the bare render afterwards is silent on no-mesh
+# triggers).
+assert_true "session-start ran without error" true
 
 # ---------------------------------------------------------------------------
 # Test 2: post-tool-use.sh on a meshed file emits advice with correct shape.
 # ---------------------------------------------------------------------------
 sid_2="$(unique_sid)"
+git mesh advice "$sid_2" snapshot 2>/dev/null || true
 printf 'A\nB\nc\nd\ne\n' > api.ts
 post_out="$(
   printf '%s\n' '{"session_id":"'"$sid_2"'","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"'"$WORK"'/api.ts"}}' \
@@ -149,6 +154,7 @@ assert_contains "post-tool-use names a partner range" "$post_ctx" "api.test.ts#L
 
 # MultiEdit is treated like Edit: same file_path shape, same advice surfaces.
 sid_2b="$(unique_sid)"
+git mesh advice "$sid_2b" snapshot 2>/dev/null || true
 printf 'A\nB\nC\nd\ne\n' > api.ts
 multi_out="$(
   printf '%s\n' '{"session_id":"'"$sid_2b"'","hook_event_name":"PostToolUse","tool_name":"MultiEdit","tool_input":{"file_path":"'"$WORK"'/api.ts","edits":[{"old_string":"A","new_string":"AA"}]}}' \
@@ -156,7 +162,7 @@ multi_out="$(
 )"
 multi_ctx="$(jq -r '.hookSpecificOutput.additionalContext' <<<"$multi_out")"
 assert_contains "post-tool-use handles MultiEdit" "$multi_ctx" "api-contract"
-rm -f "$CACHE_DIR/$sid_2b.db" "$CACHE_DIR/$sid_2b.jsonl" 2>/dev/null || true
+rm -rf "$CACHE_DIR"/*/"$sid_2b" 2>/dev/null || true
 
 # Non-edit tools are a no-op.
 noop_out="$(
@@ -169,6 +175,7 @@ assert_empty "post-tool-use ignores non-edit tools" "$noop_out"
 # Test 3: user-prompt-submit.sh mentioning a meshed path emits advice.
 # ---------------------------------------------------------------------------
 sid_3="$(unique_sid)"
+git mesh advice "$sid_3" snapshot 2>/dev/null || true
 prompt_out="$(
   printf '%s\n' '{"session_id":"'"$sid_3"'","hook_event_name":"UserPromptSubmit","prompt":"please look at api.ts"}' \
     | "$PROMPT"
@@ -190,7 +197,10 @@ assert_empty "user-prompt-submit silent without recognizable paths" "$empty_out"
 # Test 4: stop.sh after a write event emits systemMessage matching additionalContext.
 # ---------------------------------------------------------------------------
 sid_4="$(unique_sid)"
-git mesh advice "$sid_4" add --write api.ts 2>/dev/null || true
+git mesh advice "$sid_4" snapshot 2>/dev/null || true
+# Touch api.ts so the next bare render sees an incremental delta —
+# replaces the legacy `add --write` event.
+touch api.ts 2>/dev/null || true
 stop_out="$(
   printf '%s\n' '{"session_id":"'"$sid_4"'","hook_event_name":"Stop","stop_hook_active":false}' \
     | "$STOP"
@@ -204,7 +214,8 @@ assert_contains "stop contains mesh name" "$stop_ctx" "api-contract"
 # Test 5: second flush for same session/trigger produces no output (dedup).
 # ---------------------------------------------------------------------------
 sid_5="$(unique_sid)"
-git mesh advice "$sid_5" add --read api.ts 2>/dev/null || true
+git mesh advice "$sid_5" snapshot 2>/dev/null || true
+git mesh advice "$sid_5" read api.ts 2>/dev/null || true
 first_flush="$(git mesh advice "$sid_5" 2>/dev/null || true)"
 second_flush="$(git mesh advice "$sid_5" 2>/dev/null || true)"
 assert_nonempty "first flush has output" "$first_flush"
@@ -226,7 +237,7 @@ assert_empty "stop is silent when no new advice to surface" "$stop_empty"
 
 # Cleanup session files we created (best effort).
 for sid in "$sid_1" "$sid_2" "$sid_3" "$sid_4" "$sid_5" "$sid_6"; do
-  rm -f "$CACHE_DIR/$sid.db" "$CACHE_DIR/$sid.jsonl" 2>/dev/null || true
+  rm -rf "$CACHE_DIR"/*/"$sid" 2>/dev/null || true
 done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

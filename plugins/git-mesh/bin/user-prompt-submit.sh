@@ -40,7 +40,7 @@ for token in "${candidates[@]}"; do
   if [[ ! -e "$repo_root/$path" && ! -e "$path" ]]; then
     continue
   fi
-  git mesh advice "$session_id" add --read "$path" 2>/dev/null || true
+  git mesh advice "$session_id" read "$path" 2>/dev/null || true
   added=1
 done
 

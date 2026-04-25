@@ -5,7 +5,7 @@
 //! backticks (or four, when the excerpt itself contains ```), language
 //! inferred from the partner path's extension.
 
-use crate::advice::intersections::{Candidate, Density, ReasonKind};
+use crate::advice::candidates::{Candidate, Density, ReasonKind};
 
 const MAX_LINE: usize = 200;
 
@@ -633,7 +633,7 @@ fn render_hint(kind: ReasonKind) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::advice::intersections::{Candidate, Density, ReasonKind};
+    use crate::advice::candidates::{Candidate, Density, ReasonKind};
 
     fn cand(mesh: &str, partner: &str) -> Candidate {
         Candidate {

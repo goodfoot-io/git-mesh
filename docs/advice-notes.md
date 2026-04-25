@@ -99,187 +99,104 @@ Corollaries:
 ## 6. CLI shape
 
 `sessionId` is always required as the first positional — it names the advice
-stream. Append-vs-render is split across two verbs, following git's
-`<noun> add` idiom (`git add`, `git notes add`, `git remote add`,
-`git worktree add`).
+stream. The surface is four commands:
 
 ```
-git mesh advice <sessionId> add --read   <path>[#L<s>-L<e>]
-git mesh advice <sessionId> add --write  <path>[#L<s>-L<e>]
-git mesh advice <sessionId> add --commit <sha>
-git mesh advice <sessionId> add --snapshot
+git mesh advice <sessionId> snapshot                   # capture baseline workspace tree
+git mesh advice <sessionId> read <path>[#L<s>-L<e>]…   # record one or more reads
 git mesh advice <sessionId>                            # render (bare)
 git mesh advice <sessionId> --documentation            # render + how-to
 ```
 
-- **`add`** appends one typed event to the session state file. Silent by
-  design — safe to fire from every hook without flooding stdout.
-- **Bare form** renders the current advice view. The render is itself an
-  event — a *flush*: it computes the delta, prints it, records a `flush`
-  event with the new `additions`, and thereby advances the seen-set. It
-  never mutates git or mesh state.
+- **`snapshot`** captures the current workspace tree into the per-session
+  store and resets the session's JSONL records. Silent on success.
+- **`read`** appends one or more read records to `reads.jsonl` under the
+  per-session lock. Validates each path/range; fails closed on the first
+  invalid spec.
+- **Bare form** runs the file-backed delta render. It diffs the current
+  workspace tree against `baseline.objects/` and `last-flush.objects/`,
+  produces candidates from the diffs and the new reads, suppresses
+  fingerprints already in `advice-seen.jsonl`, and prints the rendered
+  advice. State (advice-seen, docs-seen, touches, last-flush.state, the
+  read cursor) is advanced **before** stdout is written so a broken pipe
+  does not cause advice to reappear on the next render. Bare advice
+  before `snapshot` fails closed with a message naming the missing
+  baseline.
+- **`--documentation`** runs the same pipeline with per-reason
+  documentation blocks appended.
 
-Surface collision: `git mesh add <name> <ranges…>` already exists at the
-mesh level. The `advice` noun scopes `git mesh advice add` cleanly — same
-coexistence pattern as `git add` vs `git notes add`.
+## 7. File-backed delta pipeline
 
-## 7. Stream-of-events model
-
-`git mesh advice` is a sequential pipeline:
+`git mesh advice` is a snapshot-then-diff pipeline. The session store is a
+plain directory of JSON / JSONL files plus two temporary Git object
+directories — there is no SQL layer.
 
 ```
-add events → git mesh advice <sessionId> add --<kind> <arg>
-             ↳ append event to session state (silent)
+snapshot → git mesh advice <sessionId> snapshot
+            ↳ capture current workspace tree into baseline.objects/
+            ↳ write baseline.state and last-flush.state
+            ↳ reset reads.jsonl, advice-seen.jsonl, docs-seen.jsonl, touches.jsonl
 
-flush     → git mesh advice <sessionId>
-             ↳ recompute over accumulated state
-             ↳ print *delta* markdown vs what the session has been told
-             ↳ record the flush in the event log
-             ↳ update the seen-set so the next flush is a fresh delta
+read     → git mesh advice <sessionId> read <path>[#L<s>-L<e>]…
+            ↳ append one JSONL record per spec under the session lock
+
+render   → git mesh advice <sessionId>
+            ↳ capture current workspace tree into current.objects-<uuid>/
+            ↳ diff baseline → current   (session_delta)
+            ↳ diff last-flush → current (incr_delta)
+            ↳ load mesh + staging state via the resolver
+            ↳ run candidate detectors
+            ↳ filter by advice-seen fingerprints
+            ↳ render
+            ↳ advance state files BEFORE writing stdout (broken-pipe safety)
+            ↳ promote current.objects-<uuid>/ → last-flush.objects/
 ```
 
-Both `add` and the bare render are events on the same stream; the render
-is a flush that advances the seen-set.
+### Session directory layout
 
-### Session state: SQLite + parallel audit log
-
-Primary store is a per-session SQLite database; a parallel append-only
-JSONL file records the same events for audit and post-hoc debugging.
-
-- **Primary store:** `/tmp/git-mesh-claude-code/<sessionId>.db` — SQLite
-  in WAL mode. All queries (seen-set lookups, intersection computation,
-  flush composition) run as SQL.
-- **Audit log:** `/tmp/git-mesh-claude-code/<sessionId>.jsonl` — one
-  newline-terminated JSON object per event, written immediately after
-  the SQL `INSERT` succeeds (SQL-first, audit-second; if the audit
-  append fails, the command fails — fail-closed). Each line has the
-  shape
-
-  ```json
-  {"id": <int>, "kind": "<read|write|commit|snapshot|flush>",
-   "payload": <object>, "ts": "<rfc3339>"}
-  ```
-
-  The `payload` object is the *same* JSON value stored in
-  `events.payload`; the JSONL line is a strict superset (the row's id,
-  kind, and ts wrapped around the canonical payload). Keys are emitted
-  in alphabetical order so the byte form is deterministic and
-  rebuildable from SQL alone via
-  `git mesh advice <sessionId> --rebuild-audit-from-db`.
-- **Content chunks** (`pre_blob`, `post_blob` on write events): inlined
-  as TEXT columns (and inlined in the audit line). No blob-SHA indirection.
-- **Concurrency:** SQLite WAL handles multiple writers cleanly; the audit
-  log still relies on `O_APPEND` atomicity for lines under `PIPE_BUF`
-  (4 KiB) but the DB is the source of truth, so an interleaved audit line
-  is recoverable.
-
-### Git access via `gix`
-
-Queries against git state (history, blame, index, worktree) go through
-`gix`, the same pure-Rust library `git-mesh` already depends on. No
-second git implementation, no `libgit2`, no SQLite virtual-table
-extension.
-
-Shape:
-
-- The advice DB holds only session-local tables — events, flush records,
-  seen-set, and a per-flush snapshot of mesh state.
-- Git-derived facts the flush needs (commit SHAs touching a path,
-  historical co-change counts, rename detection) are computed in Rust
-  via `gix` and either inlined into the flush computation or staged into
-  a throwaway temp table scoped to the flush.
-- Cross-file joins that mix session events with git history are done in
-  Rust, not SQL: iterate events, call into `gix`, build the result set.
-  SQL is used where it helps (seen-set dedup, grouping touched paths);
-  procedural code is used where `gix` is the natural API.
-
-This keeps the binary single-git, keeps cross-platform packaging
-unchanged, and avoids a supply-chain dependency on an unmaintained
-extension.
-
-### Schema sketch
-
-```sql
--- Event stream (parent table)
-CREATE TABLE events (
-  id         INTEGER PRIMARY KEY,
-  kind       TEXT    NOT NULL, -- 'read'|'write'|'commit'|'snapshot'|'flush'
-  ts         TEXT    NOT NULL, -- RFC3339
-  payload    TEXT    NOT NULL  -- verbatim JSON, mirrored to audit log
-);
-CREATE INDEX idx_events_kind_ts ON events(kind, ts);
-
--- Flattened per-kind tables for indexed access
-CREATE TABLE read_events     (event_id INTEGER PRIMARY KEY, path TEXT, start_line INTEGER, end_line INTEGER);
-CREATE TABLE write_events    (event_id INTEGER PRIMARY KEY, path TEXT, start_line INTEGER, end_line INTEGER,
-                              pre_blob TEXT, post_blob TEXT);
-CREATE TABLE commit_events   (event_id INTEGER PRIMARY KEY, sha TEXT);
-CREATE TABLE snapshot_events (event_id INTEGER PRIMARY KEY, tree_sha TEXT, index_sha TEXT);
-CREATE TABLE flush_events    (event_id INTEGER PRIMARY KEY, output_sha TEXT);
-
--- Seen-set, as append-only rows tied to flushes
-CREATE TABLE flush_additions (
-  flush_event_id INTEGER NOT NULL REFERENCES flush_events(event_id),
-  mesh           TEXT    NOT NULL,
-  reason_kind    TEXT    NOT NULL,
-  range_path     TEXT    NOT NULL,
-  start_line     INTEGER,
-  end_line       INTEGER,
-  PRIMARY KEY (mesh, reason_kind, range_path, start_line, end_line)
-);
-CREATE TABLE flush_doc_topics (
-  flush_event_id INTEGER NOT NULL REFERENCES flush_events(event_id),
-  doc_topic      TEXT    NOT NULL,
-  PRIMARY KEY (doc_topic)
-);
-
--- Mesh snapshot populated on each flush from `git mesh ls` / `stale`
-CREATE TABLE mesh_ranges (
-  mesh        TEXT    NOT NULL,
-  path        TEXT    NOT NULL,
-  start_line  INTEGER,
-  end_line    INTEGER,
-  status      TEXT,         -- FRESH|CHANGED|MOVED|ORPHANED|...
-  source      TEXT,         -- H|I|W|S, with optional /ack
-  ack         INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX idx_mesh_ranges_path ON mesh_ranges(path);
-CREATE INDEX idx_mesh_ranges_mesh ON mesh_ranges(mesh);
+```
+${GIT_MESH_ADVICE_DIR:-/tmp/git-mesh/advice}/<repo-key>/<sessionId>/
+  baseline.state           — JSON; tree_sha, index_sha, captured_at, schema_version
+  baseline.objects/        — Git object directory backing the baseline tree
+  last-flush.state         — JSON; tree_sha as of the last successful render
+  last-flush.objects/      — Git object directory backing last-flush.state's tree
+  last-flush.read-cursor   — byte length of reads.jsonl consumed by the last render
+  reads.jsonl              — append-only; one record per `read` invocation
+  touches.jsonl            — append-only; one record per render with non-empty delta
+  advice-seen.jsonl        — append-only; emitted candidate fingerprints
+  docs-seen.jsonl          — append-only; emitted documentation topic keys
+  lock                     — POSIX advisory lock held for the duration of each command
 ```
 
-### Derived-state queries
+`repo-key` is `lower-hex FNV-64("{repo_root}\n{git_dir}")` so linked
+worktrees, which share `repo_root` but have distinct `git_dir`s, do not
+collide.
 
-- **Seen-set membership** (dedup):
-  ```sql
-  SELECT 1 FROM flush_additions
-   WHERE mesh = ? AND reason_kind = ? AND range_path = ?
-     AND start_line IS ? AND end_line IS ?
-  ```
-- **Touched multiset** (for co-touch / coherence):
-  ```sql
-  SELECT path, COUNT(*) AS n FROM (
-    SELECT path FROM read_events UNION ALL SELECT path FROM write_events
-  ) GROUP BY path;
-  ```
-- **Partners-to-visit for a touched path** (intersection #1):
-  ```sql
-  SELECT mesh, path, start_line, end_line, status
-    FROM mesh_ranges
-   WHERE mesh IN (SELECT mesh FROM mesh_ranges WHERE path = ?);
-  ```
-- **Historical co-change** (intersection #5): computed in Rust via
-  `gix` — walk recent commits, collect changed-path sets, count pairs
-  restricted to session-touched paths. Result cached on a per-flush
-  temp table if needed for downstream joins within the same flush.
+### Concurrency
 
-### De-duplication rule (load-bearing)
+A single advisory lock per session directory serializes all advice
+commands for that session. `snapshot` blocks for the lock without a
+deadline; `read` and bare render use a 30-second bounded timeout. JSONL
+files are only ever appended under the lock — no atomic rename
+gymnastics. State files (`baseline.state`, `last-flush.state`,
+`last-flush.read-cursor`) use temp-then-rename.
 
-> Once the session has been told about a specific mesh for a specific reason
-> at a specific range, do not tell it again.
+### Broken-pipe ordering
 
-Reason-keyed, not mesh-keyed: the same mesh may re-surface if the reason
-changes. Implemented as a seen-set query against `flush_additions` during
-the flush's candidate-subtraction step.
+The render writes its state mutations (advice-seen, docs-seen, touches,
+last-flush.state, the read cursor, and the `current.objects-<uuid>/` →
+`last-flush.objects/` rename) **before** writing rendered output to
+stdout. A broken pipe on stdout therefore does not cause already-emitted
+candidates to reappear on the next render.
+
+### Fingerprint-based suppression
+
+Emitted candidates are fingerprinted (FNV-64 over reason kind, mesh,
+partner range, trigger, marker, command, rename paths, blob ids).
+Fingerprints are appended to `advice-seen.jsonl`; the next render filters
+candidates whose fingerprint is already present. A blob-id change at the
+same address produces a fresh fingerprint, so genuine new content
+re-surfaces while copy edits do not.
 
 ## 8. Input source constraints
 
@@ -297,27 +214,19 @@ The CLI flags in §6 accept a narrow, typed stream. The specific
 event-producing system is not load-bearing.
 
 - **Session id** — required positional on every invocation; partitions state.
-- **Paths** — repo-relative or absolute.
+- **Paths** — repo-relative or absolute. Validated by `read` to exist in
+  the worktree and to satisfy any line-range bounds.
 - **Ranges** — `path#Ls-Le`, or whole-file.
-- **Content chunks** — pre- and post-text for write events; used to
-  compute the precise post-edit line extent and the structural shape of
-  the change. Provided via `--pre <PATH>` and `--post <PATH-or-->` on
-  `add --write`. Only `--post` is stdin-eligible (`-`); the pre side is
-  file-only so the two inputs cannot collide on stdin. Each side is
-  capped at **1 MiB** of valid UTF-8; oversize or non-text input is
-  rejected. Both flags are optional — when omitted the payload stores
-  `null` for that side and downstream heuristics that need content
-  (T6 symbol-rename, etc.) are suppressed rather than misfiring on
-  garbage. The `--write` range describes the **pre** extent (the bytes
-  about to be overwritten): when `--pre` is supplied, its line count
-  overrides the worktree's for the `#Ls-Le` range bound check; `--post`
-  is intentionally **not** an upper bound, since T4 ("range collapse")
-  is exactly the case where the post is shorter than the recorded
-  write range.
-- **Commit identifiers** — SHAs landed during the session, recorded via
-  `add --commit`.
-- **Snapshot references** — `tree_sha` + `index_sha`, recorded via
-  `add --snapshot`, serving as drift baselines.
+- **Workspace tree** — captured by `snapshot` and on every render via
+  `git add -u` + `git ls-files -z --others --exclude-standard` against a
+  temp index and a temp object directory. The real index, refs, and
+  checked-out files are never mutated.
+- **Content** — derived from blob diffs between `baseline.objects/`,
+  `last-flush.objects/`, and the freshly-captured `current.objects-<uuid>/`.
+  No explicit `--pre`/`--post` content arguments — file content is taken
+  from the diffed trees.
+- **Mesh and staging state** — read via the resolver and
+  `.git/mesh/staging` on each render; not persisted in the session store.
 - **Timestamps** — set by the CLI at invocation time, not by the caller.
 
 Other hook-available signals (sub-actor ids, cwd, free-text prompts,
