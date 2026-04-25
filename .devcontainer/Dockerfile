@@ -28,7 +28,9 @@ RUN apt update && export DEBIAN_FRONTEND=noninteractive && apt install -y less \
   xvfb \
   bc \
   bat \
-  wget
+  wget \
+  openssh-server \
+  openssh-client
 
 # Configure locale
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && \

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin.json",
   "name": "git-mesh",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Record and audit durable relationships between exact line ranges in a Git repository.",
   "author": {
     "name": "goodfoot",

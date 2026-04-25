@@ -2,7 +2,7 @@
   "name": "git-mesh",
   "displayName": "Git Mesh",
   "description": "Installs and exposes the Git Mesh CLI in VS Code.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "goodfoot",
   "type": "module",
   "engines": {
@@ -52,7 +52,7 @@
   },
   "scripts": {
     "vscode:prepublish": "node scripts/build/build-production.js",
-    "build": "vsce package --no-dependencies && { [ -n \"${SKIP_INSTALL:-}\" ] || bash scripts/install-vsix.sh; }",
+    "build": "vsce package --no-dependencies --follow-symlinks && { [ -n \"${SKIP_INSTALL:-}\" ] || bash scripts/install-vsix.sh; }",
     "build:testing": "node scripts/build/build-testing.js",
     "test": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' tsx ./test/runTest.ts",
     "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test ./scripts && jsdoczoom -l",
