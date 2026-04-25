@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const PLATFORM_MAP = {
   linux: 'linux',
@@ -20,6 +21,37 @@ function fail(message, error) {
     console.error(error.message);
   }
   process.exit(1);
+}
+
+function buildFromSource(destBinary, binaryName) {
+  const cargoToml = path.join(__dirname, '..', 'Cargo.toml');
+  if (!fs.existsSync(cargoToml)) {
+    fail(`@goodfoot/git-mesh: Binary not found at ${destBinary} and no Cargo.toml available to build from source.`);
+  }
+
+  console.log(`@goodfoot/git-mesh: Prebuilt binary missing; building from source via cargo...`);
+
+  const targetDir = path.join(__dirname, '..', 'target', 'build');
+  const result = spawnSync('cargo', ['build', '--release', '--manifest-path', cargoToml], {
+    stdio: 'inherit',
+    env: { ...process.env, CARGO_BUILD_JOBS: '1', CARGO_TARGET_DIR: targetDir }
+  });
+
+  if (result.error || result.status !== 0) {
+    fail(
+      `@goodfoot/git-mesh: Failed to build binary from source. Install Rust/cargo or publish the platform package.`,
+      result.error
+    );
+  }
+
+  const builtBinary = path.join(targetDir, 'release', binaryName);
+  if (!fs.existsSync(builtBinary)) {
+    fail(`@goodfoot/git-mesh: cargo build succeeded but binary not found at ${builtBinary}.`);
+  }
+
+  fs.mkdirSync(path.dirname(destBinary), { recursive: true });
+  fs.copyFileSync(builtBinary, destBinary);
+  fs.chmodSync(destBinary, 0o755);
 }
 
 function main() {
@@ -42,7 +74,7 @@ function main() {
 
   const sourceBinary = path.join(packageDir, 'bin', sourceBinaryName);
   if (!fs.existsSync(sourceBinary)) {
-    fail(`@goodfoot/git-mesh: Binary not found in ${packageName}. The package may not have been published correctly.`);
+    buildFromSource(sourceBinary, sourceBinaryName);
   }
 
   const binGitMesh = path.join(__dirname, '..', 'bin', 'git-mesh');
