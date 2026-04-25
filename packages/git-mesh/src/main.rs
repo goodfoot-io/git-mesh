@@ -27,7 +27,6 @@ fn main() {
 }
 
 fn run() -> Result<i32> {
-    let repo = gix::discover(".").context("not inside a git repository")?;
     let args: Vec<String> = std::env::args().collect();
 
     // §10.2: `git mesh` with no arg lists every mesh; `git mesh <name>`
@@ -35,7 +34,11 @@ fn run() -> Result<i32> {
     // from a subcommand, so we pre-classify before invoking the parser.
     // A token on the §10.2 reserved list is a subcommand; anything else
     // is a mesh name and routes to `Commands::Show`.
+    //
+    // Repo discovery happens after parsing so `--help`, `--version`, and
+    // any other clap-handled flag works outside a git repo.
     if args.len() == 1 {
+        let repo = discover_repo()?;
         return cli::show::run_list(&repo);
     }
     let first = &args[1];
@@ -62,12 +65,20 @@ fn run() -> Result<i32> {
                 limit: None,
             })
         });
+        let repo = discover_repo()?;
         return cli::dispatch(&repo, cmd);
     }
 
+    // Parse first so `--help` / `--version` short-circuit before we
+    // touch the filesystem for repo discovery.
     let cli = Cli::parse();
+    let repo = discover_repo()?;
     match cli.command {
         Some(cmd) => cli::dispatch(&repo, cmd),
         None => cli::show::run_list(&repo),
     }
+}
+
+fn discover_repo() -> Result<gix::Repository> {
+    gix::discover(".").context("not inside a git repository")
 }

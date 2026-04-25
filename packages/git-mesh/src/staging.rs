@@ -150,20 +150,37 @@ fn staging_dir(repo: &gix::Repository) -> Result<PathBuf> {
     Ok(wd.join(".git").join("mesh").join("staging"))
 }
 
+/// Encode a mesh name for use as a single filesystem-path component.
+///
+/// Mesh names accept the `<category>/<slug>` form (validation §12.12 T7),
+/// but the staging area stores per-mesh files under a flat directory keyed
+/// by mesh name. Substituting `/` → `%2F` keeps the encoding deterministic
+/// and unambiguous: the validator forbids `%` (and `_`) in valid mesh
+/// names, so `%2F` cannot collide with a literal name segment.
+pub fn encode_name_for_fs(name: &str) -> String {
+    name.replace('/', "%2F")
+}
+
+/// Inverse of [`encode_name_for_fs`]. Used by the doctor scan when
+/// reconstructing mesh names from staging filenames.
+pub fn decode_name_from_fs(encoded: &str) -> String {
+    encoded.replace("%2F", "/")
+}
+
 fn ops_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
-    Ok(staging_dir(repo)?.join(name))
+    Ok(staging_dir(repo)?.join(encode_name_for_fs(name)))
 }
 
 fn why_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
-    Ok(staging_dir(repo)?.join(format!("{name}.why")))
+    Ok(staging_dir(repo)?.join(format!("{}.why", encode_name_for_fs(name))))
 }
 
 pub(crate) fn sidecar_path(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {
-    Ok(staging_dir(repo)?.join(format!("{name}.{n}")))
+    Ok(staging_dir(repo)?.join(format!("{}.{n}", encode_name_for_fs(name))))
 }
 
 pub(crate) fn sidecar_meta_path(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {
-    Ok(staging_dir(repo)?.join(format!("{name}.{n}.meta")))
+    Ok(staging_dir(repo)?.join(format!("{}.{n}.meta", encode_name_for_fs(name))))
 }
 
 fn ensure_dir(p: &Path) -> Result<()> {
@@ -653,15 +670,16 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
+    let encoded = encode_name_for_fs(name);
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
         let fname = entry.file_name();
         let Some(fname) = fname.to_str() else {
             continue;
         };
-        let matches = fname == name
-            || fname == format!("{name}.why")
-            || fname.strip_prefix(&format!("{name}.")).is_some_and(|rest| {
+        let matches = fname == encoded
+            || fname == format!("{encoded}.why")
+            || fname.strip_prefix(&format!("{encoded}.")).is_some_and(|rest| {
                 // `<N>` (sidecar) or `<N>.meta` (sidecar metadata).
                 let stripped = rest.strip_suffix(".meta").unwrap_or(rest);
                 !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())

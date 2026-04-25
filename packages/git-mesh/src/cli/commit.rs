@@ -214,7 +214,8 @@ fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
     //   1. existing `<name>.why` wins
     //   2. else parent mesh commit's message (the prior why)
     //   3. else blank buffer with a commented hint
-    let why_path = staging_dir.join(format!("{name}.why"));
+    let encoded = crate::staging::encode_name_for_fs(name);
+    let why_path = staging_dir.join(format!("{encoded}.why"));
     let template: String = if why_path.exists() {
         std::fs::read_to_string(&why_path)?
     } else if let Ok(info) = crate::mesh::mesh_commit_info(repo, name) {
@@ -223,7 +224,7 @@ fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
         String::from("\n# Write the relationship description. Empty why aborts.\n")
     };
 
-    let edit_path = staging_dir.join(format!("{name}.why.EDITMSG"));
+    let edit_path = staging_dir.join(format!("{encoded}.why.EDITMSG"));
     std::fs::write(&edit_path, &template)?;
 
     // Resolve editor — same lookup as `git commit`.
