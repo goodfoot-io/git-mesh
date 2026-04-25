@@ -20,3 +20,14 @@ pub use session::SessionStore;
 pub use session::state::{BaselineState, LastFlushState, ReadRecord, TouchInterval};
 pub use session::store::{LockGuard, LockTimeout};
 pub use workspace_tree::{DiffEntry, WorkspaceTree, capture, diff_trees};
+
+/// Re-exported submodules for test access.
+pub mod state {
+    pub use super::session::state::{BaselineState, LastFlushState, ReadRecord, TouchInterval};
+}
+pub mod store {
+    pub use super::session::store::{
+        LockGuard, LockTimeout, acquire_lock, advice_base_dir, append_jsonl_line, atomic_write,
+        repo_key, session_dir,
+    };
+}
