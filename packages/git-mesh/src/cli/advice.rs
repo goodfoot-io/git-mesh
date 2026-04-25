@@ -107,7 +107,306 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
         Some(AdviceCommand::Add(add_args)) => run_advice_add(repo, &args.session_id, add_args),
         Some(AdviceCommand::Snapshot) => run_advice_snapshot(repo, args.session_id),
         Some(AdviceCommand::Read { paths }) => run_advice_read(repo, args.session_id, paths),
-        None => run_advice_flush(repo, &args.session_id, args.documentation),
+        None => {
+            // Phase 1 of sub-card C: route bare/--documentation through the
+            // file-backed delta pipeline. Until phase 2 deletes the SQL stack,
+            // legacy sessions (SQL DB present from prior `advice add` calls
+            // with no `baseline.state`) continue through `run_advice_flush`
+            // so existing slice_* and staging_integration tests stay green.
+            if has_baseline_state(repo, &args.session_id) {
+                run_advice_render(repo, &args.session_id, args.documentation)
+            } else {
+                // No file-backed baseline yet — fall back to the legacy SQL
+                // flush so existing slice_* and staging_integration tests stay
+                // green. Phase 2 of sub-card C deletes this fallback and the
+                // SQL stack with it.
+                run_advice_flush(repo, &args.session_id, args.documentation)
+            }
+        }
+    }
+}
+
+/// True when `<session_dir>/baseline.state` exists for the given session.
+fn has_baseline_state(repo: &gix::Repository, session_id: &str) -> bool {
+    let Ok(wd) = work_dir(repo) else { return false };
+    let gd = repo.git_dir();
+    let dir = crate::advice::session::store::session_dir(wd, gd, session_id);
+    dir.join("baseline.state").exists()
+}
+
+/// Bare-render entry point: file-backed delta pipeline.
+///
+/// Implements parent §Phase 4 step list. Pre-stdout ordering of state
+/// mutations is load-bearing for broken-pipe safety — see step 16.
+fn run_advice_render(
+    repo: &gix::Repository,
+    session_id: &str,
+    documentation: bool,
+) -> Result<i32> {
+    use crate::advice::candidates::{
+        CandidateInput, MeshRange, MeshRangeStatus, StagedAddr, StagingState,
+    };
+    use crate::advice::session::SessionStore;
+    use crate::advice::session::state::TouchInterval;
+    use crate::advice::workspace_tree;
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let store = SessionStore::open(wd, &gd, session_id)?;
+
+    // Step 2: require baseline.state — fail closed.
+    if !store.dir().join("baseline.state").exists() {
+        bail!(
+            "no baseline for session `{session_id}`; run snapshot first \
+             (`git mesh advice {session_id} snapshot`)"
+        );
+    }
+    let baseline = store.read_baseline()?;
+
+    // Step 3: capture current workspace tree into current.objects-<uuid>/.
+    let cur_uuid = uuid::Uuid::new_v4();
+    let current_objects = store.dir().join(format!("current.objects-{cur_uuid}"));
+    std::fs::create_dir_all(&current_objects)
+        .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", current_objects.display()))?;
+    let current = workspace_tree::capture(repo, &current_objects)?;
+
+    // Step 4: diff_trees(baseline → current).
+    let baseline_objects = store.baseline_objects_dir();
+    let session_delta = workspace_tree::diff_trees(
+        repo,
+        &baseline.tree_sha,
+        &current.tree_sha,
+        &baseline_objects,
+        &current_objects,
+    )?;
+
+    // Step 5: read last-flush.state (if absent, treat as a copy of baseline).
+    let last_flush_state_path = store.dir().join("last-flush.state");
+    let last_flush_state = if last_flush_state_path.exists() {
+        store.read_last_flush()?
+    } else {
+        baseline.clone()
+    };
+
+    // Step 6: diff_trees(last_flush → current).
+    let last_flush_objects = store.last_flush_objects_dir();
+    let last_flush_objects_for_diff = if last_flush_objects.exists() {
+        last_flush_objects.clone()
+    } else {
+        // Fall back to baseline.objects when last-flush.objects is absent
+        // (initial render after snapshot — semantically identical).
+        baseline_objects.clone()
+    };
+    let incr_delta = workspace_tree::diff_trees(
+        repo,
+        &last_flush_state.tree_sha,
+        &current.tree_sha,
+        &last_flush_objects_for_diff,
+        &current_objects,
+    )?;
+
+    // Step 7: reads_since_cursor.
+    let read_cursor = store.read_cursor()?;
+    let new_reads = store.reads_since_cursor(read_cursor)?;
+
+    // Step 8: load mesh state. Treat any error as empty (greenfield: a
+    // missing mesh-state directory is not a render failure).
+    let mesh_ranges: Vec<MeshRange> =
+        match crate::resolver::stale_meshes(repo, default_engine_options()) {
+            Ok(meshes) => meshes
+                .into_iter()
+                .flat_map(|m| {
+                    let name = m.name.clone();
+                    m.ranges.into_iter().map(move |r| MeshRange {
+                        name: name.clone(),
+                        path: std::path::PathBuf::from(
+                            r.anchored.path.to_string_lossy().into_owned(),
+                        ),
+                        start: match r.anchored.extent {
+                            crate::types::RangeExtent::Lines { start, .. } => start,
+                            crate::types::RangeExtent::Whole => 0,
+                        },
+                        end: match r.anchored.extent {
+                            crate::types::RangeExtent::Lines { end, .. } => end,
+                            crate::types::RangeExtent::Whole => u32::MAX,
+                        },
+                        status: match r.status {
+                            crate::types::RangeStatus::Fresh => MeshRangeStatus::Stable,
+                            crate::types::RangeStatus::Moved => MeshRangeStatus::Moved,
+                            crate::types::RangeStatus::Changed => MeshRangeStatus::Changed,
+                            _ => MeshRangeStatus::Terminal,
+                        },
+                    })
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+    // Step 9: load staging from .git/mesh/staging across staged mesh names.
+    let mut staging_adds: Vec<StagedAddr> = Vec::new();
+    let mut staging_removes: Vec<StagedAddr> = Vec::new();
+    if let Ok(names) = crate::staging::list_staged_mesh_names(repo) {
+        for name in names {
+            let Ok(staging) = crate::staging::read_staging(repo, &name) else {
+                continue;
+            };
+            for add in staging.adds {
+                let (s, e) = match add.extent {
+                    crate::types::RangeExtent::Lines { start, end } => (start, end),
+                    crate::types::RangeExtent::Whole => (0, u32::MAX),
+                };
+                staging_adds.push(StagedAddr {
+                    path: std::path::PathBuf::from(add.path),
+                    start: s,
+                    end: e,
+                });
+            }
+            for rem in staging.removes {
+                let (s, e) = match rem.extent {
+                    crate::types::RangeExtent::Lines { start, end } => (start, end),
+                    crate::types::RangeExtent::Whole => (0, u32::MAX),
+                };
+                staging_removes.push(StagedAddr {
+                    path: std::path::PathBuf::from(rem.path),
+                    start: s,
+                    end: e,
+                });
+            }
+        }
+    }
+
+    // Step 10–12: load seen sets and historical touch intervals.
+    let advice_seen = store.advice_seen_set()?;
+    let docs_seen = store.docs_seen_set()?;
+    let touch_intervals = store.all_touch_intervals()?;
+
+    // Step 13: produce candidates.
+    let input = CandidateInput {
+        session_delta: &session_delta,
+        incr_delta: &incr_delta,
+        new_reads: &new_reads,
+        touch_intervals: &touch_intervals,
+        mesh_ranges: &mesh_ranges,
+        staging: StagingState {
+            adds: &staging_adds,
+            removes: &staging_removes,
+        },
+    };
+    let mut candidates: Vec<crate::advice::candidates::Candidate> = Vec::new();
+    candidates.extend(crate::advice::candidates::detect_read_intersects_mesh(&input));
+    candidates.extend(crate::advice::candidates::detect_delta_intersects_mesh(&input));
+    candidates.extend(crate::advice::candidates::detect_partner_drift(&input));
+    candidates.extend(crate::advice::candidates::detect_rename_consequence(&input));
+    candidates.extend(crate::advice::candidates::detect_range_shrink(&input));
+    candidates.extend(crate::advice::candidates::detect_session_co_touch(&input));
+    candidates.extend(crate::advice::candidates::detect_staging_cross_cut(&input));
+
+    // Step 14: filter out fingerprints in advice_seen_set.
+    let mut emitted_fps: Vec<String> = Vec::new();
+    let kept: Vec<crate::advice::candidates::Candidate> = candidates
+        .into_iter()
+        .filter_map(|c| {
+            let fp = crate::advice::fingerprint::fingerprint(&c);
+            if advice_seen.contains(&fp) {
+                None
+            } else {
+                emitted_fps.push(fp);
+                Some(c)
+            }
+        })
+        .collect();
+
+    // Step 15: render. Compute new_doc_topics = topic_keys(emitted_reason_kinds) - docs_seen.
+    use std::collections::BTreeSet;
+    let mut emitted_topics: BTreeSet<String> = BTreeSet::new();
+    for c in &kept {
+        if let Some(topic) = c.reason_kind.doc_topic() {
+            let key = topic.to_string();
+            if !docs_seen.contains(&key) {
+                emitted_topics.insert(key);
+            }
+        }
+    }
+    let new_doc_topics: Vec<String> = emitted_topics.into_iter().collect();
+    let rendered = crate::advice::render::render(&kept, &new_doc_topics, documentation);
+
+    // Step 16: pre-stdout state mutations (broken-pipe safety).
+    //   a) advice-seen, b) docs-seen, c) touches,
+    //   d) promote current.objects-<uuid> -> last-flush.objects,
+    //   e) write last-flush.state with new tree_sha and read_cursor.
+    if !emitted_fps.is_empty() {
+        store.append_advice_seen(&emitted_fps)?;
+    }
+    if !new_doc_topics.is_empty() {
+        store.append_docs_seen(&new_doc_topics)?;
+    }
+    if !incr_delta.is_empty() || !new_reads.is_empty() {
+        let ts = chrono::Utc::now().to_rfc3339();
+        // One synthetic interval per render — records that this render
+        // observed activity. Detector-specific intervals belong to a
+        // future sub-card; record path "*" with whole-file extent so the
+        // entry is non-empty and parseable.
+        let interval = TouchInterval {
+            path: "*".to_string(),
+            start_line: 0,
+            end_line: 0,
+            ts,
+        };
+        store.append_touch(&interval)?;
+    }
+
+    // d) Promote current.objects-<uuid>/ to last-flush.objects/.
+    if last_flush_objects.exists() {
+        std::fs::remove_dir_all(&last_flush_objects).map_err(|e| {
+            anyhow::anyhow!(
+                "remove `{}`: {e}",
+                last_flush_objects.display()
+            )
+        })?;
+    }
+    std::fs::rename(&current_objects, &last_flush_objects).map_err(|e| {
+        anyhow::anyhow!(
+            "rename `{}` -> `{}`: {e}",
+            current_objects.display(),
+            last_flush_objects.display()
+        )
+    })?;
+
+    // e) Write last-flush.state.
+    let new_last_flush = crate::advice::session::state::BaselineState {
+        schema_version: crate::advice::session::SCHEMA_VERSION,
+        tree_sha: current.tree_sha.clone(),
+        index_sha: baseline.index_sha.clone(),
+        captured_at: chrono::Utc::now().to_rfc3339(),
+    };
+    store.write_last_flush(&new_last_flush)?;
+
+    // Persist new read cursor (sidecar to the committed state schema).
+    let new_cursor = store.reads_byte_len()?;
+    store.write_read_cursor(new_cursor)?;
+
+    // Step 17: write rendered output. Broken-pipe failure must not undo
+    // any of the above — `print!` panics on EPIPE in some configs; use
+    // a tolerant write that swallows the error.
+    if !rendered.is_empty() {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        let _ = handle.write_all(rendered.as_bytes());
+    }
+
+    Ok(0)
+}
+
+fn default_engine_options() -> crate::types::EngineOptions {
+    crate::types::EngineOptions {
+        layers: crate::types::LayerSet {
+            worktree: true,
+            index: true,
+            staged_mesh: true,
+        },
+        ignore_unavailable: false,
+        since: None,
     }
 }
 
@@ -420,6 +719,10 @@ pub fn run_advice_add(
 /// Open the session store, run the flush pipeline, and print the rendered
 /// advice (only when non-empty). Records a JSONL audit line for the flush
 /// using the canonical payload from `events.payload`.
+///
+/// Phase 1 of sub-card C reroutes the bare command to `run_advice_render`;
+/// this function is retained until phase 2 deletes the SQL stack.
+#[allow(dead_code)]
 fn run_advice_flush(repo: &gix::Repository, session_id: &str, documentation: bool) -> Result<i32> {
     let mut conn = advice::open_store(session_id)?;
     let (rendered, flush_record) = advice::run_flush(&mut conn, repo, documentation)?;

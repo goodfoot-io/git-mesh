@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use state::{BaselineState, LastFlushState, ReadRecord};
+use state::{BaselineState, LastFlushState, ReadRecord, TouchInterval};
 use store::{LockGuard, LockTimeout};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -75,6 +75,12 @@ impl SessionStore {
                 .open(&path)
                 .with_context(|| format!("truncate `{}`", path.display()))?;
         }
+        // Remove the read-cursor sidecar (snapshot resets render bookkeeping).
+        let cursor_path = self.dir.join("last-flush.read-cursor");
+        if cursor_path.exists() {
+            std::fs::remove_file(&cursor_path)
+                .with_context(|| format!("remove `{}`", cursor_path.display()))?;
+        }
         // Remove existing *.objects directories.
         for entry in std::fs::read_dir(&self.dir)
             .with_context(|| format!("read_dir `{}`", self.dir.display()))?
@@ -82,7 +88,9 @@ impl SessionStore {
             let entry = entry?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.ends_with(".objects") && entry.file_type()?.is_dir() {
+            let is_objects_dir = name_str.ends_with(".objects")
+                || name_str.starts_with("current.objects-");
+            if is_objects_dir && entry.file_type()?.is_dir() {
                 std::fs::remove_dir_all(entry.path())
                     .with_context(|| format!("remove_dir_all `{}`", entry.path().display()))?;
             }
@@ -161,6 +169,153 @@ impl SessionStore {
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+
+    /// Append a touch interval to `touches.jsonl` under the held lock.
+    pub fn append_touch(&self, t: &TouchInterval) -> Result<()> {
+        let line = serde_json::to_string(t)
+            .with_context(|| "serialize TouchInterval")?;
+        store::append_jsonl_line(&self.dir.join("touches.jsonl"), &self.lock, &line)
+    }
+
+    /// Return all touch intervals previously appended to `touches.jsonl`.
+    pub fn all_touch_intervals(&self) -> Result<Vec<TouchInterval>> {
+        read_jsonl_lines(&self.dir.join("touches.jsonl"))
+    }
+
+    /// Append fingerprints to `advice-seen.jsonl` (one per line, JSON string).
+    pub fn append_advice_seen(&self, fingerprints: &[String]) -> Result<()> {
+        for fp in fingerprints {
+            let line = serde_json::to_string(fp)
+                .with_context(|| "serialize fingerprint")?;
+            store::append_jsonl_line(&self.dir.join("advice-seen.jsonl"), &self.lock, &line)?;
+        }
+        Ok(())
+    }
+
+    /// Load all fingerprints previously appended to `advice-seen.jsonl`.
+    pub fn advice_seen_set(&self) -> Result<std::collections::HashSet<String>> {
+        let path = self.dir.join("advice-seen.jsonl");
+        let f = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(std::collections::HashSet::new());
+            }
+            Err(e) => return Err(e).with_context(|| format!("open `{}`", path.display())),
+        };
+        let mut out = std::collections::HashSet::new();
+        for (idx, line) in BufReader::new(f).lines().enumerate() {
+            let line = line.with_context(|| format!("read `{}`", path.display()))?;
+            if line.is_empty() {
+                continue;
+            }
+            let s: String = serde_json::from_str(&line).map_err(|e| {
+                anyhow::anyhow!(
+                    "parse `advice-seen.jsonl` at `{}` line {}: {e}",
+                    path.display(),
+                    idx + 1
+                )
+            })?;
+            out.insert(s);
+        }
+        Ok(out)
+    }
+
+    /// Append topics to `docs-seen.jsonl` (one per line, JSON string).
+    pub fn append_docs_seen(&self, topics: &[String]) -> Result<()> {
+        for t in topics {
+            let line = serde_json::to_string(t)
+                .with_context(|| "serialize topic")?;
+            store::append_jsonl_line(&self.dir.join("docs-seen.jsonl"), &self.lock, &line)?;
+        }
+        Ok(())
+    }
+
+    /// Load all topics previously appended to `docs-seen.jsonl`.
+    pub fn docs_seen_set(&self) -> Result<std::collections::HashSet<String>> {
+        let path = self.dir.join("docs-seen.jsonl");
+        let f = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(std::collections::HashSet::new());
+            }
+            Err(e) => return Err(e).with_context(|| format!("open `{}`", path.display())),
+        };
+        let mut out = std::collections::HashSet::new();
+        for (idx, line) in BufReader::new(f).lines().enumerate() {
+            let line = line.with_context(|| format!("read `{}`", path.display()))?;
+            if line.is_empty() {
+                continue;
+            }
+            let s: String = serde_json::from_str(&line).map_err(|e| {
+                anyhow::anyhow!(
+                    "parse `docs-seen.jsonl` at `{}` line {}: {e}",
+                    path.display(),
+                    idx + 1
+                )
+            })?;
+            out.insert(s);
+        }
+        Ok(out)
+    }
+
+    /// Read the persisted read-cursor (byte offset into `reads.jsonl` consumed
+    /// by the previous render). Absent file = 0.
+    ///
+    /// Stored as ASCII decimal in `last-flush.read-cursor`. A separate sidecar
+    /// (rather than a field on `LastFlushState`) preserves the committed state
+    /// schema; the cursor advances strictly before stdout, same crash-window
+    /// semantics as the `last-flush.objects` rename.
+    pub fn read_cursor(&self) -> Result<u64> {
+        let path = self.dir.join("last-flush.read-cursor");
+        match std::fs::read_to_string(&path) {
+            Ok(s) => s
+                .trim()
+                .parse::<u64>()
+                .with_context(|| format!("parse `{}`", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e).with_context(|| format!("read `{}`", path.display())),
+        }
+    }
+
+    /// Atomically write the read-cursor to `last-flush.read-cursor`.
+    pub fn write_read_cursor(&self, cursor: u64) -> Result<()> {
+        let path = self.dir.join("last-flush.read-cursor");
+        store::atomic_write(&path, cursor.to_string().as_bytes())
+    }
+
+    /// Current byte length of `reads.jsonl`. Absent file = 0.
+    pub fn reads_byte_len(&self) -> Result<u64> {
+        let path = self.dir.join("reads.jsonl");
+        match std::fs::metadata(&path) {
+            Ok(m) => Ok(m.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e).with_context(|| format!("metadata `{}`", path.display())),
+        }
+    }
+}
+
+fn read_jsonl_lines<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("open `{}`", path.display())),
+    };
+    let mut out = Vec::new();
+    for (idx, line) in BufReader::new(f).lines().enumerate() {
+        let line = line.with_context(|| format!("read `{}`", path.display()))?;
+        if line.is_empty() {
+            continue;
+        }
+        let v: T = serde_json::from_str(&line).map_err(|e| {
+            anyhow::anyhow!(
+                "parse `{}` line {}: {e}",
+                path.display(),
+                idx + 1
+            )
+        })?;
+        out.push(v);
+    }
+    Ok(out)
 }
 
 fn read_state(path: &Path) -> Result<BaselineState> {
