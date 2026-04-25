@@ -1,4 +1,11 @@
 //! Typed event append helpers for the advice session store.
+//!
+//! Slice 2: the canonical `payload` JSON for every event is built once,
+//! stored verbatim in `events.payload`, and returned to the caller as an
+//! [`AuditRecord`] so the CLI can append a byte-identical JSON object
+//! to the audit log. Per `docs/advice-notes.md` §7, the audit line is
+//! `{"id": …, "kind": …, "ts": …, "payload": <same object>}` and the
+//! audit log is rebuildable from the SQL store.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -7,32 +14,31 @@ use std::path::Path;
 
 use crate::git;
 
-const BLOB_CAP: usize = 65_536; // 64 KiB
+/// Maximum size, in bytes, of a `--pre` or `--post` content blob. Larger
+/// writes are out of advice's scope: the heuristics that consume blobs
+/// operate on small ranges, and the audit line must stay tractable.
+pub const CONTENT_BYTE_CAP: usize = 1024 * 1024; // 1 MiB
 
-/// Cap a string to BLOB_CAP bytes at a UTF-8 character boundary.
-fn cap_blob(s: String) -> String {
-    if s.len() <= BLOB_CAP {
-        s
-    } else {
-        // Truncate at a char boundary.
-        let mut end = BLOB_CAP;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        s[..end].to_string()
-    }
-}
-
-/// Returns `Some(text)` if `bytes` are valid UTF-8; `None` for binary.
-fn decode_utf8(bytes: Vec<u8>) -> Option<String> {
-    std::str::from_utf8(&bytes).ok().map(str::to_string)
+/// Snapshot of a single event suitable for audit-log emission.
+///
+/// `payload` is the *same* JSON value that was stored in `events.payload`;
+/// the audit line is a strict superset (`id`/`kind`/`ts` plus this object).
+#[derive(Debug)]
+pub struct AuditRecord {
+    pub id: i64,
+    pub kind: &'static str,
+    pub ts: String,
+    pub payload: Value,
 }
 
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn insert_event(conn: &Connection, kind: &str, payload: &Value) -> Result<i64> {
+/// Insert one row into `events`, returning the new id and the timestamp
+/// that was stored. Caller is responsible for inserting into the per-kind
+/// flat table and emitting the audit line.
+fn insert_event(conn: &Connection, kind: &str, payload: &Value) -> Result<(i64, String)> {
     let ts = now_rfc3339();
     let payload_str = payload.to_string();
     conn.execute(
@@ -40,7 +46,7 @@ fn insert_event(conn: &Connection, kind: &str, payload: &Value) -> Result<i64> {
         rusqlite::params![kind, ts, payload_str],
     )
     .context("insert event")?;
-    Ok(conn.last_insert_rowid())
+    Ok((conn.last_insert_rowid(), ts))
 }
 
 /// Normalize `path` to a repo-relative string by stripping the repo's
@@ -69,7 +75,6 @@ fn parse_path_range(spec: &str) -> (&str, Option<(i64, i64)>) {
     if let Some(hash_pos) = spec.rfind('#') {
         let (path, frag) = spec.split_at(hash_pos);
         let frag = &frag[1..]; // strip '#'
-        // Accept `L1-L10` or `1-10`.
         let frag = frag.strip_prefix('L').unwrap_or(frag);
         if let Some((s, e)) = frag.split_once('-') {
             let s = s.strip_prefix('L').unwrap_or(s);
@@ -86,8 +91,13 @@ fn parse_path_range(spec: &str) -> (&str, Option<(i64, i64)>) {
 // Public append helpers
 // ---------------------------------------------------------------------------
 
-/// Append a `read` event.
-pub fn append_read(conn: &Connection, repo: &gix::Repository, spec: &str) -> Result<()> {
+/// Append a `read` event. Returns the audit record so the CLI can mirror
+/// the same payload to the JSONL.
+pub fn append_read(
+    conn: &Connection,
+    repo: &gix::Repository,
+    spec: &str,
+) -> Result<AuditRecord> {
     let (raw_path, range) = parse_path_range(spec);
     let path = normalize_path(repo, raw_path)?;
     let (start_line, end_line) = range
@@ -95,64 +105,74 @@ pub fn append_read(conn: &Connection, repo: &gix::Repository, spec: &str) -> Res
         .unwrap_or((None, None));
 
     let payload = json!({
+        "end_line": end_line,
         "path": path,
         "start_line": start_line,
-        "end_line": end_line,
     });
-    let event_id = insert_event(conn, "read", &payload)?;
+    let (event_id, ts) = insert_event(conn, "read", &payload)?;
     conn.execute(
         "INSERT INTO read_events (event_id, path, start_line, end_line) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![event_id, path, start_line, end_line],
     )
     .context("insert read_event")?;
-    Ok(())
+    Ok(AuditRecord {
+        id: event_id,
+        kind: "read",
+        ts,
+        payload,
+    })
 }
 
-/// Append a `write` event.
+/// Append a `write` event with explicit pre/post content (slice 2).
 ///
-/// `post_blob` is read from the worktree at invocation time; `pre_blob` is
-/// the most recent prior `write_events.post_blob` for this path in this
-/// session (per-edit baseline), falling back to HEAD's blob when no prior
-/// write exists.  Both are capped at 64 KiB.  Binary content → NULL.
-pub fn append_write(conn: &Connection, repo: &gix::Repository, spec: &str) -> Result<()> {
+/// Both `pre` and `post` are optional. Each, when supplied, must be valid
+/// UTF-8 and at most [`CONTENT_BYTE_CAP`] bytes; binary or oversize input
+/// is rejected at the CLI boundary, so this helper trusts the caller.
+///
+/// The same `path`, `start_line`, `end_line`, `pre_blob`, `post_blob`
+/// payload is written to `events.payload`, the per-kind flat table, and
+/// the audit line — they are byte-identical by construction.
+pub fn append_write(
+    conn: &Connection,
+    repo: &gix::Repository,
+    spec: &str,
+    pre: Option<String>,
+    post: Option<String>,
+) -> Result<AuditRecord> {
     let (raw_path, range) = parse_path_range(spec);
     let path = normalize_path(repo, raw_path)?;
     let (start_line, end_line) = range
         .map(|(s, e)| (Some(s), Some(e)))
         .unwrap_or((None, None));
 
-    // post_blob: current worktree content.
-    let post_blob = read_worktree_blob(repo, &path);
-
-    // pre_blob: prefer most recent prior write's post_blob for same path
-    // (per-edit baseline); fall back to HEAD blob.
-    // prior_write_post_blob returns Some(Option<String>) when a prior write
-    // exists (the inner Option is the blob value, which may be NULL).
-    // Fall back to HEAD blob only when no prior write row was found at all.
-    let pre_blob = match prior_write_post_blob(conn, &path)? {
-        Some(inner) => inner,
-        None => head_blob(repo, &path),
-    };
-
-    // Payload omits blob fields (DB is source of truth; JSONL lines must
-    // stay under PIPE_BUF for O_APPEND atomicity).
     let payload = json!({
-        "path": path,
-        "start_line": start_line,
         "end_line": end_line,
+        "path": path,
+        "post_blob": post,
+        "pre_blob": pre,
+        "start_line": start_line,
     });
-    let event_id = insert_event(conn, "write", &payload)?;
+    let (event_id, ts) = insert_event(conn, "write", &payload)?;
     conn.execute(
         "INSERT INTO write_events (event_id, path, start_line, end_line, pre_blob, post_blob) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![event_id, path, start_line, end_line, pre_blob, post_blob],
+        rusqlite::params![event_id, path, start_line, end_line, pre, post],
     )
     .context("insert write_event")?;
-    Ok(())
+    Ok(AuditRecord {
+        id: event_id,
+        kind: "write",
+        ts,
+        payload,
+    })
 }
 
 /// Append a `commit` event. Validates the SHA via gix — fails if unresolvable.
-pub fn append_commit(conn: &Connection, repo: &gix::Repository, sha: &str) -> Result<()> {
+pub fn append_commit(
+    conn: &Connection,
+    repo: &gix::Repository,
+    sha: &str,
+) -> Result<AuditRecord> {
     let resolved = repo
         .rev_parse_single(sha)
         .map_err(|_| anyhow::anyhow!("commit `{sha}` not found in the object database"))?
@@ -160,17 +180,22 @@ pub fn append_commit(conn: &Connection, repo: &gix::Repository, sha: &str) -> Re
         .to_string();
 
     let payload = json!({ "sha": resolved });
-    let event_id = insert_event(conn, "commit", &payload)?;
+    let (event_id, ts) = insert_event(conn, "commit", &payload)?;
     conn.execute(
         "INSERT INTO commit_events (event_id, sha) VALUES (?1, ?2)",
         rusqlite::params![event_id, resolved],
     )
     .context("insert commit_event")?;
-    Ok(())
+    Ok(AuditRecord {
+        id: event_id,
+        kind: "commit",
+        ts,
+        payload,
+    })
 }
 
 /// Append a `snapshot` event. Computes `tree_sha` and `index_sha` via gix.
-pub fn append_snapshot(conn: &Connection, repo: &gix::Repository) -> Result<()> {
+pub fn append_snapshot(conn: &Connection, repo: &gix::Repository) -> Result<AuditRecord> {
     let tree_sha = repo
         .head_commit()
         .ok()
@@ -183,55 +208,33 @@ pub fn append_snapshot(conn: &Connection, repo: &gix::Repository) -> Result<()> 
         .and_then(|idx| idx.checksum().map(|c| c.to_string()));
 
     let payload = json!({
-        "tree_sha": tree_sha,
         "index_sha": index_sha,
+        "tree_sha": tree_sha,
     });
-    let event_id = insert_event(conn, "snapshot", &payload)?;
+    let (event_id, ts) = insert_event(conn, "snapshot", &payload)?;
     conn.execute(
         "INSERT INTO snapshot_events (event_id, tree_sha, index_sha) VALUES (?1, ?2, ?3)",
         rusqlite::params![event_id, tree_sha, index_sha],
     )
     .context("insert snapshot_event")?;
-    Ok(())
+    Ok(AuditRecord {
+        id: event_id,
+        kind: "snapshot",
+        ts,
+        payload,
+    })
 }
 
 // ---------------------------------------------------------------------------
-// Internal blob helpers
+// Internal blob helpers (no longer used by `append_write`; kept available
+// for the prior-write fallback heuristic if a future caller wants it).
 // ---------------------------------------------------------------------------
 
-fn read_worktree_blob(repo: &gix::Repository, rel_path: &str) -> Option<String> {
+#[allow(dead_code)]
+fn read_worktree_text(repo: &gix::Repository, rel_path: &str) -> Option<String> {
     git::read_worktree_bytes(repo, rel_path)
         .ok()
-        .and_then(decode_utf8)
-        .map(cap_blob)
-}
-
-fn head_blob(repo: &gix::Repository, rel_path: &str) -> Option<String> {
-    let head = repo.head_commit().ok()?;
-    let head_oid = head.id.to_string();
-    let blob_oid = git::path_blob_at(repo, &head_oid, rel_path).ok()?;
-    git::read_git_text(repo, &blob_oid)
-        .ok()
-        .map(cap_blob)
-        // fall back to None on binary (read_git_text already does UTF-8 check)
-}
-
-/// Query the most recent `post_blob` for `path` among prior write events in
-/// this session. Returns `None` when no prior write exists.
-fn prior_write_post_blob(conn: &Connection, path: &str) -> Result<Option<Option<String>>> {
-    let mut stmt = conn.prepare(
-        "SELECT post_blob FROM write_events \
-         INNER JOIN events ON write_events.event_id = events.id \
-         WHERE write_events.path = ?1 \
-         ORDER BY write_events.event_id DESC LIMIT 1",
-    )?;
-    let mut rows = stmt.query(rusqlite::params![path])?;
-    if let Some(row) = rows.next()? {
-        let val: Option<String> = row.get(0)?;
-        Ok(Some(val))
-    } else {
-        Ok(None)
-    }
+        .and_then(|b| String::from_utf8(b).ok())
 }
 
 #[cfg(test)]
@@ -272,76 +275,61 @@ mod tests {
         let repo = seed_repo(&td);
         let conn = open_test_conn();
 
-        append_read(&conn, &repo, "foo.txt#L1-L3").unwrap();
+        let rec = append_read(&conn, &repo, "foo.txt#L1-L3").unwrap();
+        assert_eq!(rec.kind, "read");
+        assert_eq!(rec.payload["path"], "foo.txt");
+        assert_eq!(rec.payload["start_line"], 1);
+        assert_eq!(rec.payload["end_line"], 3);
 
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM read_events", [], |r| r.get(0))
+        // SQL `events.payload` matches `rec.payload` byte-for-byte.
+        let stored: String = conn
+            .query_row("SELECT payload FROM events WHERE id = ?1", [rec.id], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(count, 1);
-        let (path, sl, el): (String, Option<i64>, Option<i64>) = conn
-            .query_row(
-                "SELECT path, start_line, end_line FROM read_events",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(path, "foo.txt");
-        assert_eq!(sl, Some(1));
-        assert_eq!(el, Some(3));
+        assert_eq!(stored, rec.payload.to_string());
     }
 
     #[test]
-    fn write_event_appended_with_blobs() {
+    fn write_event_with_explicit_content() {
         let td = TempDir::new().unwrap();
         let repo = seed_repo(&td);
         let conn = open_test_conn();
 
-        append_write(&conn, &repo, "foo.txt").unwrap();
+        let pre = Some("a\n".to_string());
+        let post = Some("a\nb\n".to_string());
+        let rec = append_write(&conn, &repo, "foo.txt#L1-L2", pre.clone(), post.clone()).unwrap();
+        assert_eq!(rec.payload["pre_blob"], "a\n");
+        assert_eq!(rec.payload["post_blob"], "a\nb\n");
 
-        let (post, pre): (Option<String>, Option<String>) = conn
+        let (sql_pre, sql_post): (Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT post_blob, pre_blob FROM write_events",
+                "SELECT pre_blob, post_blob FROM write_events",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        // post_blob should be the worktree content.
-        assert!(post.is_some(), "post_blob should be set");
-        // pre_blob comes from HEAD (first write in session).
-        assert!(pre.is_some(), "pre_blob should be HEAD content");
+        assert_eq!(sql_pre, pre);
+        assert_eq!(sql_post, post);
+
+        // events.payload byte-equals payload.
+        let stored: String = conn
+            .query_row("SELECT payload FROM events WHERE id=?1", [rec.id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, rec.payload.to_string());
     }
 
     #[test]
-    fn second_write_uses_prior_post_blob_as_pre() {
+    fn write_event_without_content_stores_null() {
         let td = TempDir::new().unwrap();
         let repo = seed_repo(&td);
         let conn = open_test_conn();
 
-        // First write.
-        append_write(&conn, &repo, "foo.txt").unwrap();
-
-        // Modify the worktree file.
-        std::fs::write(td.path().join("foo.txt"), "changed\n").unwrap();
-
-        // Second write: pre_blob should equal first write's post_blob.
-        append_write(&conn, &repo, "foo.txt").unwrap();
-
-        let rows: Vec<(Option<String>, Option<String>)> = {
-            let mut stmt = conn
-                .prepare("SELECT pre_blob, post_blob FROM write_events ORDER BY event_id")
-                .unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect()
-        };
-        assert_eq!(rows.len(), 2);
-        let (_, first_post) = &rows[0];
-        let (second_pre, _) = &rows[1];
-        assert_eq!(
-            second_pre, first_post,
-            "second write's pre_blob should equal first write's post_blob"
-        );
+        let rec = append_write(&conn, &repo, "foo.txt", None, None).unwrap();
+        assert!(rec.payload["pre_blob"].is_null());
+        assert!(rec.payload["post_blob"].is_null());
     }
 
     #[test]
@@ -351,12 +339,8 @@ mod tests {
         let conn = open_test_conn();
 
         let head = repo.head_id().unwrap().detach().to_string();
-        append_commit(&conn, &repo, &head).unwrap();
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM commit_events", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
+        let rec = append_commit(&conn, &repo, &head).unwrap();
+        assert_eq!(rec.payload["sha"], head);
     }
 
     #[test]
@@ -373,61 +357,13 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_event_appended() {
+    fn snapshot_event_includes_shas_in_payload() {
         let td = TempDir::new().unwrap();
         let repo = seed_repo(&td);
         let conn = open_test_conn();
 
-        append_snapshot(&conn, &repo).unwrap();
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM snapshot_events", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn blob_capped_at_64kib() {
-        let td = TempDir::new().unwrap();
-        let repo = seed_repo(&td);
-        let conn = open_test_conn();
-
-        // Write a 200 KiB file.
-        let big = "x".repeat(200 * 1024);
-        std::fs::write(td.path().join("big.txt"), &big).unwrap();
-
-        append_write(&conn, &repo, "big.txt").unwrap();
-
-        let post: Option<String> = conn
-            .query_row("SELECT post_blob FROM write_events", [], |r| r.get(0))
-            .unwrap();
-        let len = post.map(|s| s.len()).unwrap_or(0);
-        assert!(
-            len <= BLOB_CAP,
-            "post_blob should be capped at {BLOB_CAP} bytes, got {len}"
-        );
-    }
-
-    #[test]
-    fn binary_file_blobs_are_null() {
-        let td = TempDir::new().unwrap();
-        let repo = seed_repo(&td);
-        let conn = open_test_conn();
-
-        // Write a binary (non-UTF-8) file.
-        let binary: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x01, 0x80];
-        std::fs::write(td.path().join("bin.bin"), &binary).unwrap();
-
-        append_write(&conn, &repo, "bin.bin").unwrap();
-
-        let (pre, post): (Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT pre_blob, post_blob FROM write_events",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert!(pre.is_none(), "binary pre_blob should be NULL");
-        assert!(post.is_none(), "binary post_blob should be NULL");
+        let rec = append_snapshot(&conn, &repo).unwrap();
+        assert!(rec.payload.get("tree_sha").is_some());
+        assert!(rec.payload.get("index_sha").is_some());
     }
 }

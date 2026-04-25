@@ -2,9 +2,9 @@
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Subcommand};
-use serde_json::json;
 
 use crate::advice;
+use crate::advice::CONTENT_BYTE_CAP;
 use crate::git::work_dir;
 
 /// Allowed character set for `<sessionId>`, documented in error messages
@@ -32,6 +32,14 @@ pub struct AdviceArgs {
     /// Append per-reason documentation blocks to the flush output.
     #[arg(long)]
     pub documentation: bool,
+
+    /// Debug helper: regenerate the JSONL audit log from the SQL store.
+    ///
+    /// Truncates `<sessionDir>/<id>.jsonl` and replays every row in
+    /// `events` (ordered by id) as a canonical audit line. The result is
+    /// byte-identical to the live JSONL — see `docs/advice-notes.md` §7.
+    #[arg(long)]
+    pub rebuild_audit_from_db: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -51,6 +59,19 @@ pub struct AdviceAddArgs {
     #[arg(long, group = "kind", value_name = "PATH[#Ls-Le]")]
     pub write: Option<String>,
 
+    /// Pre-edit content for `--write`. `<PATH>` reads from a file. The
+    /// pre side is not stdin-eligible (only `--post` is) so two stdin
+    /// inputs cannot collide. Maximum size: 1 MiB. Must be valid UTF-8.
+    #[arg(long, value_name = "PATH", requires = "write")]
+    pub pre: Option<String>,
+
+    /// Post-edit content for `--write`. `<PATH>` reads from a file; `-`
+    /// reads from stdin. Maximum size: 1 MiB. Must be valid UTF-8. When
+    /// supplied, the line count of the post content overrides the
+    /// worktree line count for range validation.
+    #[arg(long, value_name = "PATH-or--", requires = "write")]
+    pub post: Option<String>,
+
     /// Record a commit event for the given SHA.
     #[arg(long, group = "kind", value_name = "SHA")]
     pub commit: Option<String>,
@@ -64,6 +85,15 @@ pub struct AdviceAddArgs {
 /// runs the flush pipeline and prints the rendered advice.
 pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     validate_session_id(&args.session_id)?;
+    if args.rebuild_audit_from_db {
+        if args.command.is_some() {
+            bail!("--rebuild-audit-from-db cannot be combined with `add`");
+        }
+        if args.documentation {
+            bail!("--rebuild-audit-from-db cannot be combined with --documentation");
+        }
+        return run_rebuild_audit(&args.session_id);
+    }
     match args.command {
         Some(AdviceCommand::Add(add_args)) => run_advice_add(repo, &args.session_id, add_args),
         None => run_advice_flush(repo, &args.session_id, args.documentation),
@@ -91,10 +121,45 @@ fn validate_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Read a `--pre` / `--post` argument. `-` is stdin (post only); any
+/// other value is a filesystem path. Enforces the 1 MiB cap and UTF-8.
+fn read_content_arg(arg: &str, who: &str, allow_stdin: bool) -> Result<String> {
+    let bytes = if arg == "-" {
+        if !allow_stdin {
+            bail!(
+                "{who}: stdin (`-`) is not accepted; pass a file path. \
+                 Convention: only --post may read from stdin to avoid \
+                 ambiguous two-stdin inputs."
+            );
+        }
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)
+            .map_err(|e| anyhow::anyhow!("{who}: read stdin: {e}"))?;
+        buf
+    } else {
+        std::fs::read(arg).map_err(|e| anyhow::anyhow!("{who}: read `{arg}`: {e}"))?
+    };
+    if bytes.len() > CONTENT_BYTE_CAP {
+        bail!(
+            "{who}: content is {} bytes, exceeds the {} byte cap (1 MiB). \
+             Larger writes are out of advice's scope.",
+            bytes.len(),
+            CONTENT_BYTE_CAP
+        );
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!("{who}: content is not valid UTF-8"))
+}
+
 /// Reject `--read` / `--write` specs that point at non-existent paths or
-/// out-of-range / inverted line ranges. Path existence is resolved
-/// relative to the worktree root.
-fn validate_read_write_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
+/// out-of-range / inverted line ranges. When `post_line_count` is
+/// supplied, it overrides the worktree-line bound for range validation
+/// (slice 2: `--post` controls what the post-edit extent looks like).
+fn validate_read_write_spec(
+    repo: &gix::Repository,
+    spec: &str,
+    post_line_count: Option<u32>,
+) -> Result<()> {
     if spec.is_empty() {
         bail!("invalid spec: path must not be empty");
     }
@@ -130,16 +195,18 @@ fn validate_read_write_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
         bail!("path not found in worktree: `{path_str}`");
     }
     if let Some((start, end)) = range {
-        // For ranges, count lines in the current worktree file.
-        let bytes = std::fs::read(&abs)
-            .map_err(|e| anyhow::anyhow!("read `{path_str}`: {e}"))?;
-        let line_count = String::from_utf8_lossy(&bytes).lines().count() as u32;
+        let line_count = if let Some(n) = post_line_count {
+            n
+        } else {
+            let bytes = std::fs::read(&abs)
+                .map_err(|e| anyhow::anyhow!("read `{path_str}`: {e}"))?;
+            String::from_utf8_lossy(&bytes).lines().count() as u32
+        };
         if end > line_count {
             bail!(
-                "invalid range `{spec}`: end ({end}) is past EOF (file has {line_count} lines)"
+                "invalid range `{spec}`: end ({end}) is past EOF (extent has {line_count} lines)"
             );
         }
-        // start <= end already verified above; start <= line_count follows when end <= line_count
         let _ = start;
     }
     Ok(())
@@ -147,38 +214,50 @@ fn validate_read_write_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
 
 /// Open the session store, append the requested event, and exit silently.
 ///
-/// On success: no stdout, no stderr, exit 0. On failure: error bubbles up
-/// to the CLI boundary which prints `error: <msg>` to stderr and exits 2
-/// (loud, fail-closed for direct callers — the bash shims wrap the call
-/// with `|| true`, see Phase 5).
+/// Order is **SQL first, audit append second**: a failure of the audit
+/// append surfaces as an error to the caller (fail-closed), but the
+/// audit log can never be ahead of SQL.
 pub fn run_advice_add(
     repo: &gix::Repository,
     session_id: &str,
     args: AdviceAddArgs,
 ) -> Result<i32> {
-    // Validate read/write specs before opening the store so a malformed
-    // call does not create state files. Fail-closed per CLAUDE.md.
+    // For --write, materialize pre/post content first so range validation
+    // can use the post line count.
+    let mut pre_content: Option<String> = None;
+    let mut post_content: Option<String> = None;
+    if args.write.is_some() {
+        if let Some(p) = args.pre.as_deref() {
+            pre_content = Some(read_content_arg(p, "--pre", false)?);
+        }
+        if let Some(p) = args.post.as_deref() {
+            post_content = Some(read_content_arg(p, "--post", true)?);
+        }
+    } else if args.pre.is_some() || args.post.is_some() {
+        // Clap's `requires = "write"` already prevents this; defense in depth.
+        bail!("--pre / --post are only valid with --write");
+    }
+
     if let Some(spec) = args.read.as_deref() {
-        validate_read_write_spec(repo, spec)?;
+        validate_read_write_spec(repo, spec, None)?;
     }
     if let Some(spec) = args.write.as_deref() {
-        validate_read_write_spec(repo, spec)?;
+        let post_lines = post_content
+            .as_ref()
+            .map(|s| s.lines().count() as u32);
+        validate_read_write_spec(repo, spec, post_lines)?;
     }
 
     let conn = advice::open_store(session_id)?;
 
-    let audit_line = if let Some(spec) = args.read.as_deref() {
-        advice::append_read(&conn, repo, spec)?;
-        json!({ "kind": "read", "spec": spec })
+    let record = if let Some(spec) = args.read.as_deref() {
+        advice::append_read(&conn, repo, spec)?
     } else if let Some(spec) = args.write.as_deref() {
-        advice::append_write(&conn, repo, spec)?;
-        json!({ "kind": "write", "spec": spec })
+        advice::append_write(&conn, repo, spec, pre_content, post_content)?
     } else if let Some(sha) = args.commit.as_deref() {
-        advice::append_commit(&conn, repo, sha)?;
-        json!({ "kind": "commit", "sha": sha })
+        advice::append_commit(&conn, repo, sha)?
     } else if args.snapshot {
-        advice::append_snapshot(&conn, repo)?;
-        json!({ "kind": "snapshot" })
+        advice::append_snapshot(&conn, repo)?
     } else {
         // Clap's ArgGroup(required=true) prevents this branch.
         anyhow::bail!("git mesh advice add: one of --read/--write/--commit/--snapshot is required");
@@ -186,30 +265,33 @@ pub fn run_advice_add(
 
     let sanitized = advice::sanitize_session_id(session_id);
     let jsonl = advice::db::jsonl_path(&sanitized);
-    advice::audit::append_jsonl(&jsonl, &audit_line)?;
+    advice::audit::append_record(&jsonl, &record)?;
 
     Ok(0)
 }
 
 /// Open the session store, run the flush pipeline, and print the rendered
-/// advice (only when non-empty). Records a JSONL audit line for the flush.
+/// advice (only when non-empty). Records a JSONL audit line for the flush
+/// using the canonical payload from `events.payload`.
 fn run_advice_flush(repo: &gix::Repository, session_id: &str, documentation: bool) -> Result<i32> {
     let mut conn = advice::open_store(session_id)?;
-    let rendered = advice::run_flush(&mut conn, repo, documentation)?;
+    let (rendered, flush_record) = advice::run_flush(&mut conn, repo, documentation)?;
     if !rendered.is_empty() {
-        // Render output already carries its own trailing newlines per line;
-        // print exactly what flush produced.
         print!("{rendered}");
     }
 
     let sanitized = advice::sanitize_session_id(session_id);
     let jsonl = advice::db::jsonl_path(&sanitized);
-    let line = json!({
-        "kind": "flush",
-        "documentation": documentation,
-        "output_len": rendered.len(),
-    });
-    advice::audit::append_jsonl(&jsonl, &line)?;
+    advice::audit::append_record(&jsonl, &flush_record)?;
 
+    Ok(0)
+}
+
+/// Regenerate the JSONL audit log deterministically from the SQL store.
+fn run_rebuild_audit(session_id: &str) -> Result<i32> {
+    let conn = advice::open_store(session_id)?;
+    let sanitized = advice::sanitize_session_id(session_id);
+    let jsonl = advice::db::jsonl_path(&sanitized);
+    advice::audit::rebuild_from_db(&conn, &jsonl)?;
     Ok(0)
 }

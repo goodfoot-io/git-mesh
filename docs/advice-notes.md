@@ -142,9 +142,23 @@ JSONL file records the same events for audit and post-hoc debugging.
 - **Primary store:** `/tmp/git-mesh-claude-code/<sessionId>.db` — SQLite
   in WAL mode. All queries (seen-set lookups, intersection computation,
   flush composition) run as SQL.
-- **Audit log:** `/tmp/git-mesh-claude-code/<sessionId>.jsonl` — one line
-  per event, written alongside each INSERT. Not load-bearing; can be
-  tailed with `tail -f`, grepped, or re-ingested into a fresh DB.
+- **Audit log:** `/tmp/git-mesh-claude-code/<sessionId>.jsonl` — one
+  newline-terminated JSON object per event, written immediately after
+  the SQL `INSERT` succeeds (SQL-first, audit-second; if the audit
+  append fails, the command fails — fail-closed). Each line has the
+  shape
+
+  ```json
+  {"id": <int>, "kind": "<read|write|commit|snapshot|flush>",
+   "payload": <object>, "ts": "<rfc3339>"}
+  ```
+
+  The `payload` object is the *same* JSON value stored in
+  `events.payload`; the JSONL line is a strict superset (the row's id,
+  kind, and ts wrapped around the canonical payload). Keys are emitted
+  in alphabetical order so the byte form is deterministic and
+  rebuildable from SQL alone via
+  `git mesh advice <sessionId> --rebuild-audit-from-db`.
 - **Content chunks** (`pre_blob`, `post_blob` on write events): inlined
   as TEXT columns (and inlined in the audit line). No blob-SHA indirection.
 - **Concurrency:** SQLite WAL handles multiple writers cleanly; the audit
@@ -280,7 +294,15 @@ event-producing system is not load-bearing.
 - **Ranges** — `path#Ls-Le`, or whole-file.
 - **Content chunks** — pre- and post-text for write events; used to
   compute the precise post-edit line extent and the structural shape of
-  the change.
+  the change. Provided via `--pre <PATH>` and `--post <PATH-or-->` on
+  `add --write`. Only `--post` is stdin-eligible (`-`); the pre side is
+  file-only so the two inputs cannot collide on stdin. Each side is
+  capped at **1 MiB** of valid UTF-8; oversize or non-text input is
+  rejected. Both flags are optional — when omitted the payload stores
+  `null` for that side and downstream heuristics that need content
+  (T6 symbol-rename, etc.) are suppressed rather than misfiring on
+  garbage. When `--post` is supplied, its line count overrides the
+  worktree's for the `#Ls-Le` range bound check.
 - **Commit identifiers** — SHAs landed during the session, recorded via
   `add --commit`.
 - **Snapshot references** — `tree_sha` + `index_sha`, recorded via

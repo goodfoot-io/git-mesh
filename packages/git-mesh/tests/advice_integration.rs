@@ -253,14 +253,48 @@ fn flush_t6_symbol_rename() -> Result<()> {
     commit_mesh(&gix, "sym")?;
 
     let session = Session::new("t6");
-    // First write: snapshot baseline (no rename yet).
-    let out = run_advice(&repo, &session, &["add", "--write", "api.rs"])?;
+    // First write: snapshot baseline (no rename yet). Pre/post are
+    // identical to the worktree (slice 2: explicit content required).
+    let pre1 = repo.path().join("api.rs.pre1");
+    let post1 = repo.path().join("api.rs.post1");
+    std::fs::write(&pre1, "pub fn old_name() -> u32 { 0 }\n")?;
+    std::fs::write(&post1, "pub fn old_name() -> u32 { 0 }\n")?;
+    let out = run_advice(
+        &repo,
+        &session,
+        &[
+            "add",
+            "--write",
+            "api.rs",
+            "--pre",
+            pre1.to_str().unwrap(),
+            "--post",
+            post1.to_str().unwrap(),
+        ],
+    )?;
     assert_success_silent(&out);
 
     // Now rename old_name -> new_name on disk.
     repo.write_file("api.rs", "pub fn new_name() -> u32 { 0 }\n")?;
-    // Second write captures the rename — pre_blob is the prior post_blob (with old_name).
-    let out = run_advice(&repo, &session, &["add", "--write", "api.rs"])?;
+    // Second write captures the rename — pre is the prior content
+    // (with old_name); post is the new content (with new_name).
+    let pre2 = repo.path().join("api.rs.pre2");
+    let post2 = repo.path().join("api.rs.post2");
+    std::fs::write(&pre2, "pub fn old_name() -> u32 { 0 }\n")?;
+    std::fs::write(&post2, "pub fn new_name() -> u32 { 0 }\n")?;
+    let out = run_advice(
+        &repo,
+        &session,
+        &[
+            "add",
+            "--write",
+            "api.rs",
+            "--pre",
+            pre2.to_str().unwrap(),
+            "--post",
+            post2.to_str().unwrap(),
+        ],
+    )?;
     assert_success_silent(&out);
 
     let stdout = flush_stdout(&repo, &session, &[])?;
@@ -533,29 +567,30 @@ fn documentation_flag() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Blob cap (200 KiB written; stored ≤ 64 KiB)
+// Slice 2 contract: --write without --pre/--post stores NULL blobs.
+// (Per `docs/advice-notes.md` §9 the CLI no longer auto-captures from the
+// worktree; explicit content is required, and the 1 MiB cap is applied to
+// the --pre/--post arg files — exercised in `slice_2_audit.rs`.)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn blob_cap_enforced() -> Result<()> {
+fn write_without_pre_post_stores_null_blobs() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let big = "x".repeat(200 * 1024);
     repo.write_file("big.txt", &big)?;
 
-    let session = Session::new("blob-cap");
+    let session = Session::new("blob-null");
     let out = run_advice(&repo, &session, &["add", "--write", "big.txt"])?;
     assert_success_silent(&out);
 
-    // Open the produced DB read-only and check post_blob length ≤ 64 KiB.
     let conn = rusqlite::Connection::open(session.db_path())?;
-    let post: Option<String> = conn.query_row(
-        "SELECT post_blob FROM write_events ORDER BY event_id DESC LIMIT 1",
+    let (pre, post): (Option<String>, Option<String>) = conn.query_row(
+        "SELECT pre_blob, post_blob FROM write_events ORDER BY event_id DESC LIMIT 1",
         [],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let len = post.as_ref().map(|s| s.len()).unwrap_or(0);
-    assert!(len <= 65_536, "post_blob len {len} exceeds 64 KiB cap");
-    assert!(len > 0, "post_blob should be populated");
+    assert!(pre.is_none(), "pre_blob must be NULL when --pre is omitted");
+    assert!(post.is_none(), "post_blob must be NULL when --post is omitted");
     Ok(())
 }
 

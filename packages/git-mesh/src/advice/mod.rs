@@ -10,5 +10,7 @@ pub mod intersections;
 pub mod render;
 
 pub use db::{open_store, sanitize_session_id};
-pub use events::{append_commit, append_read, append_snapshot, append_write};
+pub use events::{
+    AuditRecord, CONTENT_BYTE_CAP, append_commit, append_read, append_snapshot, append_write,
+};
 pub use flush::run_flush;

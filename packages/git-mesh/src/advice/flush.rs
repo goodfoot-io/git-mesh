@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
 
+use crate::advice::events::AuditRecord;
 use crate::advice::intersections::{Candidate, WhyMap, run_all};
 use crate::advice::render;
 use crate::types::{EngineOptions, LayerSet, RangeExtent, RangeStatus};
@@ -23,7 +24,7 @@ pub fn run_flush(
     conn: &mut Connection,
     repo: &gix::Repository,
     documentation: bool,
-) -> Result<String> {
+) -> Result<(String, AuditRecord)> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .context("begin immediate")?;
@@ -62,9 +63,9 @@ pub fn run_flush(
     let rendered = render::render(&candidates, &unseen_topics, documentation);
 
     // 6. Record flush event + additions + doc topics.
-    let flush_event_id = record_flush_event(&tx, &rendered)?;
-    record_additions(&tx, flush_event_id, &candidates)?;
-    record_doc_topics(&tx, flush_event_id, &unseen_topics)?;
+    let flush_record = record_flush_event(&tx, &rendered, documentation)?;
+    record_additions(&tx, flush_record.id, &candidates)?;
+    record_doc_topics(&tx, flush_record.id, &unseen_topics)?;
 
     // 7. Commit the transaction. Anything that mutated the DB becomes
     //    durable only on success.
@@ -76,7 +77,7 @@ pub fn run_flush(
     drop(whys);
     tx.commit().context("commit flush tx")?;
 
-    Ok(rendered)
+    Ok((rendered, flush_record))
 }
 
 // ---------------------------------------------------------------------------
@@ -181,20 +182,35 @@ fn dedup_against_seen(
     Ok(out)
 }
 
-fn record_flush_event(tx: &rusqlite::Transaction<'_>, rendered: &str) -> Result<i64> {
+fn record_flush_event(
+    tx: &rusqlite::Transaction<'_>,
+    rendered: &str,
+    documentation: bool,
+) -> Result<AuditRecord> {
     let ts = chrono::Utc::now().to_rfc3339();
-    let payload = serde_json::json!({}).to_string();
+    let output_sha = blake_short(rendered);
+    let output_len = rendered.len() as i64;
+    let payload = serde_json::json!({
+        "documentation": documentation,
+        "output_len": output_len,
+        "output_sha": output_sha,
+    });
+    let payload_str = payload.to_string();
     tx.execute(
         "INSERT INTO events(kind,ts,payload) VALUES('flush',?,?)",
-        rusqlite::params![ts, payload],
+        rusqlite::params![ts, payload_str],
     )?;
     let id = tx.last_insert_rowid();
-    let output_sha = blake_short(rendered);
     tx.execute(
         "INSERT INTO flush_events(event_id,output_sha) VALUES(?,?)",
         rusqlite::params![id, output_sha],
     )?;
-    Ok(id)
+    Ok(AuditRecord {
+        id,
+        kind: "flush",
+        ts,
+        payload,
+    })
 }
 
 fn blake_short(s: &str) -> String {
@@ -301,8 +317,10 @@ mod tests {
         let td = TempDir::new().unwrap();
         let repo = seed_repo(&td);
         let mut conn = open_conn();
-        let out = run_flush(&mut conn, &repo, false).unwrap();
+        let (out, rec) = run_flush(&mut conn, &repo, false).unwrap();
         assert_eq!(out, "");
+        assert_eq!(rec.kind, "flush");
+        assert_eq!(rec.payload["documentation"], false);
     }
 
     #[test]
