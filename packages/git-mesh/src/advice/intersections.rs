@@ -159,12 +159,17 @@ pub struct MeshRangeRow {
     pub status: String,
     pub source: String,
     pub ack: bool,
+    /// Slice 4: `""` for committed ranges, `"add"` for a staged add not
+    /// yet committed (`source == "S"`), `"remove"` for a committed range
+    /// that has a matching staged remove pending.
+    pub staged_op: String,
 }
 
 /// Load all mesh_ranges rows from the DB, indexed by mesh.
 pub fn load_mesh_ranges(conn: &Connection) -> Result<Vec<MeshRangeRow>> {
     let mut stmt = conn.prepare(
-        "SELECT mesh, path, start_line, end_line, COALESCE(status,''), COALESCE(source,''), ack \
+        "SELECT mesh, path, start_line, end_line, COALESCE(status,''), COALESCE(source,''), \
+                ack, COALESCE(staged_op,'') \
          FROM mesh_ranges",
     )?;
     let rows = stmt
@@ -180,6 +185,7 @@ pub fn load_mesh_ranges(conn: &Connection) -> Result<Vec<MeshRangeRow>> {
                     let v: i64 = r.get(6)?;
                     v != 0
                 },
+                staged_op: r.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -238,6 +244,19 @@ fn marker_with_deletion(repo: &gix::Repository, partner_path: &str, fallback: &s
     fallback.to_string()
 }
 
+/// Compose markers per §12.4. Staging precedes status: a staged add
+/// renders as `[STAGED]`, combined with `[CHANGED]` etc. as `[STAGED]
+/// [CHANGED]`. Documented marker order: staging first, then status.
+fn compose_marker(base_marker: &str, partner: &MeshRangeRow) -> String {
+    if partner.staged_op == "add" {
+        if base_marker.is_empty() {
+            return "[STAGED]".to_string();
+        }
+        return format!("[STAGED] {base_marker}");
+    }
+    base_marker.to_string()
+}
+
 pub(crate) fn detect_t1(
     conn: &Connection,
     repo: &gix::Repository,
@@ -287,11 +306,12 @@ pub(crate) fn detect_t1(
                 c.trigger_start = trigger.start_line;
                 c.trigger_end = trigger.end_line;
                 let base_marker = marker_for_status(&partner.status);
-                c.partner_marker = marker_with_deletion(repo, &partner.path, base_marker);
+                let with_del = marker_with_deletion(repo, &partner.path, base_marker);
+                c.partner_marker = compose_marker(&with_del, partner);
                 if matches!(
                     partner.status.as_str(),
                     "ORPHANED" | "MERGE_CONFLICT" | "SUBMODULE"
-                ) && c.partner_marker != "[DELETED]"
+                ) && !c.partner_marker.contains("[DELETED]")
                 {
                     // T11 terminal promotes this reason-kind.
                     c.reason_kind = ReasonKind::Terminal;
@@ -356,7 +376,8 @@ pub(crate) fn detect_t2(
                 c.trigger_start = trigger.start_line;
                 c.trigger_end = trigger.end_line;
                 let base_marker = marker_for_status(&partner.status);
-                c.partner_marker = marker_with_deletion(repo, &partner.path, base_marker);
+                let with_del = marker_with_deletion(repo, &partner.path, base_marker);
+                c.partner_marker = compose_marker(&with_del, partner);
                 c.excerpt_of_path = partner.path.clone();
                 c.excerpt_start = partner.start_line;
                 c.excerpt_end = partner.end_line;
@@ -455,6 +476,157 @@ pub(crate) fn detect_t3(
             }
         }
     }
+    Ok(out)
+}
+
+/// T3 (commit-rename variant) — for each `--commit <sha>` event recorded
+/// in the session, detect file renames via `gix` and, when the OLD path
+/// is meshed, surface partner ranges that still reference the OLD path
+/// or its basename as a literal substring.
+///
+/// Marker ordering (slice 4, decision): we leave the renamed-asset
+/// partner address bare (no marker; the rename is the news on the body
+/// side). The literal-bearing partner takes the spec clause "— still
+/// references "<old>"". gix's default rename detection (50% similarity)
+/// is used; called out in the slice report.
+pub(crate) fn detect_t3_renames(
+    conn: &Connection,
+    repo: &gix::Repository,
+    mesh_ranges: &[MeshRangeRow],
+    whys: &WhyMap,
+) -> Result<Vec<Candidate>> {
+    let mut out = Vec::new();
+    let mut stmt = conn.prepare("SELECT sha FROM commit_events WHERE sha IS NOT NULL")?;
+    let shas: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if shas.is_empty() {
+        return Ok(out);
+    }
+
+    let meshed_paths: std::collections::HashSet<&str> =
+        mesh_ranges.iter().map(|r| r.path.as_str()).collect();
+
+    let mut by_mesh: std::collections::BTreeMap<String, Vec<&MeshRangeRow>> =
+        std::collections::BTreeMap::new();
+    for row in mesh_ranges {
+        by_mesh.entry(row.mesh.clone()).or_default().push(row);
+    }
+
+    for sha in &shas {
+        let renames = match commit_rename_pairs(repo, sha) {
+            Ok(rs) => rs,
+            Err(_) => continue,
+        };
+        for (old_path, new_path) in renames {
+            if !meshed_paths.contains(old_path.as_str()) {
+                continue;
+            }
+            let old_base = std::path::Path::new(&old_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // For each mesh that includes the old path, scan partners.
+            for (mesh, rows) in &by_mesh {
+                if !rows.iter().any(|r| r.path == old_path) {
+                    continue;
+                }
+                for partner in rows {
+                    if partner.path == old_path {
+                        continue;
+                    }
+                    let Some(body) = read_partner_bytes(repo, partner) else {
+                        continue;
+                    };
+                    let mut hit_literal: Option<String> = None;
+                    if body.contains(&old_path) {
+                        hit_literal = Some(old_path.clone());
+                    } else if !old_base.is_empty() && body.contains(&old_base) {
+                        hit_literal = Some(old_base.clone());
+                    }
+                    let Some(literal) = hit_literal else { continue };
+
+                    let mut c = Candidate::bare(
+                        mesh,
+                        &why_for(whys, mesh),
+                        ReasonKind::RenameLiteral,
+                        &partner.path,
+                        partner.start_line,
+                        partner.end_line,
+                        &old_path,
+                    );
+                    c.partner_clause = format!("still references \"{literal}\"");
+                    c.excerpt_of_path = partner.path.clone();
+                    c.excerpt_start = partner.start_line;
+                    c.excerpt_end = partner.end_line;
+                    c.density = Density::L2;
+                    c.command = format!("git mesh add {mesh} {new_path}");
+                    c.trigger_start = None;
+                    c.trigger_end = None;
+                    out.push(c);
+
+                    // Companion address-only entry for the renamed-to
+                    // path. Same mesh, same reason-kind, but unique
+                    // (partner_path, trigger_path) so it survives dedup.
+                    let mut companion = Candidate::bare(
+                        mesh,
+                        &why_for(whys, mesh),
+                        ReasonKind::RenameLiteral,
+                        &new_path,
+                        None,
+                        None,
+                        &old_path,
+                    );
+                    companion.density = Density::L0;
+                    out.push(companion);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Walk one commit and return `(old_path, new_path)` rename pairs against
+/// its first parent. Uses `gix`'s default rename detection (50% similarity).
+fn commit_rename_pairs(repo: &gix::Repository, sha: &str) -> Result<Vec<(String, String)>> {
+    use gix::object::tree::diff::Change as DC;
+    let oid = repo
+        .rev_parse_single(sha)
+        .map_err(|e| anyhow::anyhow!("resolve {sha}: {e}"))?
+        .detach();
+    let commit = repo.find_object(oid)?.try_into_commit()?;
+    let Some(parent_id) = commit.parent_ids().next() else {
+        return Ok(Vec::new());
+    };
+    let parent = repo.find_object(parent_id)?.try_into_commit()?;
+    let parent_tree = parent.tree()?;
+    let new_tree = commit.tree()?;
+    let mut platform = parent_tree.changes()?;
+    platform.options(|opts| {
+        opts.track_path().track_rewrites(Some(gix::diff::Rewrites {
+            copies: None,
+            percentage: Some(0.5),
+            limit: 1000,
+            track_empty: false,
+        }));
+    });
+    let mut out: Vec<(String, String)> = Vec::new();
+    platform
+        .for_each_to_obtain_tree(&new_tree, |change| -> Result<std::ops::ControlFlow<()>> {
+            if let DC::Rewrite {
+                source_location,
+                location,
+                copy,
+                ..
+            } = change
+                && !copy
+            {
+                out.push((source_location.to_string(), location.to_string()));
+            }
+            Ok(std::ops::ControlFlow::Continue(()))
+        })
+        .ok();
     Ok(out)
 }
 
@@ -977,6 +1149,16 @@ pub(crate) fn detect_t7(
 // extent) overlaps a mesh range on a *different* mesh.
 // ---------------------------------------------------------------------------
 
+/// T8 — staging cross-cut. A staged add row in `mesh_ranges` (source `S`,
+/// `staged_op = 'add'`) that overlaps a *committed* row in a different
+/// mesh on the same path. Surfaced as a cross-cutting block per
+/// §12.9 / §12.10. Two clause variants ride on the same reason-kind:
+///   - "overlap": staged range overlaps a committed range in another mesh.
+///   - "content-differs": same `(path, extent)` recorded in another mesh
+///     whose anchored bytes differ from the staged sidecar bytes.
+///     §11 #9 third sub-case; chosen as a clause variant rather than a
+///     sibling reason kind to keep dedup keyed on the same `t8` slot
+///     per (mesh, partner range, trigger range).
 pub(crate) fn detect_t8(
     _conn: &Connection,
     repo: &gix::Repository,
@@ -984,48 +1166,135 @@ pub(crate) fn detect_t8(
     whys: &WhyMap,
 ) -> Result<Vec<Candidate>> {
     let mut out = Vec::new();
-
-    // Iterate known mesh names' staging areas; find staged adds that overlap
-    // another mesh's ranges in the same file.
-    let names = crate::mesh::list_mesh_names(repo).unwrap_or_default();
-    for staged_mesh in &names {
-        let Ok(staging) = crate::staging::read_staging(repo, staged_mesh) else {
+    let staged_rows: Vec<&MeshRangeRow> = mesh_ranges
+        .iter()
+        .filter(|r| r.staged_op == "add")
+        .collect();
+    if staged_rows.is_empty() {
+        return Ok(out);
+    }
+    for staged in &staged_rows {
+        let (Some(s_start), Some(s_end)) = (staged.start_line, staged.end_line) else {
             continue;
         };
-        for a in &staging.adds {
-            let (s_start, s_end) = (a.start(), a.end());
-            for row in mesh_ranges {
-                if &row.mesh == staged_mesh || row.path != a.path {
-                    continue;
-                }
-                let (Some(ms), Some(me)) = (row.start_line, row.end_line) else {
-                    continue;
-                };
-                if (s_end as i64) < ms || (s_start as i64) > me {
-                    continue;
-                }
-                let mut c = Candidate::bare(
-                    &row.mesh,
-                    &why_for(whys, &row.mesh),
-                    ReasonKind::StagingCrossCut,
-                    &row.path,
-                    row.start_line,
-                    row.end_line,
-                    &a.path,
-                );
-                c.trigger_start = Some(s_start as i64);
-                c.trigger_end = Some(s_end as i64);
-                c.partner_clause = format!(
-                    "{staged_mesh} [STAGED] overlaps at {}#L{}-L{}",
-                    a.path, s_start, s_end
-                );
-                c.density = Density::L2;
-                c.command = format!("git mesh restore {staged_mesh}");
-                out.push(c);
+        for row in mesh_ranges {
+            if row.mesh == staged.mesh || row.path != staged.path {
+                continue;
             }
+            if row.staged_op == "add" {
+                continue; // committed rows only as the partner
+            }
+            let (Some(ms), Some(me)) = (row.start_line, row.end_line) else {
+                continue;
+            };
+            if s_end < ms || s_start > me {
+                continue;
+            }
+            let mut c = Candidate::bare(
+                &staged.mesh,
+                &why_for(whys, &staged.mesh),
+                ReasonKind::StagingCrossCut,
+                &row.path,
+                row.start_line,
+                row.end_line,
+                &staged.path,
+            );
+            c.trigger_start = staged.start_line;
+            c.trigger_end = staged.end_line;
+            // Carry the structural details on the candidate; the renderer
+            // composes the §12.10 block from these fields.
+            c.partner_clause = format!(
+                "overlap|{}|{}|{}|{}|{}|{}|{}|{}",
+                staged.mesh,
+                row.mesh,
+                row.path,
+                ms.max(s_start),
+                me.min(s_end),
+                row.start_line.unwrap_or(0),
+                row.end_line.unwrap_or(0),
+                // staged extent appears via trigger_start/end; we pack the
+                // committed extent in the clause for the renderer.
+                "",
+            );
+            c.density = Density::L2;
+            // No L2 command in the §12.10 example body; keep empty so the
+            // render stays faithful.
+            c.command = String::new();
+            out.push(c);
+        }
+
+        // Content-differs variant: same `(path, extent)` recorded in a
+        // *different* mesh with different anchored bytes than the staged
+        // sidecar. §11 #9 third sub-case.
+        for row in mesh_ranges {
+            if row.mesh == staged.mesh
+                || row.path != staged.path
+                || row.staged_op == "add"
+                || row.start_line != staged.start_line
+                || row.end_line != staged.end_line
+            {
+                continue;
+            }
+            let staged_bytes = read_staged_sidecar_bytes(repo, &staged.mesh, staged);
+            let other_bytes = read_committed_range_bytes(repo, row);
+            let (Some(a), Some(b)) = (staged_bytes, other_bytes) else {
+                continue;
+            };
+            if a == b {
+                continue;
+            }
+            let mut c = Candidate::bare(
+                &staged.mesh,
+                &why_for(whys, &staged.mesh),
+                ReasonKind::StagingCrossCut,
+                &row.path,
+                row.start_line,
+                row.end_line,
+                &staged.path,
+            );
+            c.trigger_start = staged.start_line;
+            c.trigger_end = staged.end_line;
+            c.partner_clause = format!(
+                "content_differs|{}|{}|{}|{}|{}",
+                staged.mesh,
+                row.mesh,
+                row.path,
+                row.start_line.unwrap_or(0),
+                row.end_line.unwrap_or(0),
+            );
+            c.density = Density::L2;
+            out.push(c);
         }
     }
     Ok(out)
+}
+
+fn read_staged_sidecar_bytes(
+    repo: &gix::Repository,
+    mesh: &str,
+    row: &MeshRangeRow,
+) -> Option<Vec<u8>> {
+    // Find the staged add by matching path+extent and read its sidecar.
+    let staging = crate::staging::read_staging(repo, mesh).ok()?;
+    let extent_match = staging.adds.iter().find(|a| {
+        a.path == row.path
+            && match (a.extent, row.start_line, row.end_line) {
+                (
+                    crate::types::RangeExtent::Lines { start, end },
+                    Some(rs),
+                    Some(re),
+                ) => start as i64 == rs && end as i64 == re,
+                (crate::types::RangeExtent::Whole, None, None) => true,
+                _ => false,
+            }
+    })?;
+    let path = crate::staging::sidecar_path_pub(repo, mesh, extent_match.line_number).ok()?;
+    std::fs::read(path).ok()
+}
+
+fn read_committed_range_bytes(repo: &gix::Repository, row: &MeshRangeRow) -> Option<Vec<u8>> {
+    let body = read_partner_bytes(repo, row)?;
+    Some(body.into_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,46 +1302,54 @@ pub(crate) fn detect_t8(
 // a mesh with no ranges.
 // ---------------------------------------------------------------------------
 
+/// T9 — empty-mesh risk. Computes from the in-flush mesh_ranges snapshot
+/// directly: a mesh whose committed rows are all marked `staged_op='remove'`
+/// AND has no `staged_op='add'` rows would end up with zero ranges if the
+/// staged ops were committed. Renders one block per affected mesh listing
+/// the removed ranges, per §12.8 T9 / §12.10.
 pub(crate) fn detect_t9(
     _conn: &Connection,
-    repo: &gix::Repository,
+    _repo: &gix::Repository,
     mesh_ranges: &[MeshRangeRow],
     whys: &WhyMap,
 ) -> Result<Vec<Candidate>> {
     let mut out = Vec::new();
-    let names = crate::mesh::list_mesh_names(repo).unwrap_or_default();
-
     let mut by_mesh: std::collections::BTreeMap<String, Vec<&MeshRangeRow>> =
         std::collections::BTreeMap::new();
     for row in mesh_ranges {
         by_mesh.entry(row.mesh.clone()).or_default().push(row);
     }
-
-    for mesh in &names {
-        let Some(rows) = by_mesh.get(mesh) else {
-            continue;
-        };
-        let Ok(staging) = crate::staging::read_staging(repo, mesh) else {
-            continue;
-        };
-        if staging.removes.is_empty() {
+    for (mesh, rows) in &by_mesh {
+        let any_remove = rows.iter().any(|r| r.staged_op == "remove");
+        if !any_remove {
             continue;
         }
-        // Any remaining mesh range not covered by a removal?
-        let remaining = rows.iter().filter(|r| {
-            !staging.removes.iter().any(|rm| {
-                rm.path == r.path
-                    && r.start_line.map(|v| v as u32) == Some(rm.start())
-                    && r.end_line.map(|v| v as u32) == Some(rm.end())
+        let any_committed_keep = rows
+            .iter()
+            .any(|r| r.staged_op != "remove" && r.staged_op != "add");
+        if any_committed_keep {
+            continue;
+        }
+        let any_staged_add = rows.iter().any(|r| r.staged_op == "add");
+        if any_staged_add {
+            continue;
+        }
+        // Emit a single T9 candidate carrying every removed range in the
+        // partner_clause. The renderer parses this to produce the block
+        // shape from §12.10.
+        let mut removed_addrs: Vec<String> = rows
+            .iter()
+            .filter(|r| r.staged_op == "remove")
+            .map(|r| {
+                let suffix = match (r.start_line, r.end_line) {
+                    (Some(s), Some(e)) => format!("#L{s}-L{e}"),
+                    _ => String::new(),
+                };
+                format!("{}{}", r.path, suffix)
             })
-        });
-        if remaining.count() > 0 {
-            continue;
-        }
-        if !staging.adds.is_empty() {
-            continue;
-        }
-        // Empty-mesh risk.
+            .collect();
+        removed_addrs.sort();
+        removed_addrs.dedup();
         let mut c = Candidate::bare(
             mesh,
             &why_for(whys, mesh),
@@ -1082,9 +1359,10 @@ pub(crate) fn detect_t9(
             None,
             "",
         );
-        c.partner_clause = "staged removals would leave this mesh empty".into();
+        c.partner_clause = format!("removed:{}", removed_addrs.join(","));
         c.density = Density::L2;
-        c.command = format!("git mesh delete {mesh}");
+        // Renderer handles the multi-line command snippet.
+        c.command = format!("git mesh add    {mesh} <path>[#L<s>-L<e>]\ngit mesh delete {mesh}");
         out.push(c);
     }
     Ok(out)
@@ -1319,6 +1597,7 @@ pub fn run_all(
     out.extend(detect_t1(conn, repo, mesh_ranges, whys)?);
     out.extend(detect_t2(conn, repo, mesh_ranges, whys)?);
     out.extend(detect_t3(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t3_renames(conn, repo, mesh_ranges, whys)?);
     out.extend(detect_t4(conn, mesh_ranges, whys)?);
     out.extend(detect_t5(conn, mesh_ranges, whys)?);
     out.extend(detect_t6(conn, repo, mesh_ranges, whys)?);
@@ -1504,7 +1783,7 @@ mod tests {
                 end_line: Some(10),
                 status: "FRESH".to_string(),
                 source: "W".to_string(),
-                ack: false,
+                ack: false, staged_op: String::new(),
             },
             // Partner range: b.rs (same mesh, different file)
             MeshRangeRow {
@@ -1514,7 +1793,7 @@ mod tests {
                 end_line: Some(5),
                 status: "FRESH".to_string(),
                 source: "W".to_string(),
-                ack: false,
+                ack: false, staged_op: String::new(),
             },
         ];
 
@@ -1560,7 +1839,7 @@ mod tests {
                 end_line: None,
                 status: "FRESH".to_string(),
                 source: "W".to_string(),
-                ack: false,
+                ack: false, staged_op: String::new(),
             },
             MeshRangeRow {
                 mesh: "m".to_string(),
@@ -1569,7 +1848,7 @@ mod tests {
                 end_line: None,
                 status: "FRESH".to_string(),
                 source: "W".to_string(),
-                ack: false,
+                ack: false, staged_op: String::new(),
             },
         ];
 

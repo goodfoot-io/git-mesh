@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use std::path::PathBuf;
 
 /// Expected schema version stored in `schema_meta`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Base directory for all session DB and audit files.
 pub const SESSION_DIR: &str = "/tmp/git-mesh-claude-code";
@@ -210,7 +210,10 @@ CREATE TABLE IF NOT EXISTS mesh_ranges (
   end_line   INTEGER,
   status     TEXT,
   source     TEXT,
-  ack        INTEGER NOT NULL DEFAULT 0
+  ack        INTEGER NOT NULL DEFAULT 0,
+  -- Slice 4: '' for committed ranges, 'add' for a staged add (range not
+  -- yet committed), 'remove' for a committed range with a staged removal.
+  staged_op  TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_ranges_path ON mesh_ranges(path);
 CREATE INDEX IF NOT EXISTS idx_mesh_ranges_mesh ON mesh_ranges(mesh);

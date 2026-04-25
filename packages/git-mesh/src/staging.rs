@@ -145,6 +145,61 @@ pub struct SidecarMeta {
 // Paths.
 // ---------------------------------------------------------------------------
 
+/// List mesh names with any presence in `.git/mesh/staging/`. Returns
+/// names decoded back from the `%2F` filesystem encoding. Used by advice
+/// to surface staged-only meshes (no committed mesh ref yet) in the
+/// flush snapshot. Missing staging dir yields an empty Vec.
+pub fn list_staged_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
+    let dir = staging_dir(repo)?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        let fname = entry.file_name();
+        let Some(fname) = fname.to_str() else {
+            continue;
+        };
+        // The mesh-name component is the first segment up to:
+        //   - end of name (the ops file itself)
+        //   - `.why` suffix
+        //   - `.<digits>(.meta)?` sidecar suffix
+        let core = if let Some(stripped) = fname.strip_suffix(".why") {
+            stripped.to_string()
+        } else if let Some(idx) = fname.rfind('.') {
+            // could be `<name>.<N>` or `<name>.<N>.meta` or part of a name.
+            let (head, tail) = fname.split_at(idx);
+            let tail = &tail[1..];
+            if tail == "meta" {
+                // strip `.meta` then strip trailing `.<N>`
+                if let Some(idx2) = head.rfind('.') {
+                    let (head2, tail2) = head.split_at(idx2);
+                    let tail2 = &tail2[1..];
+                    if !tail2.is_empty() && tail2.chars().all(|c| c.is_ascii_digit()) {
+                        head2.to_string()
+                    } else {
+                        fname.to_string()
+                    }
+                } else {
+                    fname.to_string()
+                }
+            } else if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+                head.to_string()
+            } else {
+                fname.to_string()
+            }
+        } else {
+            fname.to_string()
+        };
+        if core.is_empty() {
+            continue;
+        }
+        out.insert(decode_name_from_fs(&core));
+    }
+    Ok(out.into_iter().collect())
+}
+
 fn staging_dir(repo: &gix::Repository) -> Result<PathBuf> {
     let wd = work_dir(repo)?;
     Ok(wd.join(".git").join("mesh").join("staging"))
@@ -173,6 +228,12 @@ fn ops_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
 
 fn why_path(repo: &gix::Repository, name: &str) -> Result<PathBuf> {
     Ok(staging_dir(repo)?.join(format!("{}.why", encode_name_for_fs(name))))
+}
+
+/// Public wrapper around the per-add sidecar path for callers outside
+/// the `staging` module (slice 4 advice/T8 content-differs detector).
+pub fn sidecar_path_pub(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {
+    sidecar_path(repo, name, n)
 }
 
 pub(crate) fn sidecar_path(repo: &gix::Repository, name: &str, n: u32) -> Result<PathBuf> {

@@ -203,9 +203,49 @@ fn render_cross_cutting(c: &Candidate) -> String {
             }
         }
         ReasonKind::StagingCrossCut => {
-            out.push_str(&format!("# {} [STAGED]\n", c.mesh));
-            if !c.partner_clause.is_empty() {
-                out.push_str(&format!("# {}.\n", c.partner_clause));
+            // partner_clause is a structured packing produced by
+            // detect_t8: either "overlap|<staged_mesh>|<other_mesh>|<path>|<is>|<ie>|<os>|<oe>|"
+            // or "content_differs|<staged_mesh>|<other_mesh>|<path>|<os>|<oe>".
+            let parts: Vec<&str> = c.partner_clause.split('|').collect();
+            match parts.first().copied() {
+                Some("overlap") if parts.len() >= 8 => {
+                    let staged_mesh = parts[1];
+                    let other_mesh = parts[2];
+                    let path = parts[3];
+                    let is_ = parts[4];
+                    let ie = parts[5];
+                    let os = parts[6];
+                    let oe = parts[7];
+                    let s_start = c.trigger_start.unwrap_or(0);
+                    let s_end = c.trigger_end.unwrap_or(0);
+                    out.push_str(&format!(
+                        "# {staged_mesh} [STAGED] overlaps {other_mesh} at {path}#L{is_}-L{ie}.\n"
+                    ));
+                    out.push_str(&format!("# - {other_mesh}: {path}#L{os}-L{oe}\n"));
+                    out.push_str(&format!(
+                        "# - {staged_mesh} [STAGED]: {path}#L{s_start}-L{s_end}\n"
+                    ));
+                }
+                Some("content_differs") if parts.len() >= 6 => {
+                    let staged_mesh = parts[1];
+                    let other_mesh = parts[2];
+                    let path = parts[3];
+                    let os = parts[4];
+                    let oe = parts[5];
+                    out.push_str(&format!(
+                        "# {staged_mesh} [STAGED] re-records {path}#L{os}-L{oe} with content that differs from {other_mesh}.\n"
+                    ));
+                    out.push_str(&format!("# - {other_mesh}: {path}#L{os}-L{oe}\n"));
+                    out.push_str(&format!(
+                        "# - {staged_mesh} [STAGED]: {path}#L{os}-L{oe}\n"
+                    ));
+                }
+                _ => {
+                    out.push_str(&format!("# {} [STAGED]\n", c.mesh));
+                    if !c.partner_clause.is_empty() {
+                        out.push_str(&format!("# {}.\n", c.partner_clause));
+                    }
+                }
             }
             if !c.command.is_empty() {
                 out.push_str("#\n");
@@ -218,13 +258,25 @@ fn render_cross_cutting(c: &Candidate) -> String {
             }
         }
         ReasonKind::EmptyMesh => {
-            out.push_str(&format!("# {} mesh: {}\n", c.mesh, c.mesh_why));
-            if !c.partner_clause.is_empty() {
-                out.push_str(&format!("# {}.\n", c.partner_clause));
+            // partner_clause is "removed:<addr1>,<addr2>,..." packed by
+            // detect_t9. Render the §12.10 / §12.12 T9 template verbatim.
+            let removed = c
+                .partner_clause
+                .strip_prefix("removed:")
+                .unwrap_or("");
+            let addrs: Vec<&str> = removed.split(',').filter(|s| !s.is_empty()).collect();
+            out.push_str(&format!(
+                "# The staged removal would leave {} with no ranges.\n",
+                c.mesh
+            ));
+            for addr in &addrs {
+                out.push_str(&format!("# - {}: removing {addr}\n", c.mesh));
             }
             if !c.command.is_empty() {
                 out.push_str("#\n");
-                out.push_str("# To retire:\n");
+                out.push_str(
+                    "# To either add a replacement range or retire the mesh:\n",
+                );
                 for line in c.command.lines() {
                     out.push_str("#   ");
                     out.push_str(line);

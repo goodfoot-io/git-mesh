@@ -437,6 +437,12 @@ the recorded content at its recorded lines."
 | `[ORPHANED]`   | Mesh range cannot be located.                              |
 | `[STAGED]`     | Change is staged but not yet committed.                    |
 
+**Marker ordering (slice 4 decision):** when multiple markers apply on
+the same partner line, render `[STAGED]` first, followed by the
+status-derived marker — e.g. `[STAGED] [CHANGED]`. Staging precedes
+status because the staged state is the news; the underlying status is
+what the staged change is layered on top of.
+
 Clauses (prose after an em-dash) are reserved for states a marker cannot
 express — e.g. `— still references "/images/logo.png"` when a partner
 holds an old path as a literal.
@@ -516,10 +522,18 @@ Templates:
 | T5  | Losing coherence              | L2              | #10                          | "narrow or retire"     |
 | T6  | Symbol rename hits in partner | L2              | #11                          | "exported symbols"     |
 | T7  | New-group candidate           | L2              | #5, #6                       | "recording a group"    |
-| T8  | Staging cross-cut             | L2              | #9 (overlap)                 | "cross-mesh overlap"   |
+| T8  | Staging cross-cut             | L2              | #9 (overlap, content-differs) | "cross-mesh overlap"   |
 | T9  | Empty-mesh risk               | L2              | #9 (staged rm empties mesh)  | "empty groups"         |
 | T10 | Pending-commit re-anchor      | L0              | #4                           | (none — L0)            |
 | T11 | Terminal status               | L0              | ORPHANED/CONFLICT/SUBMODULE  | "terminal states"      |
+
+T8 carries two clause variants on the same reason-kind: an "overlap"
+form when a staged add overlaps a committed range in another mesh on
+the same path, and a "content-differs" form when a staged add records
+the same `(path, extent)` as another mesh with different bytes
+(§11 #9 third sub-case). Both variants share the dedup slot
+`staging_cross_cut` so a flush re-emission requires the staged tuple to
+have changed.
 
 T1 subsumes what was previously split across partner-addresses and
 predicted-status-flip — the bracket marker on the partner line carries the

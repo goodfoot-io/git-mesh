@@ -13,6 +13,7 @@ use crate::advice::events::AuditRecord;
 use crate::advice::intersections::{Candidate, WhyMap, run_all};
 use crate::advice::render;
 use crate::types::{EngineOptions, LayerSet, RangeExtent, RangeStatus};
+use std::collections::BTreeSet;
 
 /// Run a flush: rebuild snapshot, detect intersections, dedup, render,
 /// record seen-set + doc topics. Returns the rendered markdown string.
@@ -100,13 +101,18 @@ fn rebuild_mesh_ranges(tx: &rusqlite::Transaction<'_>, repo: &gix::Repository) -
     let meshes = crate::resolver::stale_meshes(repo, options)?;
 
     let mut insert = tx.prepare(
-        "INSERT INTO mesh_ranges(mesh,path,start_line,end_line,status,source,ack) \
-         VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO mesh_ranges(mesh,path,start_line,end_line,status,source,ack,staged_op) \
+         VALUES(?,?,?,?,?,?,?,?)",
     )?;
 
+    let mut committed_names: BTreeSet<String> = BTreeSet::new();
     for mesh in &meshes {
+        committed_names.insert(mesh.name.clone());
         let first_line = mesh.message.lines().next().unwrap_or("").to_string();
         whys.insert(mesh.name.clone(), first_line);
+        // Read staging once per mesh so we can mark committed ranges as
+        // staged-for-removal in the same pass.
+        let staging = crate::staging::read_staging(repo, &mesh.name).ok();
         for r in &mesh.ranges {
             let (s, e) = match r.anchored.extent {
                 RangeExtent::Lines { start, end } => (Some(start as i64), Some(end as i64)),
@@ -120,14 +126,53 @@ fn rebuild_mesh_ranges(tx: &rusqlite::Transaction<'_>, repo: &gix::Repository) -
                 None => "",
             };
             let ack = if r.acknowledged_by.is_some() { 1 } else { 0 };
+            let path_str = r.anchored.path.to_string_lossy().into_owned();
+            let staged_op = staging
+                .as_ref()
+                .map(|st| {
+                    let matches_remove = st.removes.iter().any(|rm| {
+                        rm.path == path_str
+                            && match (rm.extent, r.anchored.extent) {
+                                (
+                                    RangeExtent::Lines { start: rs, end: re },
+                                    RangeExtent::Lines { start: as_, end: ae },
+                                ) => rs == as_ && re == ae,
+                                (RangeExtent::Whole, RangeExtent::Whole) => true,
+                                _ => false,
+                            }
+                    });
+                    if matches_remove { "remove" } else { "" }
+                })
+                .unwrap_or("");
             insert.execute(rusqlite::params![
-                mesh.name,
-                r.anchored.path.to_string_lossy().into_owned(),
-                s,
-                e,
-                status,
-                src,
-                ack,
+                mesh.name, path_str, s, e, status, src, ack, staged_op,
+            ])?;
+        }
+    }
+
+    // Slice 4: include staged adds (and staged-only meshes) so the
+    // intersection layer can see ranges that haven't reached HEAD/Index
+    // yet. Each staged add becomes a row with `source='S'` and
+    // `staged_op='add'`; the why is taken from the staged `.why` if the
+    // mesh has no committed message yet.
+    let staged_names = crate::staging::list_staged_mesh_names(repo).unwrap_or_default();
+    for name in &staged_names {
+        let Ok(staging) = crate::staging::read_staging(repo, name) else {
+            continue;
+        };
+        if !committed_names.contains(name)
+            && let Some(w) = &staging.why
+        {
+            let first_line = w.lines().next().unwrap_or("").to_string();
+            whys.entry(name.clone()).or_insert(first_line);
+        }
+        for add in &staging.adds {
+            let (s, e) = match add.extent {
+                RangeExtent::Lines { start, end } => (Some(start as i64), Some(end as i64)),
+                RangeExtent::Whole => (None, None),
+            };
+            insert.execute(rusqlite::params![
+                name, add.path, s, e, "FRESH", "S", 0, "add",
             ])?;
         }
     }
