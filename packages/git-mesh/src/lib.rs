@@ -14,6 +14,7 @@
 //! * [`validation`]  — name validation (§3.5, §10.2).
 //! * [`cli`]         — clap surface; consumed by the binary.
 
+pub mod advice;
 pub mod cli;
 pub mod file_index;
 pub mod git;
@@ -36,7 +37,7 @@ pub use range::{create_range, parse_range, range_ref_path, read_range, serialize
 pub use resolver::{culprit_commit, resolve_mesh, resolve_range, stale_meshes};
 pub use staging::{
     StagedAdd, StagedConfig, StagedRemove, Staging, append_add, append_config, append_remove,
-    clear_staging, read_staging, set_why,
+    clear_staging, list_staged_mesh_names, read_staging, set_why,
 };
 pub use sync::{default_remote, ensure_refspec_configured, fetch_mesh_refs, push_mesh_refs};
 pub use types::*;

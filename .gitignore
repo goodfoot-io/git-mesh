@@ -71,3 +71,11 @@ yarn-error.log*
 .worktrees
 *.lock
 .devcontainer/home/
+
+# devcontainer ssh paste-in scripts
+scripts/ssh/
+
+# git-mesh CLI binaries (produced by cargo build / postinstall)
+packages/git-mesh/bin/git-mesh
+npm/git-mesh-*/bin/git-mesh
+npm/git-mesh-*/bin/git-mesh.exe

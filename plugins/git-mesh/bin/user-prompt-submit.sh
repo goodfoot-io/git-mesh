@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook: scan the prompt for repo-relative file paths and
-# inject a compact list of meshes touching them, so Claude has the
-# relationship context before its first tool call.
+# UserPromptSubmit hook: scan the prompt for repo-relative file paths,
+# record read events, and flush mesh advice so Claude has context first.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -13,6 +12,9 @@ payload="$(cat)"
 prompt="$(jq -r '.prompt // empty' <<<"$payload")"
 [[ -z "$prompt" ]] && exit 0
 
+session_id="$(jq -r '.session_id // empty' <<<"$payload")"
+[[ -z "$session_id" ]] && exit 0
+
 repo_root="$(git rev-parse --show-toplevel)"
 
 # Extract plausible path tokens: contain a slash or a dotted extension,
@@ -23,9 +25,9 @@ mapfile -t candidates < <(
 )
 [[ "${#candidates[@]}" -eq 0 ]] && exit 0
 
-declare -A seen_mesh=()
-lines=""
+added=0
 for token in "${candidates[@]}"; do
+  # Strip trailing punctuation
   while :; do
     case "$token" in
       *.|*,|*\;|*:|*\)|*\]|*\}) token="${token%?}" ;;
@@ -38,44 +40,20 @@ for token in "${candidates[@]}"; do
   if [[ ! -e "$repo_root/$path" && ! -e "$path" ]]; then
     continue
   fi
-  while read -r m; do
-    [[ -z "$m" ]] && continue
-    [[ -n "${seen_mesh[$m]:-}" ]] && continue
-    seen_mesh[$m]=1
-    why="$(git mesh why "$m" 2>/dev/null || true)"
-    summary="$(render_mesh_summary "$m")"
-    stale="$(render_stale "$m")"
-    [[ -n "$lines" ]] && lines+=$'\n'
-    lines+="$m mesh: $why"$'\n'
-    if [[ -n "$summary" ]]; then
-      while IFS= read -r range_line; do
-        [[ -z "$range_line" ]] && continue
-        range="${range_line##* }"
-        status="$(
-          awk -v range="$range" '$NF == range && $1 != "FRESH" { print $1; exit }' <<<"$stale"
-        )"
-        if [[ -n "$status" ]]; then
-          lines+="- $range [$status]"$'\n'
-        else
-          lines+="- $range"$'\n'
-        fi
-      done <<<"$summary"
-    fi
-  done < <(meshes_for_path "$token")
+  git mesh advice "$session_id" add --read "$path" 2>/dev/null || true
+  added=1
 done
 
-[[ -z "$lines" ]] && exit 0
+[[ "$added" -eq 0 ]] && exit 0
 
-emit_additional_context "UserPromptSubmit" "$lines"
+output="$(git mesh advice "$session_id" 2>/dev/null || true)"
+[[ -n "$output" ]] && emit_additional_context "UserPromptSubmit" "$output"
+exit 0
 
 # Example stdin:
-# {"hook_event_name":"UserPromptSubmit","prompt":"Please edit api/charge.ts."}
+# {"session_id":"abc123","hook_event_name":"UserPromptSubmit","prompt":"Please edit api/charge.ts."}
 #
 # Example additionalContext:
-# billing/checkout-request-flow mesh: Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.
-# - web/checkout.tsx#L88-L120
-# - api/charge.ts#L30-L76 [CHANGED]
-#
-# billing/charge-amount-contract mesh: Charge amount contract shared between the browser payload and the server-side Stripe call.
-# - api/charge.ts#L30-L76 [CHANGED]
-# - server/stripe.ts#L12-L44
+# # billing/checkout-request-flow mesh: Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.
+# # - api/charge.ts#L30-L76
+# # - web/checkout.tsx#L88-L120

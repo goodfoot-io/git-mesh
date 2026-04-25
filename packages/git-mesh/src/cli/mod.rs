@@ -16,6 +16,7 @@
 //!   as a subcommand; anything else is a mesh name passed to the
 //!   `Show` handler.
 
+pub mod advice;
 pub mod commit;
 pub mod pre_commit;
 pub mod show;
@@ -95,6 +96,9 @@ pub enum Commands {
     /// Fail the current commit if the in-flight changes would leave any mesh stale.
     #[command(name = "pre-commit")]
     PreCommit,
+
+    /// Append events and flush session-scoped advice.
+    Advice(advice::AdviceArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -378,5 +382,6 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         Commands::Fetch(args) => sync::run_fetch(repo, args),
         Commands::Push(args) => sync::run_push(repo, args),
         Commands::PreCommit => pre_commit::run_pre_commit(repo),
+        Commands::Advice(args) => advice::run_advice(repo, args),
     }
 }

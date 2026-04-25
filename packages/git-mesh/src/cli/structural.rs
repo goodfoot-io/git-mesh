@@ -195,13 +195,17 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                 continue;
             }
             if let Ok(n) = rest.parse::<u32>() {
-                sidecars.push((base.to_string(), n, e.path()));
+                // `base` is filesystem-encoded (`%2F` for `/` per
+                // `staging::encode_name_for_fs`); decode for display and
+                // for matching the ops-file basename.
+                let decoded = crate::staging::decode_name_from_fs(base);
+                sidecars.push((decoded, n, e.path()));
                 continue;
             }
             // Unknown extension — skip
             continue;
         }
-        ops_files.push((fn_str.to_string(), e.path()));
+        ops_files.push((crate::staging::decode_name_from_fs(fn_str), e.path()));
     }
 
     for (name, path) in &ops_files {
@@ -233,7 +237,10 @@ fn check_staging(git_dir: &std::path::Path, out: &mut Vec<DoctorFinding>) {
                 if anchor.is_none() {
                     // expect sidecar <name>.<add_n>
                     expected_sidecars.insert(add_n);
-                    let sidecar_p = dir.join(format!("{name}.{add_n}"));
+                    let sidecar_p = dir.join(format!(
+                        "{}.{add_n}",
+                        crate::staging::encode_name_for_fs(name)
+                    ));
                     if !sidecar_p.exists() {
                         out.push(DoctorFinding {
                             code: DoctorCode::StagingCorrupt,

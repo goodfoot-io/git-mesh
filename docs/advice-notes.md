@@ -78,13 +78,20 @@ to visit**; nothing reads as an alarm.
 
 ## 5. Consequence-centric rule
 
-> Advice describes consequences on partners the developer is not already
-> looking at. It never states the developer's own action.
+> Advice describes consequences. Each mesh's partner list shows every
+> range the mesh pins, including the range the developer just touched,
+> but markers only appear when state is non-default. The trigger range
+> carries its marker (`[CHANGED]`, `[STAGED]`, `[WILL RE-ANCHOR]`, …) so
+> the developer can verify their own change registered; partners without
+> markers are unchanged-since-anchor.
 
 Corollaries:
 
-- A rename / edit / commit appears only as the minimum context needed to
-  make the partner line understandable; the **news is the partner**.
+- The trigger range is included for self-verification, not as the news;
+  the body of the message — clauses, excerpts, commands — is still
+  scoped to the partners. The **news is the partner**, and a
+  trigger-range entry is the minimum context that makes the partner
+  line understandable in situ.
 - Excerpt depth scales with event certainty: a read of a range gets an
   address only; an edit crossing a mesh range gets a partner excerpt; a
   rename of a referenced asset gets an excerpt plus a runnable command.
@@ -142,9 +149,23 @@ JSONL file records the same events for audit and post-hoc debugging.
 - **Primary store:** `/tmp/git-mesh-claude-code/<sessionId>.db` — SQLite
   in WAL mode. All queries (seen-set lookups, intersection computation,
   flush composition) run as SQL.
-- **Audit log:** `/tmp/git-mesh-claude-code/<sessionId>.jsonl` — one line
-  per event, written alongside each INSERT. Not load-bearing; can be
-  tailed with `tail -f`, grepped, or re-ingested into a fresh DB.
+- **Audit log:** `/tmp/git-mesh-claude-code/<sessionId>.jsonl` — one
+  newline-terminated JSON object per event, written immediately after
+  the SQL `INSERT` succeeds (SQL-first, audit-second; if the audit
+  append fails, the command fails — fail-closed). Each line has the
+  shape
+
+  ```json
+  {"id": <int>, "kind": "<read|write|commit|snapshot|flush>",
+   "payload": <object>, "ts": "<rfc3339>"}
+  ```
+
+  The `payload` object is the *same* JSON value stored in
+  `events.payload`; the JSONL line is a strict superset (the row's id,
+  kind, and ts wrapped around the canonical payload). Keys are emitted
+  in alphabetical order so the byte form is deterministic and
+  rebuildable from SQL alone via
+  `git mesh advice <sessionId> --rebuild-audit-from-db`.
 - **Content chunks** (`pre_blob`, `post_blob` on write events): inlined
   as TEXT columns (and inlined in the audit line). No blob-SHA indirection.
 - **Concurrency:** SQLite WAL handles multiple writers cleanly; the audit
@@ -280,7 +301,19 @@ event-producing system is not load-bearing.
 - **Ranges** — `path#Ls-Le`, or whole-file.
 - **Content chunks** — pre- and post-text for write events; used to
   compute the precise post-edit line extent and the structural shape of
-  the change.
+  the change. Provided via `--pre <PATH>` and `--post <PATH-or-->` on
+  `add --write`. Only `--post` is stdin-eligible (`-`); the pre side is
+  file-only so the two inputs cannot collide on stdin. Each side is
+  capped at **1 MiB** of valid UTF-8; oversize or non-text input is
+  rejected. Both flags are optional — when omitted the payload stores
+  `null` for that side and downstream heuristics that need content
+  (T6 symbol-rename, etc.) are suppressed rather than misfiring on
+  garbage. The `--write` range describes the **pre** extent (the bytes
+  about to be overwritten): when `--pre` is supplied, its line count
+  overrides the worktree's for the `#Ls-Le` range bound check; `--post`
+  is intentionally **not** an upper bound, since T4 ("range collapse")
+  is exactly the case where the post is shorter than the recorded
+  write range.
 - **Commit identifiers** — SHAs landed during the session, recorded via
   `add --commit`.
 - **Snapshot references** — `tree_sha` + `index_sha`, recorded via
@@ -332,7 +365,12 @@ dedup key is `(mesh, reason-kind, range)`.
    surface the partner with the concrete text to check.
 8. **Edit shrinks a meshed range** — post-edit extent collapses the range
    toward zero lines. Surface the *partner* (the related range is now
-   over-specified relative to this one), not the edited side.
+   over-specified relative to this one), not the edited side. Threshold
+   (slice 3): fires only when `--post` content is supplied AND the post
+   line count is ≤ 50% of the recorded extent AND the difference is ≥
+   2 lines; no `--post`, no T4 (fail-closed). The re-record command
+   uses the post line count as the new extent, anchored at the
+   recorded start.
 9. **Staging-area cross-cuts.** Only surfaces what the developer's own
    command output will not show:
    - a staged `add` range overlaps a range in a *different* mesh;
@@ -399,6 +437,12 @@ the recorded content at its recorded lines."
 | `[ORPHANED]`   | Mesh range cannot be located.                              |
 | `[STAGED]`     | Change is staged but not yet committed.                    |
 
+**Marker ordering (slice 4 decision):** when multiple markers apply on
+the same partner line, render `[STAGED]` first, followed by the
+status-derived marker — e.g. `[STAGED] [CHANGED]`. Staging precedes
+status because the staged state is the news; the underlying status is
+what the staged change is layered on top of.
+
 Clauses (prose after an em-dash) are reserved for states a marker cannot
 express — e.g. `— still references "/images/logo.png"` when a partner
 holds an old path as a literal.
@@ -423,8 +467,17 @@ Excerpt rules (L1, L2):
 - First 10 lines of the range (whole range if shorter).
 - Fence with language inferred from extension (`ts`, `tsx`, `html`, `rs`,
   `py`; plain otherwise).
-- Binary / image / LFS / submodule / deleted: no excerpt, address only.
+- Binary / image / LFS / submodule / deleted / whole-file pins: no
+  excerpt, address only. The renderer suppresses both the fenced body
+  *and* the address-only excerpt header for these cases — no empty
+  paragraph is emitted.
 - Truncate lines longer than ~200 chars with a trailing `…`.
+- Excerpts are deduplicated *per flush* by `(path, start, end)`. When
+  multiple meshes pin the same partner range, only the first mesh
+  block in the flush renders the fenced excerpt; subsequent mesh
+  blocks list the partner address but omit the body. The partner-list
+  entry under each mesh is preserved so each block stays
+  self-contained at the partner-address level.
 
 ### 12.6 Doc-topic preamble
 
@@ -469,10 +522,18 @@ Templates:
 | T5  | Losing coherence              | L2              | #10                          | "narrow or retire"     |
 | T6  | Symbol rename hits in partner | L2              | #11                          | "exported symbols"     |
 | T7  | New-group candidate           | L2              | #5, #6                       | "recording a group"    |
-| T8  | Staging cross-cut             | L2              | #9 (overlap)                 | "cross-mesh overlap"   |
+| T8  | Staging cross-cut             | L2              | #9 (overlap, content-differs) | "cross-mesh overlap"   |
 | T9  | Empty-mesh risk               | L2              | #9 (staged rm empties mesh)  | "empty groups"         |
 | T10 | Pending-commit re-anchor      | L0              | #4                           | (none — L0)            |
 | T11 | Terminal status               | L0              | ORPHANED/CONFLICT/SUBMODULE  | "terminal states"      |
+
+T8 carries two clause variants on the same reason-kind: an "overlap"
+form when a staged add overlaps a committed range in another mesh on
+the same path, and a "content-differs" form when a staged add records
+the same `(path, extent)` as another mesh with different bytes
+(§11 #9 third sub-case). Both variants share the dedup slot
+`staging_cross_cut` so a flush re-emission requires the staged tuple to
+have changed.
 
 T1 subsumes what was previously split across partner-addresses and
 predicted-status-flip — the bracket marker on the partner line carries the
@@ -565,7 +626,37 @@ Staging cross-cut (T8 / L2):
 ### 12.11 `--documentation`
 
 Appends one short sentence per reason-kind pointing at the reconciling
-command, in the same plain register. No prescription.
+command, in the same plain register. No prescription. Hints are deduped
+per flush by reason-kind so each sentence appears at most once per
+flush; they re-appear on every flush that carries the corresponding
+reason — they ARE the documentation, not session-once preambles.
+
+The full doc-topic blocks (§12.12) still fire as preambles on first use
+in the session — `--documentation` does not duplicate them. On an empty
+flush (no reason-kinds, no advice to give) `--documentation` adds
+nothing.
+
+Chosen wording, by reason-kind:
+
+```
+# to re-record a range after edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`.       (T1 partner)
+# to re-record a partner that needed matching edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`. (T2)
+# to follow a rename, run `git mesh add <name> <new-path>` and then `git mesh commit <name>`.                            (T3)
+# to re-record a shrunk extent, run `git mesh rm <name> <path>#L<old-s>-L<old-e>` and then `git mesh add <name> <path>#L<new-s>-L<new-e>`. (T4)
+# to narrow or retire a mesh, run `git mesh rm <name> <path>` or `git mesh delete <name>`.                               (T5)
+# to re-record after a symbol rename, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`.      (T6)
+# to record a candidate group, run `git mesh add <group-name> <path-1> <path-2>`, set `git mesh why <group-name> -m "..."`, then `git mesh commit <group-name>`. (T7)
+# to resolve a cross-mesh overlap, run `git mesh restore <name>` or `git mesh delete <name>`.                            (T8)
+# to unblock an empty mesh, run `git mesh add <name> <path>` or `git mesh delete <name>`.                                (T9)
+# (T10 has no hint — the post-commit hook re-anchors automatically.)
+# to recover from a terminal state, see `git mesh fetch`, finish the merge, or pin the submodule root.                   (T11)
+```
+
+Canonical topic-name strings used as the `flush_doc_topics` dedup key
+(lowercase, hyphen-separated form of the §12.12 quoted titles):
+`baseline`, `editing-across-files`, `renames`, `shrinking-ranges`,
+`narrow-or-retire`, `exported-symbols`, `recording-a-group`,
+`cross-mesh-overlap`, `empty-groups`, `terminal-states`.
 
 ### 12.12 Doc topics
 
@@ -727,7 +818,13 @@ meshes. T1 and T10 have no topic — their L0 shape is self-explanatory.
 - Under `--documentation`, is the preamble longer, or just per-reason hints?
 - Threshold for "Session-local co-touch" to count as a new-mesh candidate
   (minimum touches, historical-co-change lift).
-- Threshold for "collapse" (what percentage of the anchored extent).
+- ~~Threshold for "collapse" (what percentage of the anchored extent).~~
+  **Resolved (slice 3):** T4 fires when `--post` content is supplied AND
+  the post line count is ≤ 50% of the recorded mesh-range extent AND the
+  difference is ≥ 2 lines (skip single-line anchors). Without `--post`
+  T4 does not fire — fail-closed: no content, no shrink claim. The
+  re-record command uses the post line count as the new extent,
+  anchored at the recorded start. (Mirrored in §11 #8 and §12.5.)
 - Whether any event kind should reset the seen-set besides compact /
   session-end (e.g. a branch switch reflected in `--commit <sha>`).
 - **Dedup strategy.** The flat seen-set tuple `(mesh, reason_kind, range)`

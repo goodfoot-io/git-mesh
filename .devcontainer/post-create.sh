@@ -68,6 +68,11 @@ if ! git config --global --get-all safe.directory | grep -Fx /workspace > /dev/n
     git config --global --add safe.directory /workspace
 fi
 
+# Start a per-container rootless sshd and emit a paste-in script for peers
+echo "Setting up rootless sshd for inter-container access..."
+/workspace/.devcontainer/utilities/setup-ssh.sh
+echo "✓ sshd configured"
+
 echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
 echo "Git hooks path set to .githooks"

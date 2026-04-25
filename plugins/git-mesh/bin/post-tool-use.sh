@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# PostToolUse hook: after an Edit/Write, inject the same related mesh context
-# shape as UserPromptSubmit for the file that was edited.
+# PostToolUse hook: after an Edit/Write, record the write event and flush
+# mesh advice for the edited file.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -12,56 +12,28 @@ payload="$(cat)"
 tool="$(jq -r '.tool_name // empty' <<<"$payload")"
 
 case "$tool" in
-  Edit|Write|NotebookEdit) ;;
+  Edit|MultiEdit|Write|NotebookEdit) ;;
   *) exit 0 ;;
 esac
 
 file="$(jq -r '.tool_input.file_path // empty' <<<"$payload")"
 [[ -z "$file" ]] && exit 0
 
+session_id="$(jq -r '.session_id // empty' <<<"$payload")"
+[[ -z "$session_id" ]] && exit 0
+
 repo_root="$(git rev-parse --show-toplevel)"
 rel="${file#"$repo_root"/}"
 
-mapfile -t meshes < <(meshes_for_path "$rel")
-[[ "${#meshes[@]}" -eq 0 ]] && exit 0
-
-lines=""
-for m in "${meshes[@]}"; do
-  [[ -z "$m" ]] && continue
-  why="$(git mesh why "$m" 2>/dev/null || true)"
-  summary="$(render_mesh_summary "$m")"
-  stale="$(render_stale "$m")"
-
-  [[ -n "$lines" ]] && lines+=$'\n'
-  lines+="$m mesh: $why"$'\n'
-  if [[ -n "$summary" ]]; then
-    while IFS= read -r range_line; do
-      [[ -z "$range_line" ]] && continue
-      range="${range_line##* }"
-      status="$(
-        awk -v range="$range" '$NF == range && $1 != "FRESH" { print $1; exit }' <<<"$stale"
-      )"
-      if [[ -n "$status" ]]; then
-        lines+="- $range [$status]"$'\n'
-      else
-        lines+="- $range"$'\n'
-      fi
-    done <<<"$summary"
-  fi
-done
-
-[[ -z "$lines" ]] && exit 0
-
-emit_additional_context "PostToolUse" "$lines"
+git mesh advice "$session_id" add --write "$rel" 2>/dev/null || true
+output="$(git mesh advice "$session_id" 2>/dev/null || true)"
+[[ -n "$output" ]] && emit_additional_context "PostToolUse" "$output"
+exit 0
 
 # Example stdin:
-# {"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/repo/api/charge.ts"}}
+# {"session_id":"abc123","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/repo/api/charge.ts"}}
 #
 # Example additionalContext:
-# billing/checkout-request-flow mesh: Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.
-# - web/checkout.tsx#L88-L120
-# - api/charge.ts#L30-L76 [CHANGED]
-#
-# billing/charge-amount-contract mesh: Charge amount contract shared between the browser payload and the server-side Stripe call.
-# - api/charge.ts#L30-L76 [CHANGED]
-# - server/stripe.ts#L12-L44
+# # billing/checkout-request-flow mesh: Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.
+# # - api/charge.ts#L30-L76 [CHANGED]
+# # - web/checkout.tsx#L88-L120
