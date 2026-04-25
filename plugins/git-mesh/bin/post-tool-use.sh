@@ -12,7 +12,7 @@ payload="$(cat)"
 tool="$(jq -r '.tool_name // empty' <<<"$payload")"
 
 case "$tool" in
-  Edit|Write|NotebookEdit) ;;
+  Edit|MultiEdit|Write|NotebookEdit) ;;
   *) exit 0 ;;
 esac
 

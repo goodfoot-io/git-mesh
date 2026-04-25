@@ -118,11 +118,13 @@ fn assert_all_lines_commented(out: &str) {
 fn baseline_topic_block_renders_verbatim() {
     let out = render::render(&[l1_candidate()], &["baseline".into()], false);
     assert_all_lines_commented(&out);
-    assert!(out.contains("# A mesh names a subsystem, flow, or concern that spans line ranges in"));
+    assert!(out.contains("# A mesh is a lightweight contract for an agreement that no schema, type,"));
+    assert!(out.contains("# The `why` is load-bearing identity, not commentary."));
     assert!(out.contains("# Inspect a mesh:"));
     assert!(out.contains("#   git mesh show <name>"));
     assert!(out.contains("#   git mesh ls <path>"));
     assert!(out.contains("#   git mesh stale"));
+    assert!(out.contains("#   git mesh why <name>"));
 }
 
 #[test]
@@ -279,7 +281,7 @@ fn baseline_topic_fires_once_then_dedups() -> Result<()> {
     ok(&run_advice(&repo, &s, &["add", "--write", "file1.txt#L1-L5"])?);
     let first = flush(&repo, &s, &[])?;
     assert!(
-        first.contains("# A mesh names a subsystem, flow, or concern"),
+        first.contains("# A mesh is a lightweight contract"),
         "first L1 flush must include Baseline preamble:\n{first}"
     );
     assert!(
@@ -292,7 +294,7 @@ fn baseline_topic_fires_once_then_dedups() -> Result<()> {
     ok(&run_advice(&repo, &s, &["add", "--write", "file2.txt#L1-L5"])?);
     let second = flush(&repo, &s, &[])?;
     assert!(
-        !second.contains("# A mesh names a subsystem"),
+        !second.contains("# A mesh is a lightweight contract"),
         "Baseline must NOT re-fire on second L1 flush:\n{second}"
     );
     assert!(
@@ -320,7 +322,7 @@ fn l0_only_flush_emits_no_doc_topic_blocks() -> Result<()> {
         "L0 read must still surface the partner-list message"
     );
     assert!(
-        !out.contains("# A mesh names a subsystem"),
+        !out.contains("# A mesh is a lightweight contract"),
         "L0-only flush must NOT include Baseline preamble:\n{out}"
     );
     assert!(

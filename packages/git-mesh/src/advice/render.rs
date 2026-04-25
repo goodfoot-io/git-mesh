@@ -97,6 +97,24 @@ fn render_mesh_block(
     let mut out = String::new();
     out.push_str(&format!("# {mesh} mesh: {why}\n"));
 
+    // Trigger locator(s): one `# triggered by <path>[#L<s>-L<e>]` line per
+    // distinct trigger that produced a candidate in this mesh block. Lets
+    // the developer see which of their own edits routed attention here
+    // without violating Goal 1 — partners stay the headline below.
+    let mut seen_trigger: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
+        std::collections::BTreeSet::new();
+    for c in cands {
+        if c.trigger_path.is_empty() {
+            continue;
+        }
+        let key = (c.trigger_path.clone(), c.trigger_start, c.trigger_end);
+        if !seen_trigger.insert(key) {
+            continue;
+        }
+        let addr = format_addr(&c.trigger_path, c.trigger_start, c.trigger_end);
+        out.push_str(&format!("# triggered by {addr}\n"));
+    }
+
     // Partner addresses (deduped by (path,start,end)).
     let mut seen_partner: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
         std::collections::BTreeSet::new();
@@ -399,15 +417,25 @@ fn truncate_line_plain(line: &str) -> String {
 // `render_doc_topic`. Each block is a single source of truth — the test
 // suite asserts the literal text fragments.
 const TOPIC_BASELINE: &str = "\
-A mesh names a subsystem, flow, or concern that spans line ranges in
-several files. The mesh description states what those ranges do
-together. Invariants, caveats, and ownership belong in source comments,
-commit messages, CODEOWNERS, and PR descriptions — not here.
+A mesh is a lightweight contract for an agreement that no schema, type,
+or test already enforces. It anchors line ranges (or whole files)
+across the repo and carries a durable `why` that defines the subsystem
+those ranges collectively form.
+
+The `why` is load-bearing identity, not commentary. It names the
+subsystem, flow, or concern and says plainly what the ranges do across
+it — e.g. \"Checkout request flow that carries a charge attempt from
+the browser to the Stripe-backed server.\" It is evergreen, inherited
+across routine re-anchors, and is the line printed after `<name> mesh:`
+on every appearance below. Invariants, caveats, and ownership belong
+in source comments, commit messages, CODEOWNERS, and PR descriptions —
+not in the why.
 
 Inspect a mesh:
-  git mesh show <name>           # ranges, description, history
+  git mesh show <name>           # ranges, why, history
   git mesh ls <path>             # meshes that touch a file
   git mesh stale                 # ranges whose bytes have drifted
+  git mesh why <name>            # read the why
 ";
 
 const TOPIC_T2: &str = "\

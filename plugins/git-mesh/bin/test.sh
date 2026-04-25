@@ -147,6 +147,17 @@ assert_empty "post-tool-use all non-blank lines start with #" "$non_hash_lines"
 assert_contains "post-tool-use contains mesh name" "$post_ctx" "api-contract"
 assert_contains "post-tool-use names a partner range" "$post_ctx" "api.test.ts#L1-L3"
 
+# MultiEdit is treated like Edit: same file_path shape, same advice surfaces.
+sid_2b="$(unique_sid)"
+printf 'A\nB\nC\nd\ne\n' > api.ts
+multi_out="$(
+  printf '%s\n' '{"session_id":"'"$sid_2b"'","hook_event_name":"PostToolUse","tool_name":"MultiEdit","tool_input":{"file_path":"'"$WORK"'/api.ts","edits":[{"old_string":"A","new_string":"AA"}]}}' \
+    | "$POST_TOOL"
+)"
+multi_ctx="$(jq -r '.hookSpecificOutput.additionalContext' <<<"$multi_out")"
+assert_contains "post-tool-use handles MultiEdit" "$multi_ctx" "api-contract"
+rm -f "$CACHE_DIR/$sid_2b.db" "$CACHE_DIR/$sid_2b.jsonl" 2>/dev/null || true
+
 # Non-edit tools are a no-op.
 noop_out="$(
   printf '%s\n' '{"session_id":"'"$sid_2"'","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"'"$WORK"'/api.ts"}}' \
