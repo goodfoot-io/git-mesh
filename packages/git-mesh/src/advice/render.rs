@@ -39,8 +39,14 @@ pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation
     for c in &per_mesh {
         by_mesh.entry(c.mesh.clone()).or_default().push(c);
     }
+    // Slice 3 (4.3): excerpt dedup is *flush-scoped* — emit each
+    // (path,start,end) excerpt at most once per flush. Subsequent meshes
+    // that pin the same partner range still list the address in their
+    // partner block but skip the fenced body. Documented in §12.5.
+    let mut seen_excerpts: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
+        std::collections::BTreeSet::new();
     for (mesh, cands) in &by_mesh {
-        blocks.push(render_mesh_block(mesh, cands));
+        blocks.push(render_mesh_block(mesh, cands, &mut seen_excerpts));
     }
 
     for cc in &cross_cutting {
@@ -80,7 +86,11 @@ pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation
     out
 }
 
-fn render_mesh_block(mesh: &str, cands: &[&Candidate]) -> String {
+fn render_mesh_block(
+    mesh: &str,
+    cands: &[&Candidate],
+    seen_excerpts: &mut std::collections::BTreeSet<(String, Option<i64>, Option<i64>)>,
+) -> String {
     // Order: T1 partners → T2 excerpts → T3-6 clauses/excerpts/commands.
     let why = cands.first().map(|c| c.mesh_why.as_str()).unwrap_or("");
     let mut out = String::new();
@@ -120,10 +130,38 @@ fn render_mesh_block(mesh: &str, cands: &[&Candidate]) -> String {
         if c.excerpt_of_path.is_empty() {
             continue;
         }
+        // Slice 3 (4.4): whole-file / binary / submodule / deleted /
+        // LFS partners are address-only per §12.5. Detected here as
+        // either a whole-file pin (no line range) or a non-empty
+        // partner_marker that maps to a non-excerpt state.
+        let is_whole_file = c.excerpt_start.is_none() || c.excerpt_end.is_none();
+        let is_non_excerpt_marker = matches!(
+            c.partner_marker.as_str(),
+            "[ORPHANED]" | "[CONFLICT]" | "[SUBMODULE]" | "[DELETED]"
+        );
+        if is_whole_file || is_non_excerpt_marker {
+            continue;
+        }
+        // Slice 3 (4.3): per-flush dedup of identical excerpts.
+        let key = (
+            c.excerpt_of_path.clone(),
+            c.excerpt_start,
+            c.excerpt_end,
+        );
+        if !seen_excerpts.insert(key) {
+            continue;
+        }
+        let body = render_excerpt(c);
+        if body.is_empty() {
+            // Empty body (e.g. file unreadable, range past EOF). Skip the
+            // address line too — an address with no excerpt would render
+            // as a stray paragraph.
+            continue;
+        }
         out.push_str("#\n");
         let addr = format_addr(&c.excerpt_of_path, c.excerpt_start, c.excerpt_end);
         out.push_str(&format!("# {addr}\n"));
-        out.push_str(&render_excerpt(c));
+        out.push_str(&body);
     }
 
     // Commands (L2).

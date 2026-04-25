@@ -78,13 +78,20 @@ to visit**; nothing reads as an alarm.
 
 ## 5. Consequence-centric rule
 
-> Advice describes consequences on partners the developer is not already
-> looking at. It never states the developer's own action.
+> Advice describes consequences. Each mesh's partner list shows every
+> range the mesh pins, including the range the developer just touched,
+> but markers only appear when state is non-default. The trigger range
+> carries its marker (`[CHANGED]`, `[STAGED]`, `[WILL RE-ANCHOR]`, …) so
+> the developer can verify their own change registered; partners without
+> markers are unchanged-since-anchor.
 
 Corollaries:
 
-- A rename / edit / commit appears only as the minimum context needed to
-  make the partner line understandable; the **news is the partner**.
+- The trigger range is included for self-verification, not as the news;
+  the body of the message — clauses, excerpts, commands — is still
+  scoped to the partners. The **news is the partner**, and a
+  trigger-range entry is the minimum context that makes the partner
+  line understandable in situ.
 - Excerpt depth scales with event certainty: a read of a range gets an
   address only; an edit crossing a mesh range gets a partner excerpt; a
   rename of a referenced asset gets an excerpt plus a runnable command.
@@ -301,8 +308,12 @@ event-producing system is not load-bearing.
   rejected. Both flags are optional — when omitted the payload stores
   `null` for that side and downstream heuristics that need content
   (T6 symbol-rename, etc.) are suppressed rather than misfiring on
-  garbage. When `--post` is supplied, its line count overrides the
-  worktree's for the `#Ls-Le` range bound check.
+  garbage. The `--write` range describes the **pre** extent (the bytes
+  about to be overwritten): when `--pre` is supplied, its line count
+  overrides the worktree's for the `#Ls-Le` range bound check; `--post`
+  is intentionally **not** an upper bound, since T4 ("range collapse")
+  is exactly the case where the post is shorter than the recorded
+  write range.
 - **Commit identifiers** — SHAs landed during the session, recorded via
   `add --commit`.
 - **Snapshot references** — `tree_sha` + `index_sha`, recorded via
@@ -354,7 +365,12 @@ dedup key is `(mesh, reason-kind, range)`.
    surface the partner with the concrete text to check.
 8. **Edit shrinks a meshed range** — post-edit extent collapses the range
    toward zero lines. Surface the *partner* (the related range is now
-   over-specified relative to this one), not the edited side.
+   over-specified relative to this one), not the edited side. Threshold
+   (slice 3): fires only when `--post` content is supplied AND the post
+   line count is ≤ 50% of the recorded extent AND the difference is ≥
+   2 lines; no `--post`, no T4 (fail-closed). The re-record command
+   uses the post line count as the new extent, anchored at the
+   recorded start.
 9. **Staging-area cross-cuts.** Only surfaces what the developer's own
    command output will not show:
    - a staged `add` range overlaps a range in a *different* mesh;
@@ -445,8 +461,17 @@ Excerpt rules (L1, L2):
 - First 10 lines of the range (whole range if shorter).
 - Fence with language inferred from extension (`ts`, `tsx`, `html`, `rs`,
   `py`; plain otherwise).
-- Binary / image / LFS / submodule / deleted: no excerpt, address only.
+- Binary / image / LFS / submodule / deleted / whole-file pins: no
+  excerpt, address only. The renderer suppresses both the fenced body
+  *and* the address-only excerpt header for these cases — no empty
+  paragraph is emitted.
 - Truncate lines longer than ~200 chars with a trailing `…`.
+- Excerpts are deduplicated *per flush* by `(path, start, end)`. When
+  multiple meshes pin the same partner range, only the first mesh
+  block in the flush renders the fenced excerpt; subsequent mesh
+  blocks list the partner address but omit the body. The partner-list
+  entry under each mesh is preserved so each block stays
+  self-contained at the partner-address level.
 
 ### 12.6 Doc-topic preamble
 
@@ -749,7 +774,13 @@ meshes. T1 and T10 have no topic — their L0 shape is self-explanatory.
 - Under `--documentation`, is the preamble longer, or just per-reason hints?
 - Threshold for "Session-local co-touch" to count as a new-mesh candidate
   (minimum touches, historical-co-change lift).
-- Threshold for "collapse" (what percentage of the anchored extent).
+- ~~Threshold for "collapse" (what percentage of the anchored extent).~~
+  **Resolved (slice 3):** T4 fires when `--post` content is supplied AND
+  the post line count is ≤ 50% of the recorded mesh-range extent AND the
+  difference is ≥ 2 lines (skip single-line anchors). Without `--post`
+  T4 does not fire — fail-closed: no content, no shrink claim. The
+  re-record command uses the post line count as the new extent,
+  anchored at the recorded start. (Mirrored in §11 #8 and §12.5.)
 - Whether any event kind should reset the seen-set besides compact /
   session-end (e.g. a branch switch reflected in `--commit <sha>`).
 - **Dedup strategy.** The flat seen-set tuple `(mesh, reason_kind, range)`

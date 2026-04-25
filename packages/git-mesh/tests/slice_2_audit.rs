@@ -230,8 +230,8 @@ fn pre_and_post_files_round_trip_into_sql_and_audit() -> Result<()> {
 
     let pre = repo.path().join("p.pre");
     let post = repo.path().join("p.post");
-    std::fs::write(&pre, "one\ntwo\n")?;
-    std::fs::write(&post, "one\nTWO\nthree\n")?;
+    std::fs::write(&pre, "one\ntwo\nthree\n")?;
+    std::fs::write(&post, "one\nTWO\n")?;
 
     assert_ok(&run_advice(
         &repo,
@@ -248,8 +248,8 @@ fn pre_and_post_files_round_trip_into_sql_and_audit() -> Result<()> {
     let (id, kind, _, payload_str) = &sql[0];
     assert_eq!(kind, "write");
     let payload: Value = serde_json::from_str(payload_str)?;
-    assert_eq!(payload["pre_blob"], "one\ntwo\n");
-    assert_eq!(payload["post_blob"], "one\nTWO\nthree\n");
+    assert_eq!(payload["pre_blob"], "one\ntwo\nthree\n");
+    assert_eq!(payload["post_blob"], "one\nTWO\n");
 
     // SQL flat table got the same content.
     let conn = rusqlite::Connection::open(session.db_path())?;
@@ -258,8 +258,8 @@ fn pre_and_post_files_round_trip_into_sql_and_audit() -> Result<()> {
         [*id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    assert_eq!(sql_pre, "one\ntwo\n");
-    assert_eq!(sql_post, "one\nTWO\nthree\n");
+    assert_eq!(sql_pre, "one\ntwo\nthree\n");
+    assert_eq!(sql_post, "one\nTWO\n");
 
     Ok(())
 }
@@ -344,33 +344,61 @@ fn pre_dash_is_rejected_to_avoid_two_stdin_inputs() -> Result<()> {
 }
 
 #[test]
-fn post_line_count_overrides_worktree_for_range_validation() -> Result<()> {
+fn pre_line_count_overrides_worktree_for_range_validation() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let session = Session::new("postlines");
+    let session = Session::new("prelines");
 
-    // file2 has 16 worktree lines. Provide a 3-line post; range L1-L3 OK.
-    let post = repo.path().join("short.post");
-    std::fs::write(&post, "a\nb\nc\n")?;
+    // The --write range describes the PRE extent (the bytes about to be
+    // overwritten). file2 has 16 worktree lines, but a 3-line --pre
+    // narrows the bound to 3: ranges up to L3 succeed, L4+ must fail.
+    let pre = repo.path().join("short.pre");
+    std::fs::write(&pre, "a\nb\nc\n")?;
     assert_ok(&run_advice(
         &repo,
         &session,
         &[
             "add", "--write", "file2.txt#L1-L3",
-            "--post", post.to_str().unwrap(),
+            "--pre", pre.to_str().unwrap(),
         ],
     )?);
 
-    // Range L1-L4 against the same 3-line post must fail.
     let out = run_advice(
         &repo,
         &session,
         &[
             "add", "--write", "file2.txt#L1-L4",
+            "--pre", pre.to_str().unwrap(),
+        ],
+    )?;
+    assert!(!out.status.success(), "expected past-EOF rejection against --pre");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("past EOF"), "expected past EOF error: {stderr}");
+    Ok(())
+}
+
+#[test]
+fn post_line_count_is_not_a_range_upper_bound() -> Result<()> {
+    // T4 ("range collapse") requires that the recorded --write range can
+    // exceed the post line count: the range describes what was
+    // overwritten, the post is what replaced it. file2 has 16 worktree
+    // lines; a 1-line post must NOT make `--write file2.txt#L1-L5` fail.
+    let repo = TestRepo::seeded()?;
+    let session = Session::new("postnotbound");
+
+    let post = repo.path().join("tiny.post");
+    std::fs::write(&post, "only\n")?; // 1 line
+    let out = run_advice(
+        &repo,
+        &session,
+        &[
+            "add", "--write", "file2.txt#L1-L5",
             "--post", post.to_str().unwrap(),
         ],
     )?;
-    assert!(!out.status.success(), "expected past-EOF rejection");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("past EOF"), "expected past EOF error: {stderr}");
+    assert!(
+        out.status.success(),
+        "post must not bound the --write range; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     Ok(())
 }

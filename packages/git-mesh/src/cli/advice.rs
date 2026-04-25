@@ -66,9 +66,11 @@ pub struct AdviceAddArgs {
     pub pre: Option<String>,
 
     /// Post-edit content for `--write`. `<PATH>` reads from a file; `-`
-    /// reads from stdin. Maximum size: 1 MiB. Must be valid UTF-8. When
-    /// supplied, the line count of the post content overrides the
-    /// worktree line count for range validation.
+    /// reads from stdin. Maximum size: 1 MiB. Must be valid UTF-8. The
+    /// post line count is intentionally NOT used as an upper bound on
+    /// the `--write` range — that range describes the pre extent (the
+    /// bytes about to be overwritten); a post that is shorter is the
+    /// signal T4 ("range collapse") consumes.
     #[arg(long, value_name = "PATH-or--", requires = "write")]
     pub post: Option<String>,
 
@@ -152,13 +154,16 @@ fn read_content_arg(arg: &str, who: &str, allow_stdin: bool) -> Result<String> {
 }
 
 /// Reject `--read` / `--write` specs that point at non-existent paths or
-/// out-of-range / inverted line ranges. When `post_line_count` is
-/// supplied, it overrides the worktree-line bound for range validation
-/// (slice 2: `--post` controls what the post-edit extent looks like).
+/// out-of-range / inverted line ranges. When `pre_line_count` is supplied,
+/// it overrides the worktree-line bound for range validation: a `--write`
+/// range describes the bytes that were *overwritten* (the pre extent),
+/// not the post bytes. The `--post` line count is intentionally NOT a
+/// bound — T4 ("range collapse") is exactly the case where the post
+/// extent is smaller than the recorded `--write` range.
 fn validate_read_write_spec(
     repo: &gix::Repository,
     spec: &str,
-    post_line_count: Option<u32>,
+    pre_line_count: Option<u32>,
 ) -> Result<()> {
     if spec.is_empty() {
         bail!("invalid spec: path must not be empty");
@@ -195,7 +200,7 @@ fn validate_read_write_spec(
         bail!("path not found in worktree: `{path_str}`");
     }
     if let Some((start, end)) = range {
-        let line_count = if let Some(n) = post_line_count {
+        let line_count = if let Some(n) = pre_line_count {
             n
         } else {
             let bytes = std::fs::read(&abs)
@@ -242,10 +247,14 @@ pub fn run_advice_add(
         validate_read_write_spec(repo, spec, None)?;
     }
     if let Some(spec) = args.write.as_deref() {
-        let post_lines = post_content
+        // Bound by --pre line count if supplied (the range describes the
+        // PRE extent — the bytes about to be overwritten). --post is
+        // intentionally not a bound: T4 ("range collapse") relies on the
+        // post being shorter than the recorded write range.
+        let pre_lines = pre_content
             .as_ref()
             .map(|s| s.lines().count() as u32);
-        validate_read_write_spec(repo, spec, post_lines)?;
+        validate_read_write_spec(repo, spec, pre_lines)?;
     }
 
     let conn = advice::open_store(session_id)?;

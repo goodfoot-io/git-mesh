@@ -191,8 +191,15 @@ fn flush_t4_range_collapse() -> Result<()> {
     commit_mesh(&gix, "mc")?;
 
     let session = Session::new("t4");
-    // Write event with a tiny extent on the wide mesh range — triggers collapse.
-    let out = run_advice(&repo, &session, &["add", "--write", "file2.txt#L1-L2"])?;
+    // Write event with a tiny extent on the wide mesh range — triggers
+    // collapse. Slice 3 requires --post content for T4 to fire.
+    let post = repo.path().join("t4.post");
+    std::fs::write(&post, "x\ny\n")?;
+    let out = run_advice(
+        &repo,
+        &session,
+        &["add", "--write", "file2.txt#L1-L2", "--post", post.to_str().unwrap()],
+    )?;
     assert_success_silent(&out);
 
     let stdout = flush_stdout(&repo, &session, &[])?;

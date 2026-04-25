@@ -224,8 +224,23 @@ fn marker_for_status(status: &str) -> &'static str {
 // T1 — partner list. Baseline: any touched path intersecting a mesh.
 // ---------------------------------------------------------------------------
 
+/// Override the partner marker to `[DELETED]` when the partner path does
+/// not exist in the worktree. Per `docs/advice-notes.md` §12.4 a deleted
+/// file takes a `[DELETED]` marker regardless of how the resolver
+/// classified the range (resolver typically reports `CHANGED` or
+/// `ORPHANED`).
+fn marker_with_deletion(repo: &gix::Repository, partner_path: &str, fallback: &str) -> String {
+    if let Ok(wd) = crate::git::work_dir(repo)
+        && !wd.join(partner_path).exists()
+    {
+        return "[DELETED]".to_string();
+    }
+    fallback.to_string()
+}
+
 pub(crate) fn detect_t1(
     conn: &Connection,
+    repo: &gix::Repository,
     mesh_ranges: &[MeshRangeRow],
     whys: &WhyMap,
 ) -> Result<Vec<Candidate>> {
@@ -271,11 +286,13 @@ pub(crate) fn detect_t1(
                 );
                 c.trigger_start = trigger.start_line;
                 c.trigger_end = trigger.end_line;
-                c.partner_marker = marker_for_status(&partner.status).to_string();
+                let base_marker = marker_for_status(&partner.status);
+                c.partner_marker = marker_with_deletion(repo, &partner.path, base_marker);
                 if matches!(
                     partner.status.as_str(),
                     "ORPHANED" | "MERGE_CONFLICT" | "SUBMODULE"
-                ) {
+                ) && c.partner_marker != "[DELETED]"
+                {
                     // T11 terminal promotes this reason-kind.
                     c.reason_kind = ReasonKind::Terminal;
                 }
@@ -293,6 +310,7 @@ pub(crate) fn detect_t1(
 
 pub(crate) fn detect_t2(
     conn: &Connection,
+    repo: &gix::Repository,
     mesh_ranges: &[MeshRangeRow],
     whys: &WhyMap,
 ) -> Result<Vec<Candidate>> {
@@ -337,7 +355,8 @@ pub(crate) fn detect_t2(
                 );
                 c.trigger_start = trigger.start_line;
                 c.trigger_end = trigger.end_line;
-                c.partner_marker = marker_for_status(&partner.status).to_string();
+                let base_marker = marker_for_status(&partner.status);
+                c.partner_marker = marker_with_deletion(repo, &partner.path, base_marker);
                 c.excerpt_of_path = partner.path.clone();
                 c.excerpt_start = partner.start_line;
                 c.excerpt_end = partner.end_line;
@@ -450,19 +469,31 @@ pub(crate) fn detect_t4(
     whys: &WhyMap,
 ) -> Result<Vec<Candidate>> {
     let mut out = Vec::new();
-    // For each write event with a range, find meshes whose range on the
-    // same path has extent > 4× the write's extent and (start,end) overlap.
+    // T4 requires `--post` content to be present; per slice 3 (and §13's
+    // resolved threshold) we fail-closed on missing post content. This
+    // makes T4 a deliberate "I observed the post bytes" signal rather than
+    // a heuristic guess from the recorded write extent.
+    //
+    // Threshold: post_extent ≤ 50% of recorded extent AND
+    //            recorded_extent − post_extent ≥ 2 lines.
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT path, start_line, end_line FROM write_events \
-         WHERE path IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL",
+        "SELECT DISTINCT path, start_line, end_line, post_blob FROM write_events \
+         WHERE path IS NOT NULL AND start_line IS NOT NULL AND end_line IS NOT NULL \
+           AND post_blob IS NOT NULL",
     )?;
-    let writes: Vec<(String, i64, i64)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let writes: Vec<(String, i64, i64, String)> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
 
-    for (wpath, ws, we) in &writes {
-        let w_extent = (we - ws + 1).max(1);
+    for (wpath, ws, we, post_blob) in &writes {
+        // Post extent: the span of the post content that overlaps the
+        // recorded mesh range. We use the post line count (clamped) as the
+        // new extent of the touched range and anchor it at the mesh
+        // range's recorded start.
+        let post_lines = post_blob.lines().count() as i64;
         for row in mesh_ranges {
             if &row.path != wpath {
                 continue;
@@ -478,9 +509,20 @@ pub(crate) fn detect_t4(
             if we < &ms || ws > &me {
                 continue;
             }
-            if w_extent * 4 > m_extent {
+            // Post extent within the recorded range. Clamp so it is at
+            // most the recorded extent (the post can't make the recorded
+            // range larger by definition; we measure shrinkage only).
+            let post_extent = post_lines.clamp(0, m_extent);
+            // §13 threshold: post ≤ 50% of recorded AND difference ≥ 2.
+            if post_extent * 2 > m_extent {
                 continue;
             }
+            if m_extent - post_extent < 2 {
+                continue;
+            }
+            // New extent anchored at the recorded start.
+            let new_s = ms;
+            let new_e = (ms + post_extent - 1).max(ms);
             // Collapse detected — surface the *partner* (other ranges in the
             // mesh), per plan §11.8.
             for partner in mesh_ranges.iter().filter(|r| r.mesh == row.mesh) {
@@ -506,11 +548,13 @@ pub(crate) fn detect_t4(
                 c.excerpt_end = partner.end_line;
                 c.density = Density::L2;
                 c.command = format!(
-                    "git mesh rm {m} {p}#L{s}-L{e}\n#   git mesh add {m} {p}#L{s}-L{e}",
+                    "git mesh rm {m} {p}#L{ms}-L{me}\ngit mesh add {m} {p}#L{ns}-L{ne}",
                     m = row.mesh,
                     p = row.path,
-                    s = ms,
-                    e = me,
+                    ms = ms,
+                    me = me,
+                    ns = new_s,
+                    ne = new_e,
                 );
                 out.push(c);
             }
@@ -852,6 +896,24 @@ pub(crate) fn detect_t7(
         return Ok(out);
     }
 
+    // Per-session co-touch counts: number of distinct events (read+write)
+    // touching each path. We compose a pair count as
+    //   min(touches(a), touches(b))
+    // which lower-bounds how many times the two appeared in the same
+    // session window. (See §12.10 — "Touched together N times this
+    // session".) Distinct events are the unit because each `add --read`
+    // / `add --write` invocation is the natural per-touch granularity.
+    let mut touch_stmt = conn.prepare(
+        "SELECT path, COUNT(*) FROM (\
+           SELECT path FROM read_events WHERE path IS NOT NULL \
+           UNION ALL SELECT path FROM write_events WHERE path IS NOT NULL) \
+           GROUP BY path",
+    )?;
+    let touch_counts: std::collections::HashMap<String, u32> = touch_stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u32)))?
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+    drop(touch_stmt);
+
     // Paths already in a mesh — any pair including one of them is filtered.
     let meshed: std::collections::HashSet<&str> =
         mesh_ranges.iter().map(|r| r.path.as_str()).collect();
@@ -882,9 +944,16 @@ pub(crate) fn detect_t7(
                 trigger_start: None,
                 trigger_end: None,
                 partner_marker: String::new(),
-                partner_clause: format!(
-                    "touched together this session; also co-changed in {n_co} of the last 40 commits"
-                ),
+                partner_clause: {
+                    let n_session = touch_counts
+                        .get(a)
+                        .copied()
+                        .unwrap_or(0)
+                        .min(touch_counts.get(b).copied().unwrap_or(0));
+                    format!(
+                        "Touched together {n_session} times this session; also co-changed in {n_co} of the last 40 commits"
+                    )
+                },
                 density: Density::L2,
                 command: format!("git mesh add <group-name> {a} {b}"),
                 excerpt_of_path: String::new(),
@@ -1247,8 +1316,8 @@ pub fn run_all(
     whys: &WhyMap,
 ) -> Result<Vec<Candidate>> {
     let mut out = Vec::new();
-    out.extend(detect_t1(conn, mesh_ranges, whys)?);
-    out.extend(detect_t2(conn, mesh_ranges, whys)?);
+    out.extend(detect_t1(conn, repo, mesh_ranges, whys)?);
+    out.extend(detect_t2(conn, repo, mesh_ranges, whys)?);
     out.extend(detect_t3(conn, repo, mesh_ranges, whys)?);
     out.extend(detect_t4(conn, mesh_ranges, whys)?);
     out.extend(detect_t5(conn, mesh_ranges, whys)?);
@@ -1270,6 +1339,34 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         init_or_verify_schema_pub(&c).unwrap();
         c
+    }
+
+    /// Create an empty temp repo (returned tuple keeps tempdir alive for
+    /// the repo's lifetime). Tests that don't need worktree files use this
+    /// purely to satisfy detectors that take a `&gix::Repository`.
+    fn test_repo() -> (tempfile::TempDir, gix::Repository) {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+        };
+        run(&["init", "--initial-branch=main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        // Seed scratch files used by T1/T11 unit tests so the
+        // `[DELETED]` override (added in slice 3) doesn't fire.
+        for f in &["a.rs", "b.rs", "c.rs", "z.rs"] {
+            std::fs::write(dir.join(f), "// scratch\n").unwrap();
+        }
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+        let repo = gix::open(dir).unwrap();
+        (td, repo)
     }
 
     fn insert_read(conn: &Connection, path: &str) {
@@ -1311,7 +1408,8 @@ mod tests {
 
         let rows = load_mesh_ranges(&c).unwrap();
         let whys = WhyMap::new();
-        let cands = detect_t1(&c, &rows, &whys).unwrap();
+        let (_td, repo) = test_repo();
+        let cands = detect_t1(&c, &repo, &rows, &whys).unwrap();
         assert_eq!(cands.len(), 1);
         let cand = &cands[0];
         assert_eq!(cand.reason_kind, ReasonKind::Partner);
@@ -1329,7 +1427,8 @@ mod tests {
 
         let rows = load_mesh_ranges(&c).unwrap();
         let whys = WhyMap::new();
-        let cands = detect_t1(&c, &rows, &whys).unwrap();
+        let (_td, repo) = test_repo();
+        let cands = detect_t1(&c, &repo, &rows, &whys).unwrap();
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].reason_kind, ReasonKind::Terminal);
         assert_eq!(cands[0].partner_marker, "[ORPHANED]");
@@ -1354,7 +1453,7 @@ mod tests {
     fn t4_collapse_detects() {
         let c = conn();
         // Write on a.rs#L1-L2 (extent 2); mesh range a.rs#L1-L20 (extent 20).
-        // 20 / 2 = 10 ≥ 4, so collapse fires.
+        // Post content is 2 lines; 2 ≤ 50% of 20 AND 20-2 ≥ 2, so T4 fires.
         c.execute(
             "INSERT INTO events(kind,ts,payload) VALUES('write','t','{}')",
             [],
@@ -1362,7 +1461,7 @@ mod tests {
         let id = c.last_insert_rowid();
         c.execute(
             "INSERT INTO write_events(event_id,path,start_line,end_line,pre_blob,post_blob) \
-             VALUES(?,'a.rs',1,2,NULL,NULL)",
+             VALUES(?,'a.rs',1,2,NULL,'one\ntwo\n')",
             rusqlite::params![id],
         ).unwrap();
 
