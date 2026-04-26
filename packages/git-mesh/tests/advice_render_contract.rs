@@ -458,3 +458,25 @@ fn stale_last_flush_via_alternates_triggers_fallback() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Bug 3: bare render must NOT write to docs-seen.jsonl.
+// ---------------------------------------------------------------------------
+#[test]
+fn bare_render_does_not_write_docs_seen() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let sid = session_id("no-docs-seen");
+    run_advice(&repo, &sid, &["snapshot"])?;
+
+    repo.write_file("file1.txt", "edited\n")?;
+    let out = run_advice(&repo, &sid, &[])?;
+    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+
+    let dir = session_dir(&repo, &sid);
+    let docs_len = std::fs::metadata(dir.join("docs-seen.jsonl"))?.len();
+    assert_eq!(
+        docs_len, 0,
+        "bare render must not write to docs-seen.jsonl (Bug 3); got {docs_len} bytes"
+    );
+    Ok(())
+}

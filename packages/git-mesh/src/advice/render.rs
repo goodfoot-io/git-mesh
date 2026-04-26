@@ -20,11 +20,6 @@ pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation
 
     let mut blocks: Vec<String> = Vec::new();
 
-    // Doc-topic preamble.
-    for topic in new_doc_topics {
-        blocks.push(render_doc_topic(topic));
-    }
-
     // Group candidates by mesh, keep cross-cutting types last.
     let (per_mesh, cross_cutting): (Vec<&Candidate>, Vec<&Candidate>) =
         candidates.iter().partition(|c| {
@@ -54,6 +49,11 @@ pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation
     }
 
     if documentation {
+        // Doc-topic preamble — only when --documentation is requested.
+        for topic in new_doc_topics {
+            blocks.push(render_doc_topic(topic));
+        }
+
         // §12.11 — per-reason hint appendix. One short sentence per
         // distinct reason-kind that appeared in this flush, pointing at
         // the reconciling `git mesh` command. Hints are deduped per flush
@@ -698,6 +698,60 @@ mod tests {
         c.partner_marker = "[CHANGED]".into();
         let out = render(&[c], &[], false);
         assert!(out.contains("[CHANGED]"));
+    }
+
+    /// Bare render (documentation=false) must NOT emit any doc-topic preamble
+    /// (Bug 3). The terminal-states topic must be absent.
+    #[test]
+    fn bare_render_does_not_emit_doc_topic_preamble() {
+        let mut c = cand("m1", "b.rs");
+        c.reason_kind = ReasonKind::Terminal;
+        c.partner_marker = "[CHANGED]".into();
+        let out = render(&[c], &["terminal-states".into()], false);
+        assert!(
+            !out.contains("A terminal marker"),
+            "bare render must not emit terminal-states topic; got:\n{out}"
+        );
+        assert!(
+            !out.contains("[ORPHANED]"),
+            "bare render must not emit terminal-states body; got:\n{out}"
+        );
+    }
+
+    /// --documentation render must emit the doc-topic preamble (Bug 3).
+    #[test]
+    fn documentation_render_emits_doc_topic_preamble() {
+        let mut c = cand("m1", "b.rs");
+        c.reason_kind = ReasonKind::Terminal;
+        c.partner_marker = "[CHANGED]".into();
+        let out = render(&[c], &["terminal-states".into()], true);
+        assert!(
+            out.contains("A terminal marker"),
+            "--documentation render must emit terminal-states topic; got:\n{out}"
+        );
+    }
+
+    /// Partner-drift candidate (trigger_path empty) must render as
+    /// `# - a/one.rs [CHANGED]` with NO `# triggered by` line (Bug 4).
+    #[test]
+    fn partner_drift_renders_bullet_with_marker_no_triggered_by() {
+        let mut c = cand("my-mesh", "a/one.rs");
+        c.trigger_path = String::new(); // empty — partner drift
+        c.trigger_start = None;
+        c.trigger_end = None;
+        c.partner_start = None;
+        c.partner_end = None;
+        c.reason_kind = ReasonKind::Terminal;
+        c.partner_marker = "[CHANGED]".into();
+        let out = render(&[c], &[], false);
+        assert!(
+            out.contains("# - a/one.rs [CHANGED]"),
+            "must render partner bullet with marker; got:\n{out}"
+        );
+        assert!(
+            !out.contains("# triggered by"),
+            "must not emit triggered-by line for empty trigger_path; got:\n{out}"
+        );
     }
 
     /// A whole-file partner (partner_start=None, partner_end=None) must render

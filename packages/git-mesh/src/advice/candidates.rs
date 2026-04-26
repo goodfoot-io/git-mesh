@@ -489,13 +489,21 @@ pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
             } else {
                 (Some(range.start as i64), Some(range.end as i64))
             };
-            out.push(bare_candidate(
+            let marker = match range.status {
+                MeshRangeStatus::Changed => "[CHANGED]",
+                MeshRangeStatus::Moved => "[MOVED]",
+                MeshRangeStatus::Terminal => "[TERMINAL]",
+                MeshRangeStatus::Stable => "",
+            };
+            let mut c = bare_candidate(
                 &range.name,
                 &range.why,
                 ReasonKind::Terminal,
                 (&path_str, rs, re),
-                (&path_str, rs, re),
-            ));
+                ("", None, None),
+            );
+            c.partner_marker = marker.to_string();
+            out.push(c);
         }
     }
     out
@@ -935,6 +943,65 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].reason_kind, ReasonKind::Terminal);
         assert_eq!(result[0].mesh, "drift-mesh");
+    }
+
+    /// detect_partner_drift with Changed status must emit a Candidate with
+    /// trigger_path == "" and partner_marker == "[CHANGED]" (Bug 4).
+    #[test]
+    fn partner_drift_changed_produces_empty_trigger_and_changed_marker() {
+        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshRangeStatus::Changed;
+        let input = CandidateInput {
+            session_delta: &[],
+            incr_delta: &[],
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &[r],
+            internal_path_prefixes: &[],
+            staging: StagingState { adds: &[], removes: &[] },
+        };
+        let result = detect_partner_drift(&input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].trigger_path, "", "trigger_path must be empty for partner drift");
+        assert_eq!(result[0].partner_marker, "[CHANGED]", "partner_marker must be [CHANGED]");
+    }
+
+    /// detect_partner_drift with Moved status must produce partner_marker == "[MOVED]".
+    #[test]
+    fn partner_drift_moved_produces_moved_marker() {
+        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshRangeStatus::Moved;
+        let input = CandidateInput {
+            session_delta: &[],
+            incr_delta: &[],
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &[r],
+            internal_path_prefixes: &[],
+            staging: StagingState { adds: &[], removes: &[] },
+        };
+        let result = detect_partner_drift(&input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].partner_marker, "[MOVED]");
+    }
+
+    /// detect_partner_drift with Terminal status must produce partner_marker == "[TERMINAL]".
+    #[test]
+    fn partner_drift_terminal_produces_terminal_marker() {
+        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshRangeStatus::Terminal;
+        let input = CandidateInput {
+            session_delta: &[],
+            incr_delta: &[],
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &[r],
+            internal_path_prefixes: &[],
+            staging: StagingState { adds: &[], removes: &[] },
+        };
+        let result = detect_partner_drift(&input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].partner_marker, "[TERMINAL]");
     }
 
     #[test]

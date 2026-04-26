@@ -96,7 +96,7 @@ fn assert_all_lines_commented(out: &str) {
 
 #[test]
 fn baseline_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["baseline".into()], false);
+    let out = render::render(&[l1_candidate()], &["baseline".into()], true);
     assert_all_lines_commented(&out);
     assert!(out.contains("# A mesh is a lightweight contract for an agreement that no schema, type,"));
     assert!(out.contains("# The `why` is load-bearing identity, not commentary."));
@@ -109,7 +109,7 @@ fn baseline_topic_block_renders_verbatim() {
 
 #[test]
 fn t2_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["editing-across-files".into()], false);
+    let out = render::render(&[l1_candidate()], &["editing-across-files".into()], true);
     assert_all_lines_commented(&out);
     assert!(out.contains("# When a range in a mesh changes, the other ranges in the same mesh may"));
     assert!(out.contains("# A second `git mesh add` over the identical (path, extent) is a"));
@@ -119,7 +119,7 @@ fn t2_topic_block_renders_verbatim() {
 
 #[test]
 fn t3_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["renames".into()], false);
+    let out = render::render(&[l1_candidate()], &["renames".into()], true);
     assert!(out.contains("# A related range contains the old path as a literal string."));
     assert!(out.contains("#   git mesh rm  <name> <old-path>"));
     assert!(out.contains("#   git mesh add <name> <new-path>"));
@@ -127,7 +127,7 @@ fn t3_topic_block_renders_verbatim() {
 
 #[test]
 fn t4_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["shrinking-ranges".into()], false);
+    let out = render::render(&[l1_candidate()], &["shrinking-ranges".into()], true);
     assert!(out.contains("# The edit reduced a range to far fewer lines than were recorded."));
     assert!(out.contains("#   git mesh rm  <name> <path>#L<old-s>-L<old-e>"));
     assert!(out.contains("#   git mesh add <name> <path>#L<new-s>-L<new-e>"));
@@ -135,7 +135,7 @@ fn t4_topic_block_renders_verbatim() {
 
 #[test]
 fn t5_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["narrow-or-retire".into()], false);
+    let out = render::render(&[l1_candidate()], &["narrow-or-retire".into()], true);
     assert!(out.contains("# Most ranges in this mesh no longer match what was recorded."));
     assert!(out.contains("#   git mesh rm     <name> <path>"));
     assert!(out.contains("#   git mesh delete <name>"));
@@ -144,14 +144,14 @@ fn t5_topic_block_renders_verbatim() {
 
 #[test]
 fn t6_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["exported-symbols".into()], false);
+    let out = render::render(&[l1_candidate()], &["exported-symbols".into()], true);
     assert!(out.contains("# An exported name changed inside one range."));
     assert!(out.contains("#   git mesh add <name> <path>#L<s>-L<e>"));
 }
 
 #[test]
 fn t7_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["recording-a-group".into()], false);
+    let out = render::render(&[l1_candidate()], &["recording-a-group".into()], true);
     assert!(out.contains("# These files move together: the session has touched them together and"));
     assert!(out.contains("# Record:"));
     assert!(out.contains("#   git mesh add <group-name> <path-1> <path-2> [...]"));
@@ -160,7 +160,7 @@ fn t7_topic_block_renders_verbatim() {
 
 #[test]
 fn t8_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["cross-mesh-overlap".into()], false);
+    let out = render::render(&[l1_candidate()], &["cross-mesh-overlap".into()], true);
     assert!(out.contains("# A range staged on one mesh overlaps a range already recorded on"));
     assert!(out.contains("#   git mesh restore <name>"));
     assert!(out.contains("#   git mesh delete  <name>"));
@@ -168,7 +168,7 @@ fn t8_topic_block_renders_verbatim() {
 
 #[test]
 fn t9_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["empty-groups".into()], false);
+    let out = render::render(&[l1_candidate()], &["empty-groups".into()], true);
     assert!(out.contains("# The staged removal would leave this mesh with no ranges."));
     assert!(out.contains("#   git mesh add    <name> <path>[#L<s>-L<e>]"));
     assert!(out.contains("#   git mesh delete <name>"));
@@ -176,7 +176,7 @@ fn t9_topic_block_renders_verbatim() {
 
 #[test]
 fn t11_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["terminal-states".into()], false);
+    let out = render::render(&[l1_candidate()], &["terminal-states".into()], true);
     assert!(out.contains("# A terminal marker means the resolver cannot evaluate this range at all."));
     assert!(out.contains("# [ORPHANED]  — the recorded commit is unreachable."));
     assert!(out.contains("# [CONFLICT]  — the file is mid-merge. Finish the merge first."));

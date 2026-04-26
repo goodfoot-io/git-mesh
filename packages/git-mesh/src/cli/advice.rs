@@ -282,17 +282,23 @@ fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bo
         .collect();
 
     // Step 15: render. Compute new_doc_topics = topic_keys(emitted_reason_kinds) - docs_seen.
+    // Only populated when --documentation is requested; bare renders must not
+    // record topic keys in docs-seen.jsonl (Bug 3).
     use std::collections::BTreeSet;
-    let mut emitted_topics: BTreeSet<String> = BTreeSet::new();
-    for c in &kept {
-        if let Some(topic) = c.reason_kind.doc_topic() {
-            let key = topic.to_string();
-            if !docs_seen.contains(&key) {
-                emitted_topics.insert(key);
+    let new_doc_topics: Vec<String> = if documentation {
+        let mut emitted_topics: BTreeSet<String> = BTreeSet::new();
+        for c in &kept {
+            if let Some(topic) = c.reason_kind.doc_topic() {
+                let key = topic.to_string();
+                if !docs_seen.contains(&key) {
+                    emitted_topics.insert(key);
+                }
             }
         }
-    }
-    let new_doc_topics: Vec<String> = emitted_topics.into_iter().collect();
+        emitted_topics.into_iter().collect()
+    } else {
+        Vec::new()
+    };
     let rendered = crate::advice::render::render(&kept, &new_doc_topics, documentation);
 
     // Build touch intervals (finding 3): one per affected path/range from
