@@ -69,7 +69,6 @@ fn run() -> Result<i32> {
                 name: first.clone(),
                 oneline: false,
                 format: None,
-                no_abbrev: false,
                 at: None,
                 log: false,
                 limit: None,

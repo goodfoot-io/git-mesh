@@ -569,7 +569,7 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
     if findings.is_empty() {
         return;
     }
-    println!("# porcelain v1");
+    println!("# porcelain v2");
     for f in findings {
         // Whole-file pins emit `(whole)\t-` in place of the two line
         // columns, keeping the column count stable for parsers.
@@ -577,36 +577,28 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
             RangeExtent::Whole => ("(whole)".to_string(), "-".to_string()),
             RangeExtent::Lines { start, end } => (start.to_string(), end.to_string()),
         };
-        // Anchor sha lives on RangeResolved, not Finding. Recovering the
-        // short anchor for porcelain output goes through the engine; the
-        // adapter doesn't carry it. Slice 3 emitted an 8-char prefix; we
-        // emit `-` to keep the column count stable when adapter input
-        // doesn't surface it.
-        let anchor_short = "-";
         if show_src {
             let mut src = source_marker(f.source).to_string();
             if f.acknowledged_by.is_some() {
                 src.push_str("/ack");
             }
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}",
                 status_str(&f.status),
                 src,
                 f.mesh,
                 f.anchored.path.display(),
                 start_col,
                 end_col,
-                anchor_short
             );
         } else {
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}",
                 status_str(&f.status),
                 f.mesh,
                 f.anchored.path.display(),
                 start_col,
                 end_col,
-                anchor_short
             );
         }
     }
@@ -622,7 +614,7 @@ fn render_json(
     pending: &[PendingFinding],
 ) -> Result<()> {
     let v = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "mesh": meshes.first().map(|m| m.name.clone()).unwrap_or_default(),
         "findings": findings.iter().map(finding_json).collect::<Vec<_>>(),
         "pending": pending.iter().map(pending_json).collect::<Vec<_>>(),
@@ -668,7 +660,6 @@ fn status_json(s: &RangeStatus) -> Value {
 fn finding_json(f: &Finding) -> Value {
     json!({
         "mesh": f.mesh,
-        "range_id": f.range_id,
         "status": status_json(&f.status),
         "source": f.source.map(|s| match s {
             DriftSource::Head => "HEAD",

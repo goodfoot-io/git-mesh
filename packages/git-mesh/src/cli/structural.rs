@@ -372,16 +372,43 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
     let _ = wd;
     for id in range_refs.iter().filter(|s| !s.is_empty()) {
         if !referenced.contains(id) {
+            let descriptor = match read_range_safe(repo, id) {
+                Some(r) => match r.extent {
+                    crate::types::RangeExtent::Lines { start, end } => {
+                        format!("`{}#L{}-L{}`", r.path, start, end)
+                    }
+                    crate::types::RangeExtent::Whole => format!("`{}` (whole)", r.path),
+                },
+                None => format!("`{}`", range_ref_path(id)),
+            };
             out.push(DoctorFinding {
                 code: DoctorCode::DanglingRangeRef,
                 severity: Severity::Info,
-                message: format!("range `{id}` is not referenced by any mesh"),
+                message: format!("dangling range ref at {descriptor} is not referenced by any mesh"),
                 remediation: Some(
                     "harmless pending `git gc`; delete with `git update-ref -d` if intended".into(),
                 ),
             });
         }
     }
+}
+
+/// Return the parsed `Range` for a ref whose object is a blob and parses
+/// as the range record format. Returns `None` for non-blob targets (e.g.
+/// a stray ref pointing at a commit) or unparseable contents — those
+/// callers fall back to the raw ref name.
+fn read_range_safe(repo: &gix::Repository, range_id: &str) -> Option<crate::types::Range> {
+    let wd = crate::git::work_dir(repo).ok()?;
+    let oid_hex = crate::git::resolve_ref_oid_optional(wd, &range_ref_path(range_id))
+        .ok()
+        .flatten()?;
+    let oid = gix::ObjectId::from_hex(oid_hex.as_bytes()).ok()?;
+    let obj = repo.find_object(oid).ok()?;
+    if obj.kind != gix::object::Kind::Blob {
+        return None;
+    }
+    let text = std::str::from_utf8(&obj.data).ok()?.to_string();
+    crate::range::parse_range(&text).ok()
 }
 
 /// Slice 4: walk each staging mesh, verify every staged-add sidecar
@@ -452,7 +479,7 @@ fn check_file_index(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
         Some("file index missing".into())
     } else {
         match fs::read_to_string(&p) {
-            Ok(text) if text.starts_with("# mesh-index v1") => None,
+            Ok(text) if text.starts_with("# mesh-index v2") => None,
             Ok(_) => Some("file index header missing or corrupt".into()),
             Err(e) => Some(format!("file index unreadable: {e}")),
         }

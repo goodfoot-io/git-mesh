@@ -151,17 +151,12 @@ pub struct ShowArgs {
     ///   %r   range extent (#L<start>-L<end>, or empty for whole-file)
     ///   %P   path + extent (path#L<start>-L<end>, or just path for whole-file)
     ///   %a   anchor SHA (full 40 chars)
-    ///   %A   anchor SHA (abbreviated 8 chars; full when --no-abbrev is set)
     ///
     /// Special: %% → literal %; %n → newline.
     ///
     /// Unknown placeholders are rejected with exit code 2.
     #[arg(long, value_name = "FMT")]
     pub format: Option<String>,
-
-    /// Full 40-char anchor shas.
-    #[arg(long)]
-    pub no_abbrev: bool,
 
     /// Show state at a past commit. Accepts either a source commit-ish
     /// (e.g. HEAD~3, a branch, a source SHA) — which selects the mesh

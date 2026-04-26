@@ -35,13 +35,13 @@ fn json_envelope_has_schema_version_and_findings() -> Result<()> {
     drift_in_head(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--format=json"])?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["schema_version"], 2);
     assert!(v["findings"].is_array(), "envelope: {v}");
     assert!(v["pending"].is_array(), "envelope: {v}");
     let first = &v["findings"][0];
     assert_eq!(first["status"]["code"], "CHANGED");
     assert_eq!(first["mesh"], "m");
-    assert!(first["range_id"].is_string());
+    assert!(first["range_id"].is_null());
     assert!(first["anchored"]["path"].is_string());
     Ok(())
 }
@@ -84,10 +84,10 @@ fn porcelain_head_only_omits_src_column() -> Result<()> {
         .lines()
         .find(|l| l.starts_with("CHANGED"))
         .unwrap_or("");
-    // 6 columns: STATUS \t mesh \t path \t s \t e \t anchor
+    // 5 columns: STATUS \t mesh \t path \t s \t e
     assert_eq!(
         line.matches('\t').count(),
-        5,
+        4,
         "HEAD-only porcelain has no src column: {line}"
     );
     Ok(())
@@ -104,10 +104,10 @@ fn porcelain_layered_includes_src_column() -> Result<()> {
         .lines()
         .find(|l| l.starts_with("CHANGED"))
         .unwrap_or("");
-    // 7 columns when src column is on.
+    // 6 columns when src column is on.
     assert_eq!(
         line.matches('\t').count(),
-        6,
+        5,
         "layered porcelain has src column: {line}"
     );
     Ok(())

@@ -49,11 +49,9 @@ pub(crate) enum RangeField {
     PathWithSpec,
     /// `%a` — anchor SHA (full)
     AnchorFull,
-    /// `%A` — anchor SHA (abbreviated, honors `--no-abbrev`)
-    AnchorAbbrev,
 }
 
-const SUPPORTED: &str = "%H, %h, %an, %ae, %ad, %ar, %s, %p, %r, %P, %a, %A";
+const SUPPORTED: &str = "%H, %h, %an, %ae, %ad, %ar, %s, %p, %r, %P, %a";
 
 /// Parse a format string into a vector of tokens, returning an error for
 /// any unknown placeholder.
@@ -186,13 +184,6 @@ pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
                     }
                 }
             }
-            'A' => {
-                chars.next();
-                if !literal.is_empty() {
-                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
-                }
-                tokens.push(FormatToken::Range(RangeField::AnchorAbbrev));
-            }
             other => {
                 chars.next();
                 // Check if this is a multi-char unknown like `%xx` — we already consumed
@@ -226,7 +217,6 @@ pub(crate) fn render_tokens(
     info: &MeshCommitInfo,
     meta: &crate::git::CommitMeta,
     range: Option<&Range>,
-    no_abbrev: bool,
 ) -> String {
     let mut out = String::new();
     for tok in tokens {
@@ -263,13 +253,6 @@ pub(crate) fn render_tokens(
                         }
                     }
                     RangeField::AnchorFull => out.push_str(&r.anchor_sha),
-                    RangeField::AnchorAbbrev => {
-                        if no_abbrev {
-                            out.push_str(&r.anchor_sha);
-                        } else {
-                            out.push_str(&r.anchor_sha[..8.min(r.anchor_sha.len())]);
-                        }
-                    }
                 }
             }
         }
@@ -334,11 +317,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         if has_range_token(&tokens) {
             for id in &mesh.ranges {
                 let r = read_range(repo, id)?;
-                let line = render_tokens(&tokens, &info, &meta, Some(&r), args.no_abbrev);
+                let line = render_tokens(&tokens, &info, &meta, Some(&r));
                 println!("{line}");
             }
         } else {
-            let line = render_tokens(&tokens, &info, &meta, None, args.no_abbrev);
+            let line = render_tokens(&tokens, &info, &meta, None);
             println!("{line}");
         }
         return Ok(0);
@@ -347,16 +330,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     if args.oneline {
         for id in &mesh.ranges {
             let r = read_range(repo, id)?;
-            let sha = if args.no_abbrev {
-                r.anchor_sha.clone()
-            } else {
-                short(&r.anchor_sha).into()
-            };
-            let addr = match r.extent {
-                RangeExtent::Lines { start, end } => format!("{}#L{}-L{}", r.path, start, end),
-                RangeExtent::Whole => format!("{}  (whole)", r.path),
-            };
-            println!("{sha}  {addr}");
+            println!("{}", render_range_address(&r.path, r.extent));
         }
         return Ok(0);
     }
@@ -373,16 +347,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     println!("Ranges ({}):", mesh.ranges.len());
     for id in &mesh.ranges {
         let r = read_range(repo, id)?;
-        let sha = if args.no_abbrev {
-            r.anchor_sha.clone()
-        } else {
-            short(&r.anchor_sha).into()
-        };
-        let addr = match r.extent {
-            RangeExtent::Lines { start, end } => format!("{}#L{}-L{}", r.path, start, end),
-            RangeExtent::Whole => format!("{}  (whole)", r.path),
-        };
-        println!("    {sha}  {addr}");
+        println!("    {}", render_range_address(&r.path, r.extent));
     }
 
     // Consume unused field warning via bind.
@@ -403,12 +368,16 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
         }
     };
     for e in entries {
-        println!(
-            "{}\t{}\t{}\t{}\t{}-{}",
-            e.path, e.mesh_name, e.range_id, e.anchor_short, e.start, e.end
-        );
+        println!("{}\t{}\t{}-{}", e.path, e.mesh_name, e.start, e.end);
     }
     Ok(0)
+}
+
+fn render_range_address(path: &str, extent: RangeExtent) -> String {
+    match extent {
+        RangeExtent::Lines { start, end } => format!("{path}#L{start}-L{end}"),
+        RangeExtent::Whole => format!("{path}  (whole)"),
+    }
 }
 
 fn short(sha: &str) -> &str {
@@ -470,49 +439,49 @@ mod tests {
     #[test]
     fn commit_placeholder_big_h() {
         let tokens = parse_format("%H").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "abcdef1234567890abcdef1234567890abcdef12");
     }
 
     #[test]
     fn commit_placeholder_h_abbrev() {
         let tokens = parse_format("%h").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "abcdef1");
     }
 
     #[test]
     fn commit_placeholder_s() {
         let tokens = parse_format("%s").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "the subject line");
     }
 
     #[test]
     fn commit_placeholder_an() {
         let tokens = parse_format("%an").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "Alice Author");
     }
 
     #[test]
     fn commit_placeholder_ae() {
         let tokens = parse_format("%ae").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "alice@example.com");
     }
 
     #[test]
     fn commit_placeholder_ad() {
         let tokens = parse_format("%ad").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "Mon, 01 Jan 2024 00:00:00 +0000");
     }
 
     #[test]
     fn commit_placeholder_ar_produces_relative_time() {
         let tokens = parse_format("%ar").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         // We just check it's non-empty; the exact relative string depends on wall time.
         assert!(!out.is_empty());
     }
@@ -521,7 +490,7 @@ mod tests {
     fn range_placeholder_p_lines() {
         let tokens = parse_format("%p").unwrap();
         let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
         assert_eq!(out, "src/foo.rs");
     }
 
@@ -529,7 +498,7 @@ mod tests {
     fn range_placeholder_r_lines() {
         let tokens = parse_format("%r").unwrap();
         let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
         assert_eq!(out, "#L10-L20");
     }
 
@@ -537,7 +506,7 @@ mod tests {
     fn range_placeholder_r_whole_is_empty() {
         let tokens = parse_format("%r").unwrap();
         let r = fake_range_whole();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
         assert_eq!(out, "");
     }
 
@@ -545,7 +514,7 @@ mod tests {
     fn range_placeholder_big_p_lines() {
         let tokens = parse_format("%P").unwrap();
         let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
         assert_eq!(out, "src/foo.rs#L10-L20");
     }
 
@@ -553,7 +522,7 @@ mod tests {
     fn range_placeholder_big_p_whole_is_just_path() {
         let tokens = parse_format("%P").unwrap();
         let r = fake_range_whole();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
         assert_eq!(out, "docs/guide.md");
     }
 
@@ -561,37 +530,21 @@ mod tests {
     fn range_placeholder_a_full() {
         let tokens = parse_format("%a").unwrap();
         let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
-        assert_eq!(out, "deadbeef1234567890abcdef1234567890abcdef");
-    }
-
-    #[test]
-    fn range_placeholder_big_a_abbrev() {
-        let tokens = parse_format("%A").unwrap();
-        let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
-        assert_eq!(out, "deadbeef");
-    }
-
-    #[test]
-    fn range_placeholder_big_a_no_abbrev() {
-        let tokens = parse_format("%A").unwrap();
-        let r = fake_range_lines();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), true);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
         assert_eq!(out, "deadbeef1234567890abcdef1234567890abcdef");
     }
 
     #[test]
     fn percent_percent_escapes_literal() {
         let tokens = parse_format("100%%").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "100%");
     }
 
     #[test]
     fn percent_n_is_newline() {
         let tokens = parse_format("a%nb").unwrap();
-        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None);
         assert_eq!(out, "a\nb");
     }
 
@@ -601,7 +554,6 @@ mod tests {
         assert!(has_range_token(&parse_format("%r").unwrap()));
         assert!(has_range_token(&parse_format("%P").unwrap()));
         assert!(has_range_token(&parse_format("%a").unwrap()));
-        assert!(has_range_token(&parse_format("%A").unwrap()));
     }
 
     #[test]

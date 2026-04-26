@@ -112,7 +112,7 @@ fn read_index_regenerates_on_wrong_header() -> Result<()> {
     std::fs::create_dir_all(repo.path().join(".git/mesh"))?;
     std::fs::write(
         repo.path().join(".git/mesh/file-index"),
-        "# mesh-index v999\n",
+        "# mesh-index v1\n",
     )?;
     let rows = read_index(&repo.gix_repo()?)?;
     assert_eq!(rows.len(), 3);

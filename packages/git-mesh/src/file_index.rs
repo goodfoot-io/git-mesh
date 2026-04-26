@@ -8,25 +8,19 @@ use crate::{Error, Result};
 use std::fs;
 use std::path::PathBuf;
 
-const HEADER: &str = "# mesh-index v1";
+const HEADER: &str = "# mesh-index v2";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IndexEntry {
     pub path: String,
     pub mesh_name: String,
-    pub range_id: String,
     pub start: u32,
     pub end: u32,
-    pub anchor_short: String,
 }
 
 fn index_path(repo: &gix::Repository) -> Result<PathBuf> {
     let wd = work_dir(repo)?;
     Ok(wd.join(".git").join("mesh").join("file-index"))
-}
-
-fn short(sha: &str) -> String {
-    sha[..sha.len().min(8)].to_string()
 }
 
 pub fn rebuild_index(repo: &gix::Repository) -> Result<()> {
@@ -41,8 +35,8 @@ fn write_index(repo: &gix::Repository, entries: &[IndexEntry]) -> Result<()> {
     out.push('\n');
     for e in entries {
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\n",
-            e.path, e.mesh_name, e.range_id, e.start, e.end, e.anchor_short
+            "{}\t{}\t{}\t{}\n",
+            e.path, e.mesh_name, e.start, e.end
         ));
     }
     fs::write(p, out)?;
@@ -65,28 +59,18 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
             out.push(IndexEntry {
                 path: r.path,
                 mesh_name: name.clone(),
-                range_id: id,
                 start,
                 end,
-                anchor_short: short(&r.anchor_sha),
             });
         }
     }
     out.sort_by(|a, b| {
-        (
-            a.path.as_str(),
-            a.start,
-            a.end,
-            a.mesh_name.as_str(),
-            a.range_id.as_str(),
-        )
-            .cmp(&(
-                b.path.as_str(),
-                b.start,
-                b.end,
-                b.mesh_name.as_str(),
-                b.range_id.as_str(),
-            ))
+        (a.path.as_str(), a.start, a.end, a.mesh_name.as_str()).cmp(&(
+            b.path.as_str(),
+            b.start,
+            b.end,
+            b.mesh_name.as_str(),
+        ))
     });
     Ok(out)
 }
@@ -112,20 +96,18 @@ pub fn read_index(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 6 {
+        if fields.len() != 4 {
             return Err(Error::Parse(format!("malformed file-index line `{line}`")));
         }
         entries.push(IndexEntry {
             path: fields[0].into(),
             mesh_name: fields[1].into(),
-            range_id: fields[2].into(),
-            start: fields[3]
+            start: fields[2]
                 .parse()
                 .map_err(|_| Error::Parse("bad start".into()))?,
-            end: fields[4]
+            end: fields[3]
                 .parse()
                 .map_err(|_| Error::Parse("bad end".into()))?,
-            anchor_short: fields[5].into(),
         });
     }
     Ok(entries)
