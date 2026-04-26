@@ -93,3 +93,36 @@ Always focus test runs as much as possible; i.e. `yarn test path/to/example.test
 
 Run `yarn validate` from the workspace root for final validations — it typechecks, lints, tests, and builds all packages. The script merges stderr into stdout, prints `Exit code: N` at the end, and writes everything to `./yarn-validate-output.log`. **Run only `yarn validate` — do not add `2>&1`, `echo $?`, or any other wrapper.** Exit code 0 means all checks passed.
 </validation>
+
+<git-mesh>
+# git mesh
+
+A mesh names an implicit semantic dependency between two anchors — in code or prose — that is real, load-bearing, and not enforced by any type, schema, or test. It exists so a future developer touching one anchor learns, at that moment, what the other anchor relies on them to keep true. The standing question whenever you edit, read, or review is: does this region create or rely on a coupling that isn't visible from the lines themselves? If yes, and if you can name a concrete wrong decision someone would make under deadline when the partner changes silently, write a mesh.
+
+```bash
+# Stage the mesh: slug names the relationship, whole-file anchors the prose spec, line range anchors the exact parser bytes.
+git mesh add billing/charge-request-contract \
+  docs/api/charge.md \
+  services/api/charge.ts#L30-L76
+
+# One prose sentence in role-words; names which side is normative. Every new mesh needs a why before it can be committed.
+git mesh why billing/charge-request-contract \
+  -m "The published request spec states the body shape the parser honors; the spec is the source of truth when they disagree."
+
+# The post-commit hook runs `git mesh commit`, anchoring the staged ranges to the commit that just landed.
+git commit -m "Document charge request contract and wire the parser"
+```
+
+When you read or edit a file that participates in a mesh, you'll see a surface block naming the partner anchor, the why, and a status marker. `FRESH` means the partner still matches its anchored bytes; `CHANGED` means the partner has drifted and you must open it and reconcile before continuing — either align your edit with it, update it in the same change, or re-anchor and update the why if the relationship itself has shifted. Run `git mesh stale` on demand before committing, after conflicts or large moves, or when planning a refactor that spans many anchors, to see the full drift landscape across HEAD, index, and worktree. A surfaced `CHANGED` is not optional reading.
+
+```text
+$ git mesh stale
+mesh billing/charge-request-contract
+
+1 stale of 2 ranges:
+
+  CHANGED services/api/charge.ts#L30-L76
+```
+
+The finding names the mesh and points at the exact range that drifted. Pass `--show-src` to see which layer the drift is in (`H` HEAD, `I` index, `W` worktree). Open the partner anchor (`docs/api/charge.md`) to read the why and decide whether the spec needs to follow the parser or the parser needs to be brought back in line — then either update the prose in the same commit or re-anchor with `git mesh add` if the relationship itself has shifted. The non-zero exit code blocks the commit until reconciled.
+</git-mesh>
