@@ -162,6 +162,93 @@ fn pending_message_only_does_not_fail_commit() -> Result<()> {
     Ok(())
 }
 
+/// Pre-existing HEAD drift on a meshed path that the in-flight commit
+/// does NOT touch must still fail — `<fail-closed>` requires any drift
+/// the hook can see in the staged tree to gate the commit.
+#[test]
+fn pre_existing_head_drift_on_unstaged_meshed_path_fails_commit() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "m")?;
+    // Mutate file1.txt and COMMIT it (drift now lives in HEAD, not Index).
+    repo.write_file(
+        "file1.txt",
+        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.run_git(["add", "file1.txt"])?;
+    repo.run_git(["commit", "-m", "drift the meshed range"])?;
+    // In-flight commit touches a different path entirely.
+    repo.write_file("file2.txt", "additional\n")?;
+    repo.run_git(["add", "file2.txt"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 on pre-existing HEAD drift; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("drift in staged tree"),
+        "expected new header text; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("pre-existing"),
+        "expected origin tag; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("hint:"),
+        "expected resolution hint; stdout={stdout}"
+    );
+    Ok(())
+}
+
+/// `--no-exit-code` keeps the hook informational: drift is still printed
+/// but the commit is allowed through.
+#[test]
+fn no_exit_code_flag_allows_commit_with_drift() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "m")?;
+    repo.write_file(
+        "file1.txt",
+        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.run_git(["add", "file1.txt"])?;
+    let out = repo.run_mesh(["pre-commit", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0 with --no-exit-code; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("drift in staged tree"),
+        "drift should still be reported; stdout={stdout}"
+    );
+    Ok(())
+}
+
+/// Clean staged tree: no findings, no output, exit 0.
+#[test]
+fn clean_staged_tree_emits_no_output_and_exits_zero() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "m")?;
+    // Stage an unrelated path with no mesh drift.
+    repo.write_file("file2.txt", "additional\n")?;
+    repo.run_git(["add", "file2.txt"])?;
+    let out = repo.run_mesh(["pre-commit"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "expected empty stdout; got={}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    Ok(())
+}
+
 /// Index drift on a path NOT in the in-flight commit must not fail —
 /// the filter restricts findings to the staged path set.
 #[test]
