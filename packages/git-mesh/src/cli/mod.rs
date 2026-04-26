@@ -30,9 +30,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Debug, Parser)]
 #[command(
     name = "git-mesh",
-    about = "Attach tracked, updatable metadata to line ranges in a git repo.",
+    about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "Bare invocations:\n  git mesh                 list every mesh in the repo\n  git mesh <name>          show one mesh (ranges, why, config)"
+    after_help = "A mesh anchors the line ranges (or whole files) — in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that names the relationship between them in one sentence: what they form, what one promises, what one governs, what one cites.\n\nBare invocations:\n  git mesh                 list every mesh in the repo\n  git mesh <name>          show one mesh (ranges, why, config)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -60,7 +60,29 @@ pub enum Commands {
     /// Stage ranges to remove on the next mesh commit.
     Rm(RmArgs),
 
-    /// Read or stage the mesh's why text.
+    /// Read or stage the mesh's why — the durable one-sentence
+    /// definition of the relationship the anchored ranges hold.
+    ///
+    /// Name the relationship: what the ranges form together, what
+    /// one promises, what one governs, what one cites. Write it so
+    /// it survives a rewrite of either side. The why is prose: the
+    /// mesh name carries the label, so don't restate the name as a
+    /// prefix or use a git-style leading keyword (`contract:`,
+    /// `spec:`, `gov:`). The ranges carry the paths; describe the
+    /// relationship in role-words ("the doc," "the parser," "the
+    /// runbook," "the migration") rather than repeating filenames.
+    /// Name a path only when the path itself is part of the
+    /// dependency (a hard-coded script reference, a generated file
+    /// invoked by name). For asymmetric relationships, name which
+    /// side is normative in prose ("the doc is the source of truth
+    /// when they disagree," "X promises the shape Y honors"). Avoid
+    /// restating the diff, embedding incidental implementation
+    /// properties (parser strictness, current field names), or
+    /// bundling ownership and review triggers. If you're stuck,
+    /// reach for vocabulary like subsystem, specification,
+    /// mechanism, consumer role, or contract — but the rule is one
+    /// prose sentence, stable across implementation churn at either
+    /// anchor.
     ///
     /// Bare `git mesh why <name>` prints the current why; the writer
     /// flags `-m`/`-F`/`--edit` stage a new one.
@@ -241,10 +263,13 @@ pub struct RmArgs {
 ))]
 pub struct WhyArgs {
     /// Mesh whose why text to read (no writer flag) or stage
-    /// (`-m` / `-F` / `--edit`).
+    /// (`-m` / `-F` / `--edit`). The why names the relationship the
+    /// anchored ranges hold.
     pub name: String,
 
-    /// Inline why text (`-m "..."`). Writer flag.
+    /// Inline why text (`-m "..."`). Writer flag. One sentence
+    /// naming the relationship the ranges hold; stable across
+    /// implementation churn at either anchor.
     #[arg(short = 'm', value_name = "MSG")]
     pub m: Option<String>,
 

@@ -87,12 +87,12 @@ echo $HOME 2>&1 # returns '/home/user'
 </bash-tool-env-var-bug>
 
 <git-mesh>
-**A lightweight contract for agreements that no schema, type, or test already enforces.** A mesh anchors line ranges (or whole files) across the repo and carries a durable "why" defining the subsystem they collectively form.
+**Tracks implicit semantic dependencies in a git repo** — couplings between line ranges (or whole files), in code or prose, that no schema, type, or test enforces. A mesh anchors the participating ranges and carries a durable `why` that names the relationship between them in one sentence — what they form, what one promises, what one governs, what one cites — written so it survives a rewrite of either side. If you can't name the wrong decision a reader would make under deadline when the partner changes silently, it's a link, not a mesh.
 
 ```bash
-# Create the mesh while making the code change
-git mesh add billing/checkout-request-flow web/checkout.tsx#L88-L120 api/charge.ts#L30-L76
-git mesh why billing/checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+# Anchor the dependency at the same time as the code that creates it
+git mesh add billing/charge-request-contract docs/api/charge.md#L40-L88 api/charge.ts#L30-L76
+git mesh why billing/charge-request-contract -m "The doc states the request body shape the parser honors; the doc is the source of truth when they disagree."
 git commit -m "Wire checkout to charge API"   # post-commit hook anchors the mesh
 ```
 </git-mesh>

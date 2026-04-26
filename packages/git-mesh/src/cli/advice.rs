@@ -1,4 +1,14 @@
-//! `git mesh advice` subcommand — session-scoped advice stream.
+//! `git mesh advice` subcommand — session-scoped stream that surfaces
+//! the implicit semantic dependencies a developer has crossed.
+//!
+//! Each render emits one candidate per coupling crossed since the last
+//! flush: a mesh range was read, edited, or deleted; a partner of an
+//! edited range drifted; a rename broke an anchored path; sibling
+//! ranges were touched in the same session; staging cuts across the
+//! mesh. Candidates carry the mesh's `why` — the one-sentence
+//! definition of the relationship the anchored ranges hold — so the
+//! developer reads what the coupling is at the moment they're
+//! stepping on it.
 
 use anyhow::{Result, bail};
 use clap::Subcommand;
@@ -33,9 +43,11 @@ pub struct AdviceArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum AdviceCommand {
-    /// Capture the current workspace tree into the file-backed session store.
+    /// Capture the current workspace tree as the session baseline; later
+    /// renders diff against it to detect dependency-crossing edits.
     Snapshot,
-    /// Record one or more read events in the file-backed session store.
+    /// Record one or more read events; later renders use these to surface
+    /// dependencies the developer crossed by reading (not just editing).
     Read {
         /// Paths (optionally range-qualified) to record as reads.
         paths: Vec<String>,
@@ -53,7 +65,11 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     }
 }
 
-/// Bare-render entry point: file-backed delta pipeline.
+/// Bare-render entry point: file-backed delta pipeline. Walks the
+/// session delta, the incremental delta since last flush, and recorded
+/// reads against the mesh state, and emits one candidate per implicit
+/// semantic dependency the developer has crossed but not yet seen
+/// advice for.
 ///
 /// Implements parent §Phase 4 step list. Pre-stdout ordering of state
 /// mutations is load-bearing for broken-pipe safety — see step 16.

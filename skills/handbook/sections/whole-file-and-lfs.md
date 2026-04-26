@@ -8,16 +8,20 @@ Drop the `#L...` suffix at `git mesh add` to pin an entire file. Output shows `(
 git mesh add brand-refresh marketing/hero.png
 git mesh add api-contract-v2 vendor/openapi-spec
 git mesh add diagram-refs docs/architecture.drawio
+git mesh add charge-msa legal/msa.md
 git mesh commit brand-refresh
 ```
 
-Use whole-file when the file has no meaningful line structure:
+Use whole-file when the file is **consumed as a unit by name or identity** — its bytes-as-a-whole are the thing the partner depends on:
 - Images and binary assets pinned next to the copy that describes them
 - Design diagrams (PNG/SVG) alongside the code they document
+- Prose documents whose identity is the contract: a license, a one-page ADR, a published RFC, a signed MSA, an SOC2 control narrative
 - Submodule roots (gitlink paths) — bumps surface for review of partner code without opening the submodule
 - Symlinks — compared by target string
 - Generated or minified assets
 - Binary test fixtures next to the test that feeds them
+
+Whole-file is also the **recommended default for prose meshes**: line-ranged prose drifts noisily under editorial churn (heading renumbers, reflow, sentence rewrites that preserve meaning). See `./responding-to-drift.md` for the prose-drift workflow.
 
 ## Rejections at `git mesh add`
 

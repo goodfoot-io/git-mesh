@@ -25,8 +25,12 @@ serde_json = "1.0.149"
 [dev-dependencies]
 assert_cmd = "2.0.16"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+gix = { version = "0.81.0", features = ["revision", "status", "sha1", "blame", "blob-diff"] }
 predicates = "3.1.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 tempfile = "3.27.0"
+uuid = { version = "1.23.1", features = ["v4"] }
 
 [[bench]]
 name = "stale_head_only"
