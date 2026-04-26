@@ -2,17 +2,22 @@
   "name": "@goodfoot/git-mesh",
   "version": "1.0.4",
   "bin": "bin/git-mesh",
+  "man": [
+    "man/git-mesh.1"
+  ],
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "build": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
-    "build:local": "mkdir -p \"$HOME/.local/bin\" && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release && install -m 0755 target/build/release/git-mesh \"$HOME/.local/bin/git-mesh\"",
-    "build:clean": "rm -rf target/build target/lint target/test target/typecheck && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
+    "build:man": "env CARGO_TARGET_DIR=target/build cargo run --quiet --bin gen-manpage -- man/git-mesh.1",
+    "build": "yarn build:man && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
+    "build:local": "mkdir -p \"$HOME/.local/bin\" \"$HOME/.local/share/man/man1\" && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release && install -m 0755 target/build/release/git-mesh \"$HOME/.local/bin/git-mesh\" && yarn build:man && install -m 0644 man/git-mesh.1 \"$HOME/.local/share/man/man1/git-mesh.1\"",
+    "build:clean": "rm -rf target/build target/lint target/test target/typecheck && yarn build:man && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/build cargo build --release",
     "test": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/test cargo test --quiet -- --test-threads=1",
     "lint": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/lint cargo clippy --quiet -- -D warnings",
     "typecheck": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=target/typecheck cargo check --quiet"
   },
   "files": [
     "bin/",
+    "man/",
     "scripts/postinstall.js"
   ],
   "optionalDependencies": {

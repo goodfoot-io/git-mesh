@@ -95,6 +95,25 @@ yarn test
 Run `yarn validate` from the workspace root before finalizing code or
 configuration changes.
 
+### Manpage
+
+The CLI ships a `git-mesh(1)` manpage generated from the clap definitions. To
+browse it without installing:
+
+```bash
+MANPATH=packages/git-mesh/man man git-mesh
+```
+
+Regenerate after changing CLI flags or descriptions:
+
+```bash
+cd packages/git-mesh
+yarn build:man
+```
+
+The regression test in `tests/manpage.rs` fails if the checked-in artifact
+drifts from what the generator produces.
+
 ## Releases
 
 Releases are tag-driven from `goodfoot-io/git-mesh`. CLI and extension release

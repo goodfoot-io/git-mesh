@@ -1,0 +1,187 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH git-mesh 1  "git-mesh 1.0.3" 
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH NAME
+git\-mesh \- Track implicit semantic dependencies in a git repo.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SYNOPSIS
+\fBgit\-mesh\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+.B git mesh
+tracks implicit semantic dependencies in a Git repository: couplings between
+line ranges (or whole files), in code or prose, that no schema, type, or test
+enforces.
+Each
+.B mesh
+anchors the participating ranges and carries a durable
+.I why
+\[em] one prose sentence that names the relationship the anchored ranges hold
+and survives a rewrite of either side.
+.PP
+The standing question at commit time: did this change create or rely on a
+coupling that is not visible from the lines themselves?
+.PP
+.B Mesh vs.\& link.
+The sharpest test: if you cannot name the wrong decision a reader of one anchor
+would make under deadline when the other changes silently, it is a link, not a
+mesh.
+.RI ( \(lqRead\ this\ when\ changing\ X\(rq
+is not a wrong decision;
+.IR \(lqship\ a\ broken\ integration\(rq ,
+.IR \(lqviolate\ the\ contract\(rq ,
+and
+.I \(lqmishandle\ an\ incident\(rq
+are.)
+.PP
+.B Writing the why.
+Name the relationship the ranges hold in one prose sentence, written so it
+survives a rewrite of either side.
+Describe the relationship in role\-words (\(lqthe doc,\(rq \(lqthe parser,\(rq
+\(lqthe runbook,\(rq \(lqthe migration\(rq) rather than repeating filenames.
+For asymmetric relationships, name which side is normative:
+\(lqthe doc is the source of truth when they disagree.\(rq
+Do not restate the mesh name, embed incidental implementation details, or
+bundle ownership and review triggers in the why.
+.PP
+.B Re\-anchoring on drift.
+When
+.B git mesh stale
+reports drift, review the change at each anchor.
+If the relationship still holds, re-anchor with
+.B git mesh add
+and commit.
+If the relationship has changed, update the why with
+.B git mesh why
+before re-anchoring.
+.PP
+Meshes are stored as Git refs under
+.IR refs/meshes/v1/<name> ,
+so they travel with
+.B git fetch
+and
+.B git push
+like branches and tags.
+.B git mesh fetch
+and
+.B git mesh push
+keep remote mirrors in sync.
+.PP
+Bare invocations:
+.RS 4
+.TP
+.B git mesh
+List every mesh in the repository.
+.TP
+.BI git\ mesh\  <name>
+Show one mesh (ranges, why, config).
+.RE
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH SUBCOMMANDS
+.TP
+git\-mesh\-ls(1)
+List files and ranges currently tracked by a mesh
+.TP
+git\-mesh\-stale(1)
+Report ranges whose content has drifted from their anchored state
+.TP
+git\-mesh\-add(1)
+Stage ranges to add on the next mesh commit
+.TP
+git\-mesh\-rm(1)
+Stage ranges to remove on the next mesh commit
+.TP
+git\-mesh\-why(1)
+Read or stage the mesh\*(Aqs why — the durable one\-sentence definition of the relationship the anchored ranges hold
+.TP
+git\-mesh\-commit(1)
+Resolve staged operations and write a mesh commit
+.TP
+git\-mesh\-restore(1)
+Clear the staging area
+.TP
+git\-mesh\-revert(1)
+Fast\-forward a mesh to a past state
+.TP
+git\-mesh\-delete(1)
+Delete a mesh ref
+.TP
+git\-mesh\-mv(1)
+Rename a mesh ref
+.TP
+git\-mesh\-config(1)
+Read or stage mesh\-level resolver options
+.TP
+git\-mesh\-fetch(1)
+Fetch mesh and range refs from a remote
+.TP
+git\-mesh\-push(1)
+Push mesh and range refs to a remote
+.TP
+git\-mesh\-doctor(1)
+Audit the local mesh setup
+.TP
+git\-mesh\-pre\-commit(1)
+Fail the current commit if the in\-flight changes would leave any mesh stale
+.TP
+git\-mesh\-advice(1)
+Append events and flush session\-scoped advice
+.TP
+git\-mesh\-help(1)
+Print this message or the help of the given subcommand(s)
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.SH VERSION
+v1.0.3
+.SH EXAMPLES
+Anchor a new mesh alongside a code change:
+.PP
+.RS 4
+.nf
+git mesh add billing/charge-request-contract \e
+    docs/api/charge.md#L40-L88 api/charge.ts#L30-L76
+git mesh why billing/charge-request-contract \e
+    -m "The doc states the request body shape the parser honors; \e
+the doc is the source of truth when they disagree."
+git commit -m "Wire checkout to charge API"
+# post-commit hook runs: git mesh commit
+.fi
+.RE
+.PP
+Document an existing relationship anchored at HEAD:
+.PP
+.RS 4
+.nf
+git mesh add auth/token-contract --at HEAD \e
+    packages/auth/token.ts#L88-L104 \e
+    packages/auth/crypto.ts#L12-L40
+git mesh why auth/token-contract \e
+    -m "Token verification depends on signature verification."
+git mesh commit auth/token-contract
+.fi
+.RE
+.PP
+Check for drift and inspect a mesh:
+.PP
+.RS 4
+.nf
+git mesh stale
+git mesh billing/charge-request-contract
+git mesh billing/charge-request-contract --log
+.fi
+.RE
+.SH SEE ALSO
+.BR git (1),
+.BR gitcli (7)
