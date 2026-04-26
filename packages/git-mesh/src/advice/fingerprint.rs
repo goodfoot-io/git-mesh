@@ -38,11 +38,13 @@ fn feed(h: &mut u64, s: &str) {
 /// 4. partner_start (decimal, or "0")
 /// 5. partner_end (decimal, or "0")
 /// 6. trigger_path
-/// 7. partner_marker
-/// 8. old_path (empty string when None)
-/// 9. new_path (empty string when None)
-/// 10. old_blob (empty string when None)
-/// 11. new_blob (empty string when None)
+/// 7. trigger_start (decimal, or "0")
+/// 8. trigger_end (decimal, or "0")
+/// 9. partner_marker
+/// 10. old_path (empty string when None)
+/// 11. new_path (empty string when None)
+/// 12. old_blob (empty string when None)
+/// 13. new_blob (empty string when None)
 ///
 /// `command` is intentionally omitted — command is rendered text whose wording
 /// must not affect deduplication.
@@ -56,6 +58,8 @@ pub fn fingerprint(c: &Candidate) -> String {
     feed(&mut h, &c.partner_start.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
     feed(&mut h, &c.partner_end.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
     feed(&mut h, &c.trigger_path);
+    feed(&mut h, &c.trigger_start.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
+    feed(&mut h, &c.trigger_end.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
     feed(&mut h, &c.partner_marker);
     feed(&mut h, c.old_path.as_deref().unwrap_or(""));
     feed(&mut h, c.new_path.as_deref().unwrap_or(""));
@@ -136,6 +140,19 @@ mod tests {
         a.partner_end = Some(10);
         b.partner_start = Some(20);
         b.partner_end = Some(30);
+        assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
+    /// Changing trigger extents must change the fingerprint so a later
+    /// whole-file edit is not suppressed by an earlier range read.
+    #[test]
+    fn different_trigger_range_yields_different_fingerprint() {
+        let mut a = make_candidate();
+        let mut b = make_candidate();
+        a.trigger_start = Some(1);
+        a.trigger_end = Some(3);
+        b.trigger_start = None;
+        b.trigger_end = None;
         assert_ne!(fingerprint(&a), fingerprint(&b));
     }
 

@@ -55,8 +55,16 @@ fn read_intersects_mesh_surfaces_partner() -> Result<()> {
     ok(&out);
     let stdout = String::from_utf8(out.stdout)?;
     assert!(
-        stdout.contains("file2.txt") || stdout.contains("m1"),
+        stdout.contains("# m1 mesh: two-file partnership"),
+        "expected mesh why, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("# - file2.txt#L1-L5"),
         "expected partner mention, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("# - file1.txt#L1-L5"),
+        "read range must only be a trigger, got:\n{stdout}"
     );
     for line in stdout.lines() {
         assert!(line.starts_with('#'), "line not `#`-prefixed: {line:?}");
@@ -146,7 +154,10 @@ fn isolated_sessions_do_not_share_seen_set() -> Result<()> {
     ok(&run_advice(&repo, &s1, &["read", "file1.txt"])?);
     let a1 = run_advice(&repo, &s1, &[])?;
     ok(&a1);
-    assert!(!a1.stdout.is_empty(), "session A first render produces output");
+    assert!(
+        !a1.stdout.is_empty(),
+        "session A first render produces output"
+    );
 
     ok(&run_advice(&repo, &s2, &["snapshot"])?);
     ok(&run_advice(&repo, &s2, &["read", "file1.txt"])?);

@@ -9,8 +9,7 @@ use crate::git::work_dir;
 /// and clap help. Path separators (`/`, `\`), NUL, and ASCII control
 /// characters are forbidden so the id maps unambiguously to a single
 /// per-session directory without collision rewrites.
-const SESSION_ID_RULE: &str =
-    "non-empty; ASCII letters, digits, `-`, `_`, and `.`; \
+const SESSION_ID_RULE: &str = "non-empty; ASCII letters, digits, `-`, `_`, and `.`; \
      no `/`, no `\\`, no NUL, no whitespace or other control characters";
 
 #[derive(Debug, clap::Args)]
@@ -58,11 +57,7 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
 ///
 /// Implements parent §Phase 4 step list. Pre-stdout ordering of state
 /// mutations is load-bearing for broken-pipe safety — see step 16.
-fn run_advice_render(
-    repo: &gix::Repository,
-    session_id: &str,
-    documentation: bool,
-) -> Result<i32> {
+fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bool) -> Result<i32> {
     use crate::advice::candidates::{
         CandidateInput, MeshRange, MeshRangeStatus, StagedAddr, StagingState,
     };
@@ -97,6 +92,7 @@ fn run_advice_render(
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, session_id)?;
+    let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
 
     // Step 2: require baseline.state — fail closed.
     if !store.dir().join("baseline.state").exists() {
@@ -171,8 +167,10 @@ fn run_advice_render(
                 .into_iter()
                 .flat_map(|m| {
                     let name = m.name.clone();
+                    let why = m.message.clone();
                     m.ranges.into_iter().map(move |r| MeshRange {
                         name: name.clone(),
+                        why: why.clone(),
                         path: std::path::PathBuf::from(
                             r.anchored.path.to_string_lossy().into_owned(),
                         ),
@@ -241,14 +239,19 @@ fn run_advice_render(
         new_reads: &new_reads,
         touch_intervals: &touch_intervals,
         mesh_ranges: &mesh_ranges,
+        internal_path_prefixes: &internal_path_prefixes,
         staging: StagingState {
             adds: &staging_adds,
             removes: &staging_removes,
         },
     };
     let mut candidates: Vec<crate::advice::candidates::Candidate> = Vec::new();
-    candidates.extend(crate::advice::candidates::detect_read_intersects_mesh(&input));
-    candidates.extend(crate::advice::candidates::detect_delta_intersects_mesh(&input));
+    candidates.extend(crate::advice::candidates::detect_read_intersects_mesh(
+        &input,
+    ));
+    candidates.extend(crate::advice::candidates::detect_delta_intersects_mesh(
+        &input,
+    ));
     candidates.extend(crate::advice::candidates::detect_partner_drift(&input));
     candidates.extend(crate::advice::candidates::detect_rename_consequence(&input));
     candidates.extend(crate::advice::candidates::detect_range_shrink(&input));
@@ -288,8 +291,12 @@ fn run_advice_render(
     // incr_delta + new_reads, sharing a single rfc3339 timestamp so a
     // future co-touch detector can group them by interval.
     let touch_ts = chrono::Utc::now().to_rfc3339();
-    let touch_intervals_to_append: Vec<TouchInterval> =
-        build_touch_intervals(incr_delta.as_slice(), &new_reads, &touch_ts);
+    let touch_intervals_to_append: Vec<TouchInterval> = build_touch_intervals(
+        incr_delta.as_slice(),
+        &new_reads,
+        &touch_ts,
+        &internal_path_prefixes,
+    );
 
     // Step 16 (revised — finding 1 + finding 2a):
     //
@@ -304,12 +311,8 @@ fn run_advice_render(
     // d) Promote current.objects-<uuid>/ to last-flush.objects/. From
     // here on the guard must NOT remove the directory.
     if last_flush_objects.exists() {
-        std::fs::remove_dir_all(&last_flush_objects).map_err(|e| {
-            anyhow::anyhow!(
-                "remove `{}`: {e}",
-                last_flush_objects.display()
-            )
-        })?;
+        std::fs::remove_dir_all(&last_flush_objects)
+            .map_err(|e| anyhow::anyhow!("remove `{}`: {e}", last_flush_objects.display()))?;
     }
     std::fs::rename(&current_objects, &last_flush_objects).map_err(|e| {
         anyhow::anyhow!(
@@ -343,7 +346,9 @@ fn run_advice_render(
     } else {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        handle.write_all(rendered.as_bytes()).and_then(|()| handle.flush())
+        handle
+            .write_all(rendered.as_bytes())
+            .and_then(|()| handle.flush())
     };
     match stdout_result {
         Ok(()) => {}
@@ -377,6 +382,7 @@ fn build_touch_intervals(
     incr_delta: &[crate::advice::workspace_tree::DiffEntry],
     new_reads: &[crate::advice::session::state::ReadRecord],
     ts: &str,
+    internal_path_prefixes: &[String],
 ) -> Vec<crate::advice::session::state::TouchInterval> {
     use crate::advice::session::state::TouchInterval;
     use crate::advice::workspace_tree::DiffEntry;
@@ -387,6 +393,9 @@ fn build_touch_intervals(
             | DiffEntry::Added { path }
             | DiffEntry::Deleted { path }
             | DiffEntry::ModeChange { path } => {
+                if advice_path_is_internal(path, internal_path_prefixes) {
+                    continue;
+                }
                 out.push(TouchInterval {
                     path: path.clone(),
                     start_line: 0,
@@ -395,22 +404,29 @@ fn build_touch_intervals(
                 });
             }
             DiffEntry::Renamed { from, to, .. } => {
-                out.push(TouchInterval {
-                    path: from.clone(),
-                    start_line: 0,
-                    end_line: 0,
-                    ts: ts.to_string(),
-                });
-                out.push(TouchInterval {
-                    path: to.clone(),
-                    start_line: 0,
-                    end_line: 0,
-                    ts: ts.to_string(),
-                });
+                if !advice_path_is_internal(from, internal_path_prefixes) {
+                    out.push(TouchInterval {
+                        path: from.clone(),
+                        start_line: 0,
+                        end_line: 0,
+                        ts: ts.to_string(),
+                    });
+                }
+                if !advice_path_is_internal(to, internal_path_prefixes) {
+                    out.push(TouchInterval {
+                        path: to.clone(),
+                        start_line: 0,
+                        end_line: 0,
+                        ts: ts.to_string(),
+                    });
+                }
             }
         }
     }
     for r in new_reads {
+        if advice_path_is_internal(&r.path, internal_path_prefixes) {
+            continue;
+        }
         out.push(TouchInterval {
             path: r.path.clone(),
             start_line: r.start_line.unwrap_or(0),
@@ -421,23 +437,45 @@ fn build_touch_intervals(
     out
 }
 
+fn active_advice_store_prefixes(
+    repo_root: &std::path::Path,
+    store_dir: &std::path::Path,
+) -> Vec<String> {
+    let repo_root = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let store_dir = std::fs::canonicalize(store_dir).unwrap_or_else(|_| store_dir.to_path_buf());
+    let Ok(rel) = store_dir.strip_prefix(&repo_root) else {
+        return Vec::new();
+    };
+    if rel.as_os_str().is_empty() {
+        return Vec::new();
+    }
+    vec![
+        rel.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    ]
+}
+
+fn advice_path_is_internal(path: &str, internal_path_prefixes: &[String]) -> bool {
+    internal_path_prefixes.iter().any(|prefix| {
+        path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 /// Best-effort check that `tree_sha` resolves inside `objects_dir` (using
 /// `git cat-file -e` against an alternate object directory). Returns false
 /// on any failure, including when git isn't usable — the caller falls back
 /// to baseline diff in that case. (Finding 2b.)
-fn tree_resolves_in(
-    repo: &gix::Repository,
-    tree_sha: &str,
-    objects_dir: &std::path::Path,
-) -> bool {
-    // Set GIT_OBJECT_DIRECTORY to the target pack exclusively and clear
-    // GIT_ALTERNATE_OBJECT_DIRECTORIES so that worktree alternates or
-    // info/alternates entries cannot resolve the tree from outside the
-    // expected objects dir.  Without the empty-string override a shared
-    // object pool (or an info/alternates entry) would cause this check to
-    // return true even when objects_dir does not actually contain the tree,
-    // re-introducing the silent-wrong-delta failure the fallback was designed
-    // to prevent.
+fn tree_resolves_in(repo: &gix::Repository, tree_sha: &str, objects_dir: &std::path::Path) -> bool {
+    // The captured tree can be either session-owned (untracked or edited
+    // workspace content) or already present in the real repository object db
+    // as a loose object (a clean snapshot often reuses HEAD's tree). Accept
+    // both stores, but do not let Git follow `.git/objects/info/alternates`;
+    // an alternate pool can otherwise hide a missing session object store.
     let repo_path = repo.path().parent().unwrap_or(repo.path());
     let out = std::process::Command::new("git")
         .current_dir(repo_path)
@@ -447,7 +485,18 @@ fn tree_resolves_in(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
-    matches!(out, Ok(s) if s.success())
+    if matches!(out, Ok(s) if s.success()) {
+        return true;
+    }
+    real_loose_object_exists(repo, tree_sha)
+}
+
+fn real_loose_object_exists(repo: &gix::Repository, oid: &str) -> bool {
+    if oid.len() < 3 || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+    let (dir, file) = oid.split_at(2);
+    repo.git_dir().join("objects").join(dir).join(file).is_file()
 }
 
 fn default_engine_options() -> crate::types::EngineOptions {
@@ -464,10 +513,9 @@ fn default_engine_options() -> crate::types::EngineOptions {
 
 /// Recursively copy directory contents from `src` to `dst`.
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(dst)
-        .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", dst.display()))?;
-    for entry in std::fs::read_dir(src)
-        .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", src.display()))?
+    std::fs::create_dir_all(dst).map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", dst.display()))?;
+    for entry in
+        std::fs::read_dir(src).map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", src.display()))?
     {
         let entry = entry?;
         let ft = entry.file_type()?;
@@ -476,8 +524,9 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
         if ft.is_dir() {
             copy_dir_recursive(&from, &to)?;
         } else if ft.is_file() {
-            std::fs::copy(&from, &to)
-                .map_err(|e| anyhow::anyhow!("copy `{}` -> `{}`: {e}", from.display(), to.display()))?;
+            std::fs::copy(&from, &to).map_err(|e| {
+                anyhow::anyhow!("copy `{}` -> `{}`: {e}", from.display(), to.display())
+            })?;
         }
     }
     Ok(())
@@ -541,11 +590,7 @@ fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32
 }
 
 /// Record read events in the file-backed session store.
-fn run_advice_read(
-    repo: &gix::Repository,
-    session_id: String,
-    paths: Vec<String>,
-) -> Result<i32> {
+fn run_advice_read(repo: &gix::Repository, session_id: String, paths: Vec<String>) -> Result<i32> {
     use crate::advice::session::SessionStore;
     use crate::advice::session::state::ReadRecord;
     use crate::advice::session::store::LockTimeout;
@@ -576,7 +621,10 @@ fn run_advice_read(
         let (path_str, range) = match spec.split_once("#L") {
             Some((p, frag)) => {
                 let (s, e) = frag.split_once("-L").unwrap();
-                (p.to_string(), Some((s.parse::<u32>().unwrap(), e.parse::<u32>().unwrap())))
+                (
+                    p.to_string(),
+                    Some((s.parse::<u32>().unwrap(), e.parse::<u32>().unwrap())),
+                )
             }
             None => (spec.clone(), None),
         };
@@ -586,7 +634,10 @@ fn run_advice_read(
             end_line: range.map(|(_, e)| e),
             ts: now.clone(),
         };
-        store.append_read(&rec, LockTimeout::Bounded(std::time::Duration::from_secs(30)))?;
+        store.append_read(
+            &rec,
+            LockTimeout::Bounded(std::time::Duration::from_secs(30)),
+        )?;
     }
 
     Ok(0)
@@ -622,9 +673,7 @@ fn validate_read_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
     let (path_str, range) = match spec.split_once("#L") {
         Some((p, frag)) => {
             let (s, e) = frag.split_once("-L").ok_or_else(|| {
-                anyhow::anyhow!(
-                    "invalid range `{spec}`; expected <path>#L<start>-L<end>"
-                )
+                anyhow::anyhow!("invalid range `{spec}`; expected <path>#L<start>-L<end>")
             })?;
             let start: u32 = s
                 .parse()
@@ -651,8 +700,7 @@ fn validate_read_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
         bail!("path not found in worktree: `{path_str}`");
     }
     if let Some((start, end)) = range {
-        let bytes = std::fs::read(&abs)
-            .map_err(|e| anyhow::anyhow!("read `{path_str}`: {e}"))?;
+        let bytes = std::fs::read(&abs).map_err(|e| anyhow::anyhow!("read `{path_str}`: {e}"))?;
         let line_count = String::from_utf8_lossy(&bytes).lines().count() as u32;
         if end > line_count {
             bail!(

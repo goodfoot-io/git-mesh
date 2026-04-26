@@ -23,7 +23,7 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::{append_add, commit_mesh, set_why};
-use std::process::Output;
+use std::process::{Command, Output};
 use support::TestRepo;
 use uuid::Uuid;
 
@@ -73,10 +73,114 @@ fn flush_t1_partner_list() -> Result<()> {
     ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
 
     let stdout = render(&repo, &s, &[])?;
-    assert!(stdout.contains("m1"), "expected mesh header, got:\n{stdout}");
-    assert!(stdout.contains("file1.txt"), "expected partner row, got:\n{stdout}");
+    assert!(
+        stdout.contains("# m1 mesh: two-file partnership"),
+        "expected mesh header with why, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("# - file2.txt#L1-L5"),
+        "expected partner row, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("# - file1.txt#L1-L5"),
+        "read side must only appear as trigger, got:\n{stdout}"
+    );
     for line in stdout.lines() {
         assert!(line.starts_with('#'), "line not prefixed: {line:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn whole_file_read_routes_to_other_ranges_in_each_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "whole", "file1.txt", 1, 2, None)?;
+    append_add(&gix, "whole", "file1.txt", 5, 6, None)?;
+    append_add(&gix, "whole", "file2.txt", 1, 2, None)?;
+    set_why(&gix, "whole", "whole-file routing")?;
+    commit_mesh(&gix, "whole")?;
+
+    let s = sid("whole-read");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
+
+    let stdout = render(&repo, &s, &[])?;
+    assert!(
+        stdout.contains("# whole mesh: whole-file routing"),
+        "got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("# triggered by file1.txt"),
+        "got:\n{stdout}"
+    );
+    assert!(stdout.contains("# - file1.txt#L5-L6"), "got:\n{stdout}");
+    assert!(stdout.contains("# - file2.txt#L1-L2"), "got:\n{stdout}");
+    Ok(())
+}
+
+#[test]
+fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "delta", "file1.txt", 1, 5, None)?;
+    append_add(&gix, "delta", "file2.txt", 1, 5, None)?;
+    set_why(&gix, "delta", "delta routing")?;
+    commit_mesh(&gix, "delta")?;
+
+    let s = sid("delta");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+    repo.write_file(
+        "file1.txt",
+        "changed\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    let stdout = render(&repo, &s, &[])?;
+    assert!(
+        stdout.contains("# delta mesh: delta routing"),
+        "got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("# triggered by file1.txt"),
+        "got:\n{stdout}"
+    );
+    assert!(stdout.contains("# - file2.txt#L1-L5"), "got:\n{stdout}");
+    assert!(
+        !stdout.contains("# - file1.txt#L1-L5"),
+        "changed side must only appear as trigger, got:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn advice_store_inside_worktree_is_not_captured_or_co_touched() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let advice_dir = repo.path().join(".mesh-advice");
+    let s = sid("store-in-worktree");
+
+    let run = |extra: &[&str]| -> Result<Output> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-mesh"));
+        cmd.current_dir(repo.path())
+            .env("GIT_MESH_ADVICE_DIR", &advice_dir)
+            .args(["advice", &s]);
+        cmd.args(extra);
+        Ok(cmd.output()?)
+    };
+
+    ok(&run(&["snapshot"])?);
+    for _ in 0..4 {
+        let out = run(&[])?;
+        ok(&out);
+        assert!(
+            out.stderr.is_empty(),
+            "internal advice store must not make last-flush fall back, got:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "internal advice store must not create repeat output, got:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
     Ok(())
 }
