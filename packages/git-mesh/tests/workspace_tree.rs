@@ -38,8 +38,8 @@ fn tracked_edit_delete_rename_appear_in_diff_trees() -> Result<()> {
         objects_b.path(),
     )?;
 
-    let has_modified = entries.iter().any(|e| matches!(e, DiffEntry::Modified { path } if path == "edit.txt"));
-    let has_deleted = entries.iter().any(|e| matches!(e, DiffEntry::Deleted { path } if path == "delete.txt"));
+    let has_modified = entries.iter().any(|e| matches!(e, DiffEntry::Modified { path, .. } if path == "edit.txt"));
+    let has_deleted = entries.iter().any(|e| matches!(e, DiffEntry::Deleted { path, .. } if path == "delete.txt"));
     let has_renamed = entries.iter().any(|e| matches!(e, DiffEntry::Renamed { from, to, .. } if from == "old.txt" && to == "new.txt"));
 
     assert!(has_modified, "edited file must appear as Modified");
@@ -78,7 +78,7 @@ fn untracked_included_ignored_excluded() -> Result<()> {
     )?;
 
     let paths: Vec<&str> = entries.iter().filter_map(|e| match e {
-        DiffEntry::Added { path } => Some(path.as_str()),
+        DiffEntry::Added { path, .. } => Some(path.as_str()),
         _ => None,
     }).collect();
 
@@ -146,7 +146,7 @@ fn exec_bit_change_yields_mode_change() -> Result<()> {
         )?;
 
         let has_mode_change = entries.iter().any(|e| {
-            matches!(e, DiffEntry::ModeChange { path } if path == "script.sh")
+            matches!(e, DiffEntry::ModeChange { path, .. } if path == "script.sh")
         });
         assert!(has_mode_change, "exec-bit toggle must yield ModeChange");
     }

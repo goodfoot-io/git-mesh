@@ -168,26 +168,30 @@ fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bo
                 .flat_map(|m| {
                     let name = m.name.clone();
                     let why = m.message.clone();
-                    m.ranges.into_iter().map(move |r| MeshRange {
-                        name: name.clone(),
-                        why: why.clone(),
-                        path: std::path::PathBuf::from(
-                            r.anchored.path.to_string_lossy().into_owned(),
-                        ),
-                        start: match r.anchored.extent {
-                            crate::types::RangeExtent::Lines { start, .. } => start,
-                            crate::types::RangeExtent::Whole => 0,
-                        },
-                        end: match r.anchored.extent {
-                            crate::types::RangeExtent::Lines { end, .. } => end,
-                            crate::types::RangeExtent::Whole => u32::MAX,
-                        },
-                        status: match r.status {
-                            crate::types::RangeStatus::Fresh => MeshRangeStatus::Stable,
-                            crate::types::RangeStatus::Moved => MeshRangeStatus::Moved,
-                            crate::types::RangeStatus::Changed => MeshRangeStatus::Changed,
-                            _ => MeshRangeStatus::Terminal,
-                        },
+                    m.ranges.into_iter().map(move |r| {
+                        let whole = matches!(r.anchored.extent, crate::types::RangeExtent::Whole);
+                        MeshRange {
+                            name: name.clone(),
+                            why: why.clone(),
+                            path: std::path::PathBuf::from(
+                                r.anchored.path.to_string_lossy().into_owned(),
+                            ),
+                            start: match r.anchored.extent {
+                                crate::types::RangeExtent::Lines { start, .. } => start,
+                                crate::types::RangeExtent::Whole => 0,
+                            },
+                            end: match r.anchored.extent {
+                                crate::types::RangeExtent::Lines { end, .. } => end,
+                                crate::types::RangeExtent::Whole => u32::MAX,
+                            },
+                            whole,
+                            status: match r.status {
+                                crate::types::RangeStatus::Fresh => MeshRangeStatus::Stable,
+                                crate::types::RangeStatus::Moved => MeshRangeStatus::Moved,
+                                crate::types::RangeStatus::Changed => MeshRangeStatus::Changed,
+                                _ => MeshRangeStatus::Terminal,
+                            },
+                        }
                     })
                 })
                 .collect(),
@@ -203,6 +207,7 @@ fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bo
                 continue;
             };
             for add in staging.adds {
+                let whole = matches!(add.extent, crate::types::RangeExtent::Whole);
                 let (s, e) = match add.extent {
                     crate::types::RangeExtent::Lines { start, end } => (start, end),
                     crate::types::RangeExtent::Whole => (0, u32::MAX),
@@ -211,9 +216,11 @@ fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bo
                     path: std::path::PathBuf::from(add.path),
                     start: s,
                     end: e,
+                    whole,
                 });
             }
             for rem in staging.removes {
+                let whole = matches!(rem.extent, crate::types::RangeExtent::Whole);
                 let (s, e) = match rem.extent {
                     crate::types::RangeExtent::Lines { start, end } => (start, end),
                     crate::types::RangeExtent::Whole => (0, u32::MAX),
@@ -222,6 +229,7 @@ fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bo
                     path: std::path::PathBuf::from(rem.path),
                     start: s,
                     end: e,
+                    whole,
                 });
             }
         }
@@ -389,10 +397,10 @@ fn build_touch_intervals(
     let mut out: Vec<TouchInterval> = Vec::new();
     for entry in incr_delta {
         match entry {
-            DiffEntry::Modified { path }
-            | DiffEntry::Added { path }
-            | DiffEntry::Deleted { path }
-            | DiffEntry::ModeChange { path } => {
+            DiffEntry::Modified { path, .. }
+            | DiffEntry::Added { path, .. }
+            | DiffEntry::Deleted { path, .. }
+            | DiffEntry::ModeChange { path, .. } => {
                 if advice_path_is_internal(path, internal_path_prefixes) {
                     continue;
                 }

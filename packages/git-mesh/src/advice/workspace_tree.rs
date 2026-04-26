@@ -9,15 +9,35 @@ use anyhow::{Context, Result, bail};
 #[derive(Debug, Clone)]
 pub enum DiffEntry {
     /// File content changed.
-    Modified { path: String },
+    Modified {
+        path: String,
+        old_oid: Option<String>,
+        new_oid: Option<String>,
+    },
     /// File was added.
-    Added { path: String },
+    Added {
+        path: String,
+        new_oid: Option<String>,
+    },
     /// File was deleted.
-    Deleted { path: String },
+    Deleted {
+        path: String,
+        old_oid: Option<String>,
+    },
     /// File was renamed (with optional similarity score).
-    Renamed { from: String, to: String, score: u8 },
+    Renamed {
+        from: String,
+        to: String,
+        score: u8,
+        old_oid: Option<String>,
+        new_oid: Option<String>,
+    },
     /// File mode changed (e.g. exec bit toggled).
-    ModeChange { path: String },
+    ModeChange {
+        path: String,
+        old_oid: Option<String>,
+        new_oid: Option<String>,
+    },
 }
 
 /// A workspace tree snapshot backed by a temp Git object directory.
@@ -300,7 +320,17 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
         }
         let src_mode = parts[0];
         let dst_mode = parts[1];
+        let src_sha = parts[2];
+        let dst_sha = parts[3];
         let status = parts[4];
+
+        // All-zeros OID means the blob is absent (added/deleted side).
+        let zero_oid = "0000000000000000000000000000000000000000";
+        let parse_oid = |s: &str| -> Option<String> {
+            if s == zero_oid { None } else { Some(s.to_string()) }
+        };
+        let old_oid = parse_oid(src_sha);
+        let new_oid = parse_oid(dst_sha);
 
         // Read first path.
         let nul = bytes[i..]
@@ -317,14 +347,14 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
         let entry = match status_byte {
             'M' => {
                 if src_mode != dst_mode {
-                    DiffEntry::ModeChange { path: path1 }
+                    DiffEntry::ModeChange { path: path1, old_oid, new_oid }
                 } else {
-                    DiffEntry::Modified { path: path1 }
+                    DiffEntry::Modified { path: path1, old_oid, new_oid }
                 }
             }
-            'A' => DiffEntry::Added { path: path1 },
-            'D' => DiffEntry::Deleted { path: path1 },
-            'T' => DiffEntry::Modified { path: path1 },
+            'A' => DiffEntry::Added { path: path1, new_oid },
+            'D' => DiffEntry::Deleted { path: path1, old_oid },
+            'T' => DiffEntry::Modified { path: path1, old_oid, new_oid },
             'R' => {
                 // Rename has a second path.
                 let nul = bytes[i..].iter().position(|&b| b == 0).ok_or_else(|| {
@@ -339,6 +369,8 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
                     from: path1,
                     to: path2,
                     score,
+                    old_oid,
+                    new_oid,
                 }
             }
             'C' => {
@@ -350,9 +382,9 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
                     .context("raw diff copy target utf8")?
                     .to_string();
                 i += nul + 1;
-                DiffEntry::Added { path: path2 }
+                DiffEntry::Added { path: path2, new_oid }
             }
-            _ => DiffEntry::Modified { path: path1 },
+            _ => DiffEntry::Modified { path: path1, old_oid, new_oid },
         };
         entries.push(entry);
     }

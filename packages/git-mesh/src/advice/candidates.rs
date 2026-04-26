@@ -151,6 +151,8 @@ pub struct MeshRange {
     pub path: std::path::PathBuf,
     pub start: u32,
     pub end: u32,
+    /// True when the mesh pin covers the whole file rather than a line range.
+    pub whole: bool,
     pub status: MeshRangeStatus,
 }
 
@@ -159,6 +161,8 @@ pub struct StagedAddr {
     pub path: std::path::PathBuf,
     pub start: u32,
     pub end: u32,
+    /// True when the staged address covers the whole file.
+    pub whole: bool,
 }
 
 pub struct StagingState<'a> {
@@ -260,15 +264,16 @@ fn partner_candidates_for_trigger_kind(
         .filter(|partner| partner.name == touched.name && !same_range(partner, touched))
         .map(|partner| {
             let partner_path = partner.path.to_string_lossy();
+            let (ps, pe) = if partner.whole {
+                (None, None)
+            } else {
+                (Some(partner.start as i64), Some(partner.end as i64))
+            };
             bare_candidate(
                 &partner.name,
                 &partner.why,
                 kind,
-                (
-                    &partner_path,
-                    Some(partner.start as i64),
-                    Some(partner.end as i64),
-                ),
+                (&partner_path, ps, pe),
                 (trigger_path, trigger_start, trigger_end),
             )
         })
@@ -374,7 +379,9 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
             if read.path != path_str.as_ref() {
                 continue;
             }
-            if ranges_overlap(read_start, read_end, range.start, range.end) {
+            let mesh_start = if range.whole { 0 } else { range.start };
+            let mesh_end = if range.whole { u32::MAX } else { range.end };
+            if ranges_overlap(read_start, read_end, mesh_start, mesh_end) {
                 out.extend(partner_candidates_for_trigger(
                     input,
                     &read.path,
@@ -397,15 +404,40 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
     let mut out = Vec::new();
     for entry in input.incr_delta {
         match entry {
-            DiffEntry::Modified { path }
-            | DiffEntry::Added { path }
-            | DiffEntry::Deleted { path }
-            | DiffEntry::ModeChange { path } => {
-                out.extend(delta_path_partners(input, path));
+            DiffEntry::Modified { path, old_oid, new_oid }
+            | DiffEntry::ModeChange { path, old_oid, new_oid } => {
+                let mut cands = delta_path_partners(input, path);
+                for c in &mut cands {
+                    c.old_blob = old_oid.clone();
+                    c.new_blob = new_oid.clone();
+                }
+                out.extend(cands);
             }
-            DiffEntry::Renamed { from, to, .. } => {
-                out.extend(delta_path_partners(input, from));
-                out.extend(delta_path_partners(input, to));
+            DiffEntry::Added { path, new_oid } => {
+                let mut cands = delta_path_partners(input, path);
+                for c in &mut cands {
+                    c.new_blob = new_oid.clone();
+                }
+                out.extend(cands);
+            }
+            DiffEntry::Deleted { path, old_oid } => {
+                let mut cands = delta_path_partners(input, path);
+                for c in &mut cands {
+                    c.old_blob = old_oid.clone();
+                }
+                out.extend(cands);
+            }
+            DiffEntry::Renamed { from, to, old_oid, new_oid, .. } => {
+                let mut cands_from = delta_path_partners(input, from);
+                for c in &mut cands_from {
+                    c.old_blob = old_oid.clone();
+                }
+                out.extend(cands_from);
+                let mut cands_to = delta_path_partners(input, to);
+                for c in &mut cands_to {
+                    c.new_blob = new_oid.clone();
+                }
+                out.extend(cands_to);
             }
         }
     }
@@ -435,10 +467,10 @@ pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
         .iter()
         .chain(input.session_delta.iter())
         .flat_map(|entry| match entry {
-            DiffEntry::Modified { path }
-            | DiffEntry::Added { path }
-            | DiffEntry::Deleted { path }
-            | DiffEntry::ModeChange { path } => vec![path.as_str()],
+            DiffEntry::Modified { path, .. }
+            | DiffEntry::Added { path, .. }
+            | DiffEntry::Deleted { path, .. }
+            | DiffEntry::ModeChange { path, .. } => vec![path.as_str()],
             DiffEntry::Renamed { from, to, .. } => vec![from.as_str(), to.as_str()],
         })
         .collect();
@@ -452,12 +484,17 @@ pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
             if touched_paths.contains(path_str.as_ref()) {
                 continue;
             }
+            let (rs, re) = if range.whole {
+                (None, None)
+            } else {
+                (Some(range.start as i64), Some(range.end as i64))
+            };
             out.push(bare_candidate(
                 &range.name,
                 &range.why,
                 ReasonKind::Terminal,
-                (&path_str, Some(range.start as i64), Some(range.end as i64)),
-                (&path_str, Some(range.start as i64), Some(range.end as i64)),
+                (&path_str, rs, re),
+                (&path_str, rs, re),
             ));
         }
     }
@@ -597,22 +634,32 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
     // staged adds overlapping a mesh range → StagingCrossCut
     for add in input.staging.adds {
         let add_path = add.path.to_string_lossy();
+        let add_start = if add.whole { 0 } else { add.start };
+        let add_end = if add.whole { u32::MAX } else { add.end };
         for range in input.mesh_ranges {
             let range_path = range.path.to_string_lossy();
             if add_path.as_ref() != range_path.as_ref() {
                 continue;
             }
-            if ranges_overlap(add.start, add.end, range.start, range.end) {
+            let mesh_start = if range.whole { 0 } else { range.start };
+            let mesh_end = if range.whole { u32::MAX } else { range.end };
+            if ranges_overlap(add_start, add_end, mesh_start, mesh_end) {
+                let (rs, re) = if range.whole {
+                    (None, None)
+                } else {
+                    (Some(range.start as i64), Some(range.end as i64))
+                };
+                let (as_, ae) = if add.whole {
+                    (None, None)
+                } else {
+                    (Some(add.start as i64), Some(add.end as i64))
+                };
                 out.push(bare_candidate(
                     &range.name,
                     &range.why,
                     ReasonKind::StagingCrossCut,
-                    (
-                        &range_path,
-                        Some(range.start as i64),
-                        Some(range.end as i64),
-                    ),
-                    (&add_path, Some(add.start as i64), Some(add.end as i64)),
+                    (&range_path, rs, re),
+                    (&add_path, as_, ae),
                 ));
             }
         }
@@ -621,27 +668,33 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
     // staged removes fully covering a mesh range → EmptyMesh
     for remove in input.staging.removes {
         let rem_path = remove.path.to_string_lossy();
+        let rem_start = if remove.whole { 0 } else { remove.start };
+        let rem_end = if remove.whole { u32::MAX } else { remove.end };
         for range in input.mesh_ranges {
             let range_path = range.path.to_string_lossy();
             if rem_path.as_ref() != range_path.as_ref() {
                 continue;
             }
+            let mesh_start = if range.whole { 0 } else { range.start };
+            let mesh_end = if range.whole { u32::MAX } else { range.end };
             // A remove empties the mesh if it covers the entire mesh range
-            if remove.start <= range.start && remove.end >= range.end {
+            if rem_start <= mesh_start && rem_end >= mesh_end {
+                let (rs, re) = if range.whole {
+                    (None, None)
+                } else {
+                    (Some(range.start as i64), Some(range.end as i64))
+                };
+                let (rms, rme) = if remove.whole {
+                    (None, None)
+                } else {
+                    (Some(remove.start as i64), Some(remove.end as i64))
+                };
                 out.push(bare_candidate(
                     &range.name,
                     &range.why,
                     ReasonKind::EmptyMesh,
-                    (
-                        &range_path,
-                        Some(range.start as i64),
-                        Some(range.end as i64),
-                    ),
-                    (
-                        &rem_path,
-                        Some(remove.start as i64),
-                        Some(remove.end as i64),
-                    ),
+                    (&range_path, rs, re),
+                    (&rem_path, rms, rme),
                 ));
             }
         }
@@ -668,6 +721,19 @@ mod tests {
             path: PathBuf::from(path),
             start,
             end,
+            whole: false,
+            status: MeshRangeStatus::Stable,
+        }
+    }
+
+    fn make_whole_mesh_range(name: &str, path: &str) -> MeshRange {
+        MeshRange {
+            name: name.to_string(),
+            why: "why text".to_string(),
+            path: PathBuf::from(path),
+            start: 0,
+            end: u32::MAX,
+            whole: true,
             status: MeshRangeStatus::Stable,
         }
     }
@@ -797,6 +863,8 @@ mod tests {
         ];
         let delta = [DiffEntry::Modified {
             path: "src/net.rs".to_string(),
+            old_oid: None,
+            new_oid: None,
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -825,6 +893,8 @@ mod tests {
         let ranges = [make_mesh_range("net-mesh", "src/net.rs", 1, 50)];
         let delta = [DiffEntry::Modified {
             path: "src/other.rs".to_string(),
+            old_oid: None,
+            new_oid: None,
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -873,6 +943,8 @@ mod tests {
         r.status = MeshRangeStatus::Changed;
         let delta = [DiffEntry::Modified {
             path: "src/drift.rs".to_string(),
+            old_oid: None,
+            new_oid: None,
         }];
         let input = CandidateInput {
             session_delta: &delta,
@@ -903,6 +975,8 @@ mod tests {
             from: "src/old.rs".to_string(),
             to: "src/new.rs".to_string(),
             score: 95,
+            old_oid: None,
+            new_oid: None,
         }];
         let input = CandidateInput {
             session_delta: &delta,
@@ -934,6 +1008,8 @@ mod tests {
         let ranges = [make_mesh_range("shrink-mesh", "src/big.rs", 1, 200)];
         let delta = [DiffEntry::Modified {
             path: "src/big.rs".to_string(),
+            old_oid: None,
+            new_oid: None,
         }];
         // Phase C will attach old_lines/new_lines to DiffEntry; for now the
         // detector must detect "range end exceeds new blob size" to emit RangeCollapse.
@@ -965,6 +1041,7 @@ mod tests {
             path: PathBuf::from("src/api.rs"),
             start: 20,
             end: 40,
+            whole: false,
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -993,6 +1070,7 @@ mod tests {
             path: PathBuf::from("src/api.rs"),
             start: 10,
             end: 50,
+            whole: false,
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1240,5 +1318,127 @@ mod tests {
     #[test]
     fn empty_input_compiles() {
         let _i = empty_input(&[], &[], &[], &[]);
+    }
+
+    // ── whole-file pin rendering (Bug 1) ─────────────────────────────────────
+
+    /// When the partner mesh range is whole-file (whole=true), the produced
+    /// Candidate must have partner_start=None and partner_end=None so that
+    /// format_addr renders it as a bare path with no #L… suffix.
+    #[test]
+    fn whole_file_partner_produces_none_range() {
+        let trigger = make_mesh_range("checkout-flow", "web/checkout.tsx", 1, 100);
+        let partner = make_whole_mesh_range("checkout-flow", "api/charge.ts");
+        let delta = [DiffEntry::Modified {
+            path: "web/checkout.tsx".to_string(),
+            old_oid: None,
+            new_oid: None,
+        }];
+        let input = CandidateInput {
+            session_delta: &[],
+            incr_delta: &delta,
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &[trigger, partner],
+            internal_path_prefixes: &[],
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
+        };
+        let result = detect_delta_intersects_mesh(&input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].partner_path, "api/charge.ts");
+        assert_eq!(result[0].partner_start, None, "whole-file partner must have None start");
+        assert_eq!(result[0].partner_end, None, "whole-file partner must have None end");
+    }
+
+    // ── blob OID propagation (Bug 2) ─────────────────────────────────────────
+
+    /// Two successive content edits (differing old/new OIDs) must produce two
+    /// distinct fingerprints so the second edit is not suppressed.
+    #[test]
+    fn successive_content_edits_produce_distinct_fingerprints() {
+        use crate::advice::fingerprint::fingerprint;
+
+        let ranges = [
+            make_mesh_range("checkout-flow", "web/checkout.tsx", 1, 100),
+            make_mesh_range("checkout-flow", "api/charge.ts", 1, 80),
+        ];
+
+        let delta_first = [DiffEntry::Modified {
+            path: "web/checkout.tsx".to_string(),
+            old_oid: Some("aaa0000000000000000000000000000000000001".to_string()),
+            new_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
+        }];
+        let input_first = CandidateInput {
+            session_delta: &[],
+            incr_delta: &delta_first,
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &ranges,
+            internal_path_prefixes: &[],
+            staging: StagingState { adds: &[], removes: &[] },
+        };
+        let cands_first = detect_delta_intersects_mesh(&input_first);
+        assert_eq!(cands_first.len(), 1);
+
+        let delta_second = [DiffEntry::Modified {
+            path: "web/checkout.tsx".to_string(),
+            old_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
+            new_oid: Some("ccc0000000000000000000000000000000000003".to_string()),
+        }];
+        let input_second = CandidateInput {
+            session_delta: &[],
+            incr_delta: &delta_second,
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &ranges,
+            internal_path_prefixes: &[],
+            staging: StagingState { adds: &[], removes: &[] },
+        };
+        let cands_second = detect_delta_intersects_mesh(&input_second);
+        assert_eq!(cands_second.len(), 1);
+
+        assert_ne!(
+            fingerprint(&cands_first[0]),
+            fingerprint(&cands_second[0]),
+            "distinct blob OIDs must yield distinct fingerprints"
+        );
+    }
+
+    /// A no-op render (same delta repeated, same OIDs) produces the same
+    /// fingerprint as the first render, so suppression correctly silences it.
+    #[test]
+    fn noop_render_produces_same_fingerprint() {
+        use crate::advice::fingerprint::fingerprint;
+
+        let ranges = [
+            make_mesh_range("checkout-flow", "web/checkout.tsx", 1, 100),
+            make_mesh_range("checkout-flow", "api/charge.ts", 1, 80),
+        ];
+        let delta = [DiffEntry::Modified {
+            path: "web/checkout.tsx".to_string(),
+            old_oid: Some("aaa0000000000000000000000000000000000001".to_string()),
+            new_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
+        }];
+        let input = CandidateInput {
+            session_delta: &[],
+            incr_delta: &delta,
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &ranges,
+            internal_path_prefixes: &[],
+            staging: StagingState { adds: &[], removes: &[] },
+        };
+        let cands_a = detect_delta_intersects_mesh(&input);
+        let cands_b = detect_delta_intersects_mesh(&input);
+        assert_eq!(cands_a.len(), 1);
+        assert_eq!(cands_b.len(), 1);
+        assert_eq!(
+            fingerprint(&cands_a[0]),
+            fingerprint(&cands_b[0]),
+            "identical delta must yield identical fingerprint (suppression must fire)"
+        );
     }
 }

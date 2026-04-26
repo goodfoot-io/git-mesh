@@ -699,4 +699,22 @@ mod tests {
         let out = render(&[c], &[], false);
         assert!(out.contains("[CHANGED]"));
     }
+
+    /// A whole-file partner (partner_start=None, partner_end=None) must render
+    /// as a bare path with no `#L…` suffix (Bug 1).
+    #[test]
+    fn whole_file_partner_renders_without_line_suffix() {
+        let mut c = cand("checkout-flow", "api/charge.ts");
+        c.partner_start = None;
+        c.partner_end = None;
+        let out = render(&[c], &[], false);
+        assert!(
+            out.contains("# - api/charge.ts\n"),
+            "whole-file partner must render as bare path; got:\n{out}"
+        );
+        assert!(
+            !out.contains("api/charge.ts#L"),
+            "whole-file partner must not have #L suffix; got:\n{out}"
+        );
+    }
 }
