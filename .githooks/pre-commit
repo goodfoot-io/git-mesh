@@ -11,7 +11,7 @@ if [ -z "$STAGED_FILES" ]; then
     exit 0
 fi
 
-VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[^/]+/package\.json|npm/[^/]+/package\.json|plugins/[^/]+/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json)$' || true)
+VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[^/]+/package\.json|npm/[^/]+/package\.json|plugins/[^/]+/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json|packages/git-mesh/Cargo\.toml)$' || true)
 if [ -n "$VERSION_LOCK_STAGED" ]; then
     echo "Locking package + plugin versions to highest semver..."
     node <<'NODE'
@@ -45,6 +45,33 @@ for (const f of glob('npm', 'package.json')) addPackageJson(f);
 for (const name of fs.existsSync('plugins') ? fs.readdirSync('plugins') : []) {
   const file = path.join('plugins', name, '.claude-plugin', 'plugin.json');
   if (fs.existsSync(file)) addPackageJson(file);
+}
+
+// Cargo manifest: packages/git-mesh/Cargo.toml. The CLI's --version is wired
+// to clap's version derive (CARGO_PKG_VERSION at build time), so this MUST
+// stay locked to the JSON manifests or the compiled binary drifts.
+const cargoFile = 'packages/git-mesh/Cargo.toml';
+if (fs.existsSync(cargoFile)) {
+  // Match the version line inside the [package] block only — never a
+  // dependency's `version = "..."`.
+  const cargoState = { text: fs.readFileSync(cargoFile, 'utf8') };
+  const readPkgVersion = (text) => {
+    const m = /^\[package\][^[]*?^version\s*=\s*"([^"]+)"/ms.exec(text);
+    if (!m) throw new Error(`Could not find [package] version in ${cargoFile}`);
+    return m[1];
+  };
+  const writePkgVersion = (text, v) => {
+    return text.replace(
+      /(^\[package\][^[]*?^version\s*=\s*")([^"]+)(")/ms,
+      `$1${v}$3`,
+    );
+  };
+  targets.push({
+    file: cargoFile,
+    get: () => readPkgVersion(cargoState.text),
+    set: (_, v) => { cargoState.text = writePkgVersion(cargoState.text, v); },
+    cargo: cargoState,
+  });
 }
 
 // Marketplace: each plugins[].version must match
@@ -86,6 +113,10 @@ function loadJson(file) {
 
 const versions = [];
 for (const t of targets) {
+  if (t.cargo) {
+    versions.push(t.get());
+    continue;
+  }
   const json = t.shared || loadJson(t.file);
   versions.push(t.get(json));
 }
@@ -94,6 +125,13 @@ const highest = versions.slice().sort(compareSemver).at(-1);
 // Write back
 const changed = new Set();
 for (const t of targets) {
+  if (t.cargo) {
+    if (t.get() !== highest) {
+      t.set(null, highest);
+      changed.add(t.file);
+    }
+    continue;
+  }
   const json = t.shared || loadJson(t.file);
   if (t.get(json) !== highest) {
     t.set(json, highest);
@@ -101,6 +139,12 @@ for (const t of targets) {
   }
 }
 for (const file of changed) {
+  const cargoTarget = targets.find((x) => x.cargo && x.file === file);
+  if (cargoTarget) {
+    fs.writeFileSync(file, cargoTarget.cargo.text);
+    console.log(`Updated ${file} -> ${highest}`);
+    continue;
+  }
   const json = loaded.get(file) || (file === marketplaceFile ? targets.find((x) => x.shared).shared : null);
   fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`);
   console.log(`Updated ${file} -> ${highest}`);
@@ -130,7 +174,9 @@ NODE
         packages/*/package.json \
         npm/*/package.json \
         plugins/*/.claude-plugin/plugin.json \
-        .claude-plugin/marketplace.json 2>/dev/null || true
+        .claude-plugin/marketplace.json \
+        packages/git-mesh/Cargo.toml \
+        packages/git-mesh/Cargo.lock 2>/dev/null || true
     git add yarn.lock .yarn/install-state.gz 2>/dev/null || true
 fi
 

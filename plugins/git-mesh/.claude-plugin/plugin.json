@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin.json",
   "name": "git-mesh",
   "version": "1.0.3",
-  "description": "Record and audit durable relationships between exact line ranges in a Git repository.",
+  "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
   "author": {
     "name": "goodfoot",
     "url": "https://github.com/goodfoot-io"
@@ -13,7 +13,10 @@
   "keywords": [
     "git",
     "mesh",
-    "ranges",
+    "dependencies",
+    "semantic",
+    "coupling",
+    "documentation",
     "drift",
     "audit"
   ]

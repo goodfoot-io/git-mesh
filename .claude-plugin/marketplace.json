@@ -5,19 +5,22 @@
     "url": "https://github.com/goodfoot-io"
   },
   "metadata": {
-    "description": "Anchor line ranges across files with a durable why."
+    "description": "Track implicit semantic dependencies in a git repo — couplings between line ranges (or whole files), in code or prose, that no schema, type, or test enforces."
   },
   "plugins": [
     {
       "name": "git-mesh",
       "source": "./plugins/git-mesh",
-      "description": "Record and audit durable relationships between exact line ranges in a Git repository.",
+      "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
       "version": "1.0.3",
       "category": "git",
       "keywords": [
         "git",
         "mesh",
-        "ranges",
+        "dependencies",
+        "semantic",
+        "coupling",
+        "documentation",
         "drift",
         "audit"
       ]
