@@ -14,5 +14,6 @@ description: Use with `git mesh` or meshes.
 - **A `git mesh` command errored or behaved unexpectedly ("nothing staged", "needs a why", staged sidecar drift, `git log --all` noise, `doctor`)**: Read `./sections/command-quirks-and-errors.md`
 - **The job is CI wiring, PR gating, `--since <merge-base>`, `fetch`/`push`, fresh-clone tolerance, or advisory reports**: Read `./sections/ci-and-sync.md`
 - **A question asks what meshes exist, what a mesh currently says, its history, or which meshes touch a given path/range**: Read `./sections/inspecting-meshes.md`
+- **The question is about what the Claude Code hooks inject into `additionalContext` / `systemMessage`, when each hook fires, or why an injection appeared / didn't appear**: Read `./sections/understanding-hook-output.md`
 - **Exact flag, subcommand, range grammar, or reserved-name lookup is needed**: Read `./sections/command-reference.md`
 </instructions>
