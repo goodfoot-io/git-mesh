@@ -70,6 +70,30 @@ fn run_advice_render(
     use crate::advice::session::state::TouchInterval;
     use crate::advice::workspace_tree;
 
+    /// RAII guard that removes a directory if the path still exists at drop
+    /// time. The success path calls `.disarm()` before renaming the directory
+    /// out from under the guard. (Finding 6.)
+    struct DirGuard {
+        path: Option<std::path::PathBuf>,
+    }
+    impl DirGuard {
+        fn new(path: std::path::PathBuf) -> Self {
+            Self { path: Some(path) }
+        }
+        fn disarm(mut self) {
+            self.path = None;
+        }
+    }
+    impl Drop for DirGuard {
+        fn drop(&mut self) {
+            if let Some(p) = self.path.take()
+                && p.exists()
+            {
+                let _ = std::fs::remove_dir_all(&p);
+            }
+        }
+    }
+
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, session_id)?;
@@ -88,6 +112,9 @@ fn run_advice_render(
     let current_objects = store.dir().join(format!("current.objects-{cur_uuid}"));
     std::fs::create_dir_all(&current_objects)
         .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", current_objects.display()))?;
+    // Guard the temp objects dir so any `?` between here and the rename
+    // below reclaims the directory on drop. (Finding 6.)
+    let current_objects_guard = DirGuard::new(current_objects.clone());
     let current = workspace_tree::capture(repo, &current_objects)?;
 
     // Step 4: diff_trees(baseline → current).
@@ -100,21 +127,30 @@ fn run_advice_render(
         &current_objects,
     )?;
 
-    // Step 5: read last-flush.state (if absent, treat as a copy of baseline).
+    // Step 5: read last-flush.state (if absent OR inconsistent with the
+    // contents of last-flush.objects/, fall back to baseline — see
+    // finding 2b: a crash between the rename and the state write leaves a
+    // stale state pointing at a tree that's no longer in objects/).
     let last_flush_state_path = store.dir().join("last-flush.state");
-    let last_flush_state = if last_flush_state_path.exists() {
-        store.read_last_flush()?
+    let last_flush_objects_path = store.last_flush_objects_dir();
+    let (last_flush_state, last_flush_objects_for_diff) = if last_flush_state_path.exists() {
+        let st = store.read_last_flush()?;
+        let consistent = last_flush_objects_path.exists()
+            && tree_resolves_in(repo, &st.tree_sha, &last_flush_objects_path);
+        if consistent {
+            (st, last_flush_objects_path.clone())
+        } else {
+            eprintln!(
+                "git mesh advice: last-flush state inconsistent with last-flush.objects; falling back to baseline diff"
+            );
+            (baseline.clone(), baseline_objects.clone())
+        }
     } else {
-        baseline.clone()
+        (baseline.clone(), baseline_objects.clone())
     };
 
     // Step 6: diff_trees(last_flush → current).
-    let last_flush_objects = store.last_flush_objects_dir();
-    let last_flush_objects_for_diff = if last_flush_objects.exists() {
-        last_flush_objects.clone()
-    } else {
-        baseline_objects.clone()
-    };
+    let last_flush_objects = last_flush_objects_path;
     let incr_delta = workspace_tree::diff_trees(
         repo,
         &last_flush_state.tree_sha,
@@ -123,8 +159,8 @@ fn run_advice_render(
         &current_objects,
     )?;
 
-    // Step 7: reads_since_cursor.
-    let read_cursor = store.read_cursor()?;
+    // Step 7: reads_since_cursor — cursor lives in last-flush.state.
+    let read_cursor = last_flush_state.read_cursor;
     let new_reads = store.reads_since_cursor(read_cursor)?;
 
     // Step 8: load mesh state. Treat any error as empty (greenfield: a
@@ -248,25 +284,25 @@ fn run_advice_render(
     let new_doc_topics: Vec<String> = emitted_topics.into_iter().collect();
     let rendered = crate::advice::render::render(&kept, &new_doc_topics, documentation);
 
-    // Step 16: pre-stdout state mutations (broken-pipe safety).
-    if !emitted_fps.is_empty() {
-        store.append_advice_seen(&emitted_fps)?;
-    }
-    if !new_doc_topics.is_empty() {
-        store.append_docs_seen(&new_doc_topics)?;
-    }
-    if !incr_delta.is_empty() || !new_reads.is_empty() {
-        let ts = chrono::Utc::now().to_rfc3339();
-        let interval = TouchInterval {
-            path: "*".to_string(),
-            start_line: 0,
-            end_line: 0,
-            ts,
-        };
-        store.append_touch(&interval)?;
-    }
+    // Build touch intervals (finding 3): one per affected path/range from
+    // incr_delta + new_reads, sharing a single rfc3339 timestamp so a
+    // future co-touch detector can group them by interval.
+    let touch_ts = chrono::Utc::now().to_rfc3339();
+    let touch_intervals_to_append: Vec<TouchInterval> =
+        build_touch_intervals(incr_delta.as_slice(), &new_reads, &touch_ts);
 
-    // d) Promote current.objects-<uuid>/ to last-flush.objects/.
+    // Step 16 (revised — finding 1 + finding 2a):
+    //
+    // 1. Cache-correctness invariants (rename last-flush.objects, write
+    //    last-flush.state with the new read_cursor) ALWAYS run before
+    //    stdout. They survive an EPIPE so the next render diffs against
+    //    the tree we just rendered against, not against a stale one.
+    // 2. Seen-set / touches.jsonl appends ONLY run on stdout success or
+    //    EPIPE. Any other stdout error returns Err without advancing
+    //    those sets, so candidates resurface on the next render.
+
+    // d) Promote current.objects-<uuid>/ to last-flush.objects/. From
+    // here on the guard must NOT remove the directory.
     if last_flush_objects.exists() {
         std::fs::remove_dir_all(&last_flush_objects).map_err(|e| {
             anyhow::anyhow!(
@@ -282,29 +318,121 @@ fn run_advice_render(
             last_flush_objects.display()
         )
     })?;
+    current_objects_guard.disarm();
 
-    // e) Write last-flush.state.
+    // e) Write last-flush.state with the consolidated read_cursor (2a).
+    let new_cursor = store.reads_byte_len()?;
     let new_last_flush = crate::advice::session::state::BaselineState {
         schema_version: crate::advice::session::SCHEMA_VERSION,
         tree_sha: current.tree_sha.clone(),
         index_sha: baseline.index_sha.clone(),
         captured_at: chrono::Utc::now().to_rfc3339(),
+        read_cursor: new_cursor,
     };
     store.write_last_flush(&new_last_flush)?;
 
-    // Persist new read cursor (sidecar to the committed state schema).
-    let new_cursor = store.reads_byte_len()?;
-    store.write_read_cursor(new_cursor)?;
-
-    // Step 17: write rendered output. Tolerant of EPIPE — state was advanced first.
-    if !rendered.is_empty() {
-        use std::io::Write;
+    // Step 17: write rendered output, then on success/EPIPE advance the
+    // observation sets (advice-seen, docs-seen, touches.jsonl).
+    use std::io::Write;
+    let stdout_result = if rendered.is_empty() {
+        Ok(())
+    } else {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        let _ = handle.write_all(rendered.as_bytes());
+        handle.write_all(rendered.as_bytes()).and_then(|()| handle.flush())
+    };
+    match stdout_result {
+        Ok(()) => {}
+        Err(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            // intentional: the pipe peer left; treat as observed.
+        }
+        Err(e) => {
+            // Non-EPIPE write failure: do NOT advance seen sets, so the
+            // candidates resurface on the next render. (Finding 1.)
+            return Err(anyhow::Error::from(e).context("write advice to stdout"));
+        }
+    }
+
+    if !emitted_fps.is_empty() {
+        store.append_advice_seen(&emitted_fps)?;
+    }
+    if !new_doc_topics.is_empty() {
+        store.append_docs_seen(&new_doc_topics)?;
+    }
+    for interval in &touch_intervals_to_append {
+        store.append_touch(interval)?;
     }
 
     Ok(0)
+}
+
+/// Translate a session's `incr_delta` + `new_reads` into one
+/// `TouchInterval` per affected path/range, all sharing `ts` so a co-touch
+/// detector can group them by timestamp. (Finding 3.)
+fn build_touch_intervals(
+    incr_delta: &[crate::advice::workspace_tree::DiffEntry],
+    new_reads: &[crate::advice::session::state::ReadRecord],
+    ts: &str,
+) -> Vec<crate::advice::session::state::TouchInterval> {
+    use crate::advice::session::state::TouchInterval;
+    use crate::advice::workspace_tree::DiffEntry;
+    let mut out: Vec<TouchInterval> = Vec::new();
+    for entry in incr_delta {
+        match entry {
+            DiffEntry::Modified { path }
+            | DiffEntry::Added { path }
+            | DiffEntry::Deleted { path }
+            | DiffEntry::ModeChange { path } => {
+                out.push(TouchInterval {
+                    path: path.clone(),
+                    start_line: 0,
+                    end_line: 0,
+                    ts: ts.to_string(),
+                });
+            }
+            DiffEntry::Renamed { from, to, .. } => {
+                out.push(TouchInterval {
+                    path: from.clone(),
+                    start_line: 0,
+                    end_line: 0,
+                    ts: ts.to_string(),
+                });
+                out.push(TouchInterval {
+                    path: to.clone(),
+                    start_line: 0,
+                    end_line: 0,
+                    ts: ts.to_string(),
+                });
+            }
+        }
+    }
+    for r in new_reads {
+        out.push(TouchInterval {
+            path: r.path.clone(),
+            start_line: r.start_line.unwrap_or(0),
+            end_line: r.end_line.unwrap_or(0),
+            ts: ts.to_string(),
+        });
+    }
+    out
+}
+
+/// Best-effort check that `tree_sha` resolves inside `objects_dir` (using
+/// `git cat-file -e` against an alternate object directory). Returns false
+/// on any failure, including when git isn't usable — the caller falls back
+/// to baseline diff in that case. (Finding 2b.)
+fn tree_resolves_in(
+    _repo: &gix::Repository,
+    tree_sha: &str,
+    objects_dir: &std::path::Path,
+) -> bool {
+    let out = std::process::Command::new("git")
+        .env("GIT_OBJECT_DIRECTORY", objects_dir)
+        .args(["cat-file", "-e", tree_sha])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    matches!(out, Ok(s) if s.success())
 }
 
 fn default_engine_options() -> crate::types::EngineOptions {
@@ -382,6 +510,7 @@ fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32
         tree_sha: tree.tree_sha.clone(),
         index_sha,
         captured_at,
+        read_cursor: 0,
     };
     store.write_baseline(&state)?;
 

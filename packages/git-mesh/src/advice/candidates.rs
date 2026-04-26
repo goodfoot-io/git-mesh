@@ -323,11 +323,18 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
     out
 }
 
-/// Deferred — requires hunk-range parsing of `DiffEntry` to confirm overlap.
-/// Without hunk data, emitting `Partner` for every modified meshed path
-/// over-emits K candidates per file and burns fingerprints in the dedupe set
-/// before sub-card C can supply correct hunk ranges. Sub-card C will populate
-/// `DiffEntry` with hunk ranges and re-enable this detector.
+/// Deferred detector — currently returns no candidates.
+///
+/// User-experienced gap: edit-into-mesh advice will not surface. A user
+/// editing a meshed file will not see partner ranges for that mesh until
+/// this detector lands; only `read_intersects_mesh` and the partner-drift
+/// path light up the relevant meshes today.
+///
+/// Why deferred: requires hunk-range data on `DiffEntry`. Emitting
+/// `Partner` for every modified meshed path would burn fingerprints in
+/// the dedupe set before correct candidates exist (not recoverable
+/// without manual reset). Tracked as a follow-up card; do not enable
+/// until `DiffEntry` carries hunk ranges and intersection is range-exact.
 pub fn detect_delta_intersects_mesh(_input: &CandidateInput<'_>) -> Vec<Candidate> {
     Vec::new()
 }
@@ -378,12 +385,17 @@ pub fn detect_rename_consequence(input: &CandidateInput<'_>) -> Vec<Candidate> {
     out
 }
 
-/// Deferred — requires blob line-count comparison not yet provided by
-/// `DiffEntry`. Without line counts, emitting `RangeCollapse` on every
-/// `Modified` entry would pollute the dedupe set: once the correct collapse
-/// arrives in sub-card C, its fingerprint would already be burned. Sub-card C
-/// will populate `DiffEntry` with old/new line counts and re-enable this
-/// detector.
+/// Deferred detector — currently returns no candidates.
+///
+/// User-experienced gap: range-collapse advice will not surface. A user
+/// whose edit shrinks a meshed range below its recorded extent will not
+/// be prompted to narrow-or-retire that range until this detector lands.
+///
+/// Why deferred: requires blob line counts on `DiffEntry`. Emitting
+/// `RangeCollapse` on every modified meshed path would pollute the
+/// fingerprint set; once correct collapses arrive their fingerprints
+/// would already be burned. Tracked as a follow-up card; do not enable
+/// until `DiffEntry` carries old/new line counts.
 pub fn detect_range_shrink(_input: &CandidateInput<'_>) -> Vec<Candidate> {
     Vec::new()
 }

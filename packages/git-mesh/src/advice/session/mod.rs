@@ -75,13 +75,11 @@ impl SessionStore {
                 .open(&path)
                 .with_context(|| format!("truncate `{}`", path.display()))?;
         }
-        // Remove the read-cursor sidecar (snapshot resets render bookkeeping).
-        let cursor_path = self.dir.join("last-flush.read-cursor");
-        if cursor_path.exists() {
-            std::fs::remove_file(&cursor_path)
-                .with_context(|| format!("remove `{}`", cursor_path.display()))?;
-        }
-        // Remove existing *.objects directories.
+        // Remove existing *.objects directories AND any leftover
+        // current.objects-<uuid>/ scratch dirs from sessions that crashed
+        // mid-render before the rename to last-flush.objects/ landed
+        // (defense in depth for finding 6 — render now also cleans up
+        // these on its own error paths via an RAII guard).
         for entry in std::fs::read_dir(&self.dir)
             .with_context(|| format!("read_dir `{}`", self.dir.display()))?
         {
@@ -126,6 +124,12 @@ impl SessionStore {
     }
 
     /// Return all `ReadRecord` entries appended after byte offset `cursor`.
+    ///
+    /// Torn-tail recovery (finding 5): if the FINAL line of `reads.jsonl`
+    /// fails to parse, we assume a `read` invocation was interrupted
+    /// mid-`write_all` (SIGKILL, OOM, …) and skip that line with a stderr
+    /// warning. Earlier parse failures remain hard errors — those indicate
+    /// real corruption, not an interrupted append.
     pub fn reads_since_cursor(&self, cursor: u64) -> Result<Vec<ReadRecord>> {
         let path = self.dir.join("reads.jsonl");
         let f = match File::open(&path) {
@@ -137,20 +141,33 @@ impl SessionStore {
         let mut reader = BufReader::new(f);
         reader.seek(std::io::SeekFrom::Start(cursor))
             .with_context(|| format!("seek `{}`", path.display()))?;
-        let mut out = Vec::new();
+        // Collect (line_no, line) pairs first so we can know which is final.
+        let mut lines: Vec<(u32, String)> = Vec::new();
         for (idx, line) in reader.lines().enumerate() {
             let line_no = (idx as u32) + 1;
             let line = line.with_context(|| format!("read `{}`", path.display()))?;
+            lines.push((line_no, line));
+        }
+        let last_idx = lines.len().saturating_sub(1);
+        let mut out = Vec::new();
+        for (i, (line_no, line)) in lines.iter().enumerate() {
             if line.is_empty() {
                 continue;
             }
-            let rec: ReadRecord = serde_json::from_str(&line).map_err(|e| {
-                anyhow::anyhow!(
-                    "parse `reads.jsonl` at `{}` line {line_no}: {e}",
-                    path.display()
-                )
-            })?;
-            out.push(rec);
+            match serde_json::from_str::<ReadRecord>(line) {
+                Ok(rec) => out.push(rec),
+                Err(e) if i == last_idx => {
+                    eprintln!(
+                        "git mesh advice: reads.jsonl: torn final line at line {line_no} (offset >= {cursor}), skipping: {e}"
+                    );
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "parse `reads.jsonl` at `{}` line {line_no}: {e}",
+                        path.display()
+                    ));
+                }
+            }
         }
         Ok(out)
     }
@@ -256,31 +273,6 @@ impl SessionStore {
             out.insert(s);
         }
         Ok(out)
-    }
-
-    /// Read the persisted read-cursor (byte offset into `reads.jsonl` consumed
-    /// by the previous render). Absent file = 0.
-    ///
-    /// Stored as ASCII decimal in `last-flush.read-cursor`. A separate sidecar
-    /// (rather than a field on `LastFlushState`) preserves the committed state
-    /// schema; the cursor advances strictly before stdout, same crash-window
-    /// semantics as the `last-flush.objects` rename.
-    pub fn read_cursor(&self) -> Result<u64> {
-        let path = self.dir.join("last-flush.read-cursor");
-        match std::fs::read_to_string(&path) {
-            Ok(s) => s
-                .trim()
-                .parse::<u64>()
-                .with_context(|| format!("parse `{}`", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(e) => Err(e).with_context(|| format!("read `{}`", path.display())),
-        }
-    }
-
-    /// Atomically write the read-cursor to `last-flush.read-cursor`.
-    pub fn write_read_cursor(&self, cursor: u64) -> Result<()> {
-        let path = self.dir.join("last-flush.read-cursor");
-        store::atomic_write(&path, cursor.to_string().as_bytes())
     }
 
     /// Current byte length of `reads.jsonl`. Absent file = 0.

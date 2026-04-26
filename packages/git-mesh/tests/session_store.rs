@@ -171,15 +171,21 @@ fn malformed_jsonl_fails_closed_with_location() {
     let sid = session_id("malformed");
     let store = SessionStore::open(&repo_root, &git_dir, &sid).expect("open");
 
-    // Manually inject malformed content into reads.jsonl.
+    // Manually inject a malformed MID-FILE line (followed by a valid
+    // line) — torn-tail recovery (finding 5) only forgives the FINAL
+    // line; earlier corruption stays a hard error.
     let reads_path = store.baseline_objects_dir()
         .parent()
         .expect("parent")
         .join("reads.jsonl");
-    std::fs::write(&reads_path, b"not-valid-json\n").expect("write malformed");
+    std::fs::write(
+        &reads_path,
+        b"not-valid-json\n{\"path\":\"x\",\"start_line\":null,\"end_line\":null,\"ts\":\"t\"}\n",
+    )
+    .expect("write malformed");
 
     let result = store.reads_since_cursor(0);
-    assert!(result.is_err(), "malformed JSONL must return error");
+    assert!(result.is_err(), "malformed mid-file JSONL must return error");
     let msg = format!("{:?}", result.unwrap_err());
     // Error must mention the file and a line number.
     assert!(

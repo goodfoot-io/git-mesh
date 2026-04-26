@@ -158,9 +158,8 @@ render   → git mesh advice <sessionId>
 ${GIT_MESH_ADVICE_DIR:-/tmp/git-mesh/advice}/<repo-key>/<sessionId>/
   baseline.state           — JSON; tree_sha, index_sha, captured_at, schema_version
   baseline.objects/        — Git object directory backing the baseline tree
-  last-flush.state         — JSON; tree_sha as of the last successful render
+  last-flush.state         — JSON; tree_sha and read_cursor as of the last successful render
   last-flush.objects/      — Git object directory backing last-flush.state's tree
-  last-flush.read-cursor   — byte length of reads.jsonl consumed by the last render
   reads.jsonl              — append-only; one record per `read` invocation
   touches.jsonl            — append-only; one record per render with non-empty delta
   advice-seen.jsonl        — append-only; emitted candidate fingerprints
@@ -178,16 +177,39 @@ A single advisory lock per session directory serializes all advice
 commands for that session. `snapshot` blocks for the lock without a
 deadline; `read` and bare render use a 30-second bounded timeout. JSONL
 files are only ever appended under the lock — no atomic rename
-gymnastics. State files (`baseline.state`, `last-flush.state`,
-`last-flush.read-cursor`) use temp-then-rename.
+gymnastics. State files (`baseline.state`, `last-flush.state`) use
+temp-then-rename. The read cursor lives as a field on
+`last-flush.state` so a single rename advances both the tree pointer
+and the consumed-reads marker atomically.
 
 ### Broken-pipe ordering
 
-The render writes its state mutations (advice-seen, docs-seen, touches,
-last-flush.state, the read cursor, and the `current.objects-<uuid>/` →
-`last-flush.objects/` rename) **before** writing rendered output to
-stdout. A broken pipe on stdout therefore does not cause already-emitted
-candidates to reappear on the next render.
+The render runs cache-correctness mutations (`current.objects-<uuid>/` →
+`last-flush.objects/` rename, `last-flush.state` write including the
+new `read_cursor`) **before** writing rendered output to stdout, so the
+next render diffs against the tree we just rendered against, not a
+stale one.
+
+Observation-set advances (`advice-seen.jsonl`, `docs-seen.jsonl`,
+`touches.jsonl`) run **after** the stdout write — and only on stdout
+success or `BrokenPipe`. Any other stdout error returns Err without
+advancing those sets, so suppressed candidates resurface on the next
+render rather than being silently lost.
+
+### Deferred detectors
+
+Two detectors are deferred to a follow-up card and currently return no
+candidates:
+
+- `detect_delta_intersects_mesh` — implements §11 row 1 ("Path ∩
+  file-index", edit-into-mesh). User-experienced gap: editing a meshed
+  file does not surface partner ranges for that mesh until this lands.
+  Requires hunk-range data on `DiffEntry` to avoid burning fingerprints
+  on incorrect candidates.
+- `detect_range_shrink` — implements §11 row 8 ("Edit shrinks a meshed
+  range"). User-experienced gap: shrinking a meshed range below its
+  recorded extent does not produce a narrow-or-retire prompt until this
+  lands. Requires blob line-count data on `DiffEntry`.
 
 ### Fingerprint-based suppression
 

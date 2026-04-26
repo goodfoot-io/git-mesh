@@ -13,6 +13,13 @@ pub struct BaselineState {
     pub index_sha: String,
     /// RFC-3339 timestamp when the snapshot was taken.
     pub captured_at: String,
+    /// Byte offset into `reads.jsonl` consumed as of the last successful
+    /// render. Persisted inside the state file so a single `last-flush.state`
+    /// rename advances both the tree pointer and the read cursor atomically.
+    /// Defaults to 0 for backwards-compat with state files written before
+    /// this field existed.
+    #[serde(default)]
+    pub read_cursor: u64,
 }
 
 /// State written to `last-flush.state`; structurally identical to `BaselineState`.

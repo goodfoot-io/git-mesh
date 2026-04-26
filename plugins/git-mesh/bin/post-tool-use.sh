@@ -21,6 +21,16 @@ esac
 session_id="$(jq -r '.session_id // empty' <<<"$payload")"
 [[ -z "$session_id" ]] && exit 0
 
+# Force pending writes from the just-finished editor tool to land on
+# disk before workspace_tree::capture reads them. Without this, the
+# editor's buffered write can race the immediate render and the edit
+# does not surface until a later render — advice attribution drifts.
+# `sync` is POSIX and cheap (sub-second on any reasonable filesystem);
+# absence is treated as a soft fall-back rather than a hard skip.
+if command -v sync >/dev/null 2>&1; then
+  sync
+fi
+
 output="$(git mesh advice "$session_id" 2>/dev/null || true)"
 [[ -n "$output" ]] && emit_additional_context "PostToolUse" "$output"
 exit 0
