@@ -116,8 +116,11 @@ fn pending_add_sidecar_mismatch_fails_commit() -> Result<()> {
     Ok(())
 }
 
+/// Pending Remove with concurrent index drift on the same range: the
+/// range's index drift drives the gate (the remove acknowledges its own
+/// sidecar capture and is silent without independent drift).
 #[test]
-fn pending_remove_report_uses_range_address() -> Result<()> {
+fn pending_remove_with_index_drift_fails_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
     let _ = repo.run_mesh(["rm", "m", "file1.txt#L1-L5"])?;
@@ -129,13 +132,15 @@ fn pending_remove_report_uses_range_address() -> Result<()> {
 
     let out = repo.run_mesh(["pre-commit"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("- REMOVE file1.txt#L1-L5"),
-        "stdout={stdout}"
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout={stdout}, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        !stdout.contains("file1.txt L1-L5"),
-        "pending remove should use range-address syntax: {stdout}"
+        stdout.contains("Changed") && stdout.contains("file1.txt"),
+        "expected index drift on file1.txt to be reported; stdout={stdout}"
     );
     Ok(())
 }

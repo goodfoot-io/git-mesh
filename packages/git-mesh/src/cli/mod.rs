@@ -115,9 +115,9 @@ pub enum Commands {
     /// Audit the local mesh setup.
     Doctor(DoctorArgs),
 
-    /// Fail the current commit if the in-flight changes would leave any mesh stale.
+    /// Fail the current commit if any drift is visible in the staged tree.
     #[command(name = "pre-commit")]
-    PreCommit,
+    PreCommit(PreCommitArgs),
 
     /// Append events and flush session-scoped advice.
     Advice(advice::AdviceArgs),
@@ -238,6 +238,13 @@ pub struct StaleArgs {
     /// Only ranges anchored at or after this commit.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub since: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct PreCommitArgs {
+    /// Exit 0 even when drift is found (report-only mode).
+    #[arg(long)]
+    pub no_exit_code: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -426,7 +433,7 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         Commands::Doctor(args) => structural::run_doctor(repo, args),
         Commands::Fetch(args) => sync::run_fetch(repo, args),
         Commands::Push(args) => sync::run_push(repo, args),
-        Commands::PreCommit => pre_commit::run_pre_commit(repo),
+        Commands::PreCommit(args) => pre_commit::run_pre_commit(repo, args),
         Commands::Advice(args) => advice::run_advice(repo, args),
     }
 }

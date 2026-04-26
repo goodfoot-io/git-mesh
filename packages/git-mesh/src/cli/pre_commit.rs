@@ -1,19 +1,16 @@
-//! `git mesh pre-commit` — Phase 4 of `docs/stale-layers-plan.md`.
+//! `git mesh pre-commit` — fail-closed gate for the staged tree.
 //!
 //! Runs the resolver in pre-commit mode (HEAD + Index + Staged-mesh; no
-//! worktree), filters findings to those touching the in-flight commit's
-//! staged path set, and fails iff:
+//! worktree) and fails iff anything is rendered:
 //!
-//! - any filtered finding has `source == Some(Index)` and is not
-//!   acknowledged by a staged re-anchor, OR
-//! - any pending `Add`/`Remove` whose path intersects the staged paths
-//!   has `drift: Some(SidecarMismatch)`.
+//! - any non-Fresh, unacknowledged range finding, OR
+//! - any pending `Add`/`Remove` carrying `Some(PendingDrift)`.
 //!
-//! Worktree drift is **not** a pre-commit failure (per plan §"Phase 4").
-//! `Message` and `ConfigChange` pending ops never drive exit code (per
-//! plan §B3).
+//! `--no-exit-code` keeps the report but always exits 0 (informational
+//! mode). `Message` and `ConfigChange` pending ops never drive exit code.
 
 use crate::Error;
+use crate::cli::PreCommitArgs;
 use crate::mesh::read::list_mesh_names;
 use crate::resolver::{build_pending_findings, resolve_mesh};
 use crate::types::{
@@ -22,9 +19,10 @@ use crate::types::{
 };
 use anyhow::Result;
 use std::collections::HashSet;
-use std::path::PathBuf;
 
-pub fn run_pre_commit(repo: &gix::Repository) -> Result<i32> {
+const RESOLUTION_HINT: &str = "hint: re-anchor with `git mesh rm <name> <range>` and `git mesh add <name> <new-range>`,\n      or `git mesh mv <name> <new-name>` if the path moved, or revert the change.";
+
+pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32> {
     let options = EngineOptions {
         layers: LayerSet {
             worktree: false,
@@ -37,7 +35,7 @@ pub fn run_pre_commit(repo: &gix::Repository) -> Result<i32> {
     // Union of committed mesh names and names with a staging directory:
     // a brand-new mesh (no commit yet) only exists on disk via its
     // staging file but its pending Add/Remove ops still need to be
-    // surfaced to the hook. `stale_meshes` walks committed refs only.
+    // surfaced to the hook. `list_mesh_names` walks committed refs only.
     let names = mesh_names_with_staging(repo)?;
     let mut meshes: Vec<MeshResolved> = Vec::with_capacity(names.len());
     for name in &names {
@@ -58,13 +56,6 @@ pub fn run_pre_commit(repo: &gix::Repository) -> Result<i32> {
             Err(e) => return Err(e.into()),
         }
     }
-
-    // Plan §"Phase 4" option (b): recompute the staged path set from
-    // `git diff --cached --name-only` rather than widening the engine's
-    // public return shape. Each entry is the post-rename path (or the
-    // path being deleted) — we treat it as the set of paths participating
-    // in the in-flight commit.
-    let staged_paths = staged_paths(repo)?;
 
     // Per-layer expansion: same as `stale_output.rs` adapter.
     let findings: Vec<Finding> = meshes
@@ -114,51 +105,30 @@ pub fn run_pre_commit(repo: &gix::Repository) -> Result<i32> {
         .flat_map(|m| m.pending.iter().cloned())
         .collect();
 
-    // Filter findings to those whose `current` path participates in the
-    // in-flight commit. If `current` is missing (terminal status) we keep
-    // the finding only when its anchored path is staged — for those, the
-    // commit is what made the path terminal.
-    let kept_findings: Vec<&Finding> = findings
+    // Whole-staged-tree gate per `<fail-closed>`: render every unacked
+    // finding and every drift-bearing pending Add/Remove, regardless of
+    // whether the in-flight diff touches the path. Acked findings are
+    // suppressed — by acknowledging the drift, the in-flight commit is
+    // resolving it.
+    let rendered_findings: Vec<&Finding> = findings
         .iter()
-        .filter(|f| {
-            let p: &std::path::Path = f
-                .current
-                .as_ref()
-                .map(|c| c.path.as_path())
-                .unwrap_or(f.anchored.path.as_path());
-            staged_paths.contains(p)
+        .filter(|f| f.acknowledged_by.is_none())
+        .collect();
+    let rendered_pending: Vec<&PendingFinding> = pending
+        .iter()
+        .filter(|p| {
+            matches!(
+                p,
+                PendingFinding::Add { drift: Some(_), .. }
+                    | PendingFinding::Remove { drift: Some(_), .. }
+            )
         })
         .collect();
 
-    // Filter pending findings to Add/Remove whose op.path intersects the
-    // staged paths.
-    let kept_pending: Vec<&PendingFinding> = pending
-        .iter()
-        .filter(|p| match p {
-            PendingFinding::Add { op, .. } => staged_paths.contains(std::path::Path::new(&op.path)),
-            PendingFinding::Remove { op, .. } => {
-                staged_paths.contains(std::path::Path::new(&op.path))
-            }
-            PendingFinding::Why { .. } | PendingFinding::ConfigChange { .. } => false,
-        })
-        .collect();
+    let any_rendered = !rendered_findings.is_empty() || !rendered_pending.is_empty();
+    render_report(&meshes, &rendered_findings, &rendered_pending);
 
-    // Print the focused report (reuses the layered `stale` vocabulary).
-    render_report(&meshes, &kept_findings, &kept_pending);
-
-    // Exit logic per Phase 4.
-    let index_drift_unacked = kept_findings
-        .iter()
-        .any(|f| f.source == Some(DriftSource::Index) && f.acknowledged_by.is_none());
-    let pending_drift = kept_pending.iter().any(|p| {
-        matches!(
-            p,
-            PendingFinding::Add { drift: Some(_), .. }
-                | PendingFinding::Remove { drift: Some(_), .. }
-        )
-    });
-
-    if index_drift_unacked || pending_drift {
+    if any_rendered && !args.no_exit_code {
         Ok(1)
     } else {
         Ok(0)
@@ -196,60 +166,11 @@ fn mesh_names_with_staging(repo: &gix::Repository) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn staged_paths(repo: &gix::Repository) -> Result<HashSet<PathBuf>> {
-    if repo.workdir().is_none() {
-        anyhow::bail!("bare repository");
-    }
-    // Equivalent to `git diff --cached --name-only -z` against HEAD —
-    // diff HEAD^{tree} vs the worktree index. If HEAD is unborn, compare
-    // against the empty tree. Rename tracking is disabled so renames
-    // decompose into deletion + addition; the union of emitted paths
-    // matches what the previous subprocess produced (and ASCII paths
-    // skip the `core.quotepath` quoting concern entirely).
-    let head_tree = repo
-        .head_tree_id_or_empty()
-        .map_err(|e| anyhow::anyhow!("resolve HEAD tree: {e}"))?;
-    let worktree_index = repo
-        .index_or_load_from_head_or_empty()
-        .map_err(|e| anyhow::anyhow!("load index: {e}"))?;
-    let mut set: HashSet<PathBuf> = HashSet::new();
-    repo.tree_index_status::<std::io::Error>(
-        &head_tree,
-        &worktree_index,
-        None,
-        gix::status::tree_index::TrackRenames::Disabled,
-        |change, _tree_idx, _wt_idx| {
-            use gix::diff::index::ChangeRef;
-            let mut push = |loc: &gix::bstr::BStr| {
-                if let Ok(s) = std::str::from_utf8(loc) {
-                    set.insert(PathBuf::from(s));
-                }
-            };
-            match change {
-                ChangeRef::Addition { location, .. }
-                | ChangeRef::Modification { location, .. }
-                | ChangeRef::Deletion { location, .. } => push(&location),
-                ChangeRef::Rewrite {
-                    source_location,
-                    location,
-                    ..
-                } => {
-                    push(&source_location);
-                    push(&location);
-                }
-            }
-            Ok(std::ops::ControlFlow::Continue(()))
-        },
-    )
-    .map_err(|e| anyhow::anyhow!("tree-index diff: {e}"))?;
-    Ok(set)
-}
-
 fn render_report(meshes: &[MeshResolved], findings: &[&Finding], pending: &[&PendingFinding]) {
     if findings.is_empty() && pending.is_empty() {
         return;
     }
-    println!("git mesh pre-commit: stale ranges in the in-flight commit");
+    println!("git mesh pre-commit: drift in staged tree");
     for m in meshes {
         let mesh_findings: Vec<&&Finding> = findings.iter().filter(|f| f.mesh == m.name).collect();
         let mesh_pending: Vec<&&PendingFinding> = pending
@@ -261,47 +182,36 @@ fn render_report(meshes: &[MeshResolved], findings: &[&Finding], pending: &[&Pen
         }
         println!("  mesh {}", m.name);
         for f in &mesh_findings {
-            let src = match f.source {
-                Some(DriftSource::Head) => "H",
-                Some(DriftSource::Index) => "I",
-                Some(DriftSource::Worktree) => "W",
-                None => "-",
+            let origin = match f.source {
+                Some(DriftSource::Index) => "in-flight",
+                _ => "pre-existing",
             };
-            let ack = if f.acknowledged_by.is_some() {
-                " (ack)"
-            } else {
-                ""
-            };
+            let path = f
+                .current
+                .as_ref()
+                .map(|c| c.path.as_path())
+                .unwrap_or(f.anchored.path.as_path());
             println!(
-                "    {src} {:?} {} {}{}",
-                f.status,
-                f.anchored.path.display(),
-                f.range_id,
-                ack
+                "    {:<8} {}  {}",
+                format!("{:?}", f.status),
+                path.display(),
+                origin
             );
         }
         for p in &mesh_pending {
             match p {
                 PendingFinding::Add { op, drift, .. } => {
-                    let note = match drift {
-                        Some(PendingDrift::SidecarMismatch) => " (drift: sidecar mismatch)",
-                        Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
-                        None => "",
-                    };
+                    let note = drift_note(drift);
                     println!(
-                        "    + ADD    {}{}",
+                        "    + ADD    {}  in-flight{}",
                         render_pending_address(&op.path, op.extent),
                         note
                     );
                 }
                 PendingFinding::Remove { op, drift, .. } => {
-                    let note = match drift {
-                        Some(PendingDrift::SidecarMismatch) => " (drift: sidecar mismatch)",
-                        Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
-                        None => "",
-                    };
+                    let note = drift_note(drift);
                     println!(
-                        "    - REMOVE {}{}",
+                        "    - REMOVE {}  in-flight{}",
                         render_pending_address(&op.path, op.extent),
                         note
                     );
@@ -309,6 +219,15 @@ fn render_report(meshes: &[MeshResolved], findings: &[&Finding], pending: &[&Pen
                 _ => {}
             }
         }
+    }
+    println!("{RESOLUTION_HINT}");
+}
+
+fn drift_note(drift: &Option<PendingDrift>) -> &'static str {
+    match drift {
+        Some(PendingDrift::SidecarMismatch) => " (drift: sidecar mismatch)",
+        Some(PendingDrift::SidecarTampered) => " (drift: sidecar tampered)",
+        None => "",
     }
 }
 
