@@ -5,7 +5,7 @@
 # fingerprint cache (advice-seen.jsonl) suppresses repeats across
 # renders, so we don't need to dedup here.
 
-set -euo pipefail
+set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
 
 read_hook_input

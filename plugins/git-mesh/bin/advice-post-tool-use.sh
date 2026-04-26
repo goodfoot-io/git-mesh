@@ -7,7 +7,7 @@
 # `git -C /foo …`). Then render advice in each unique repo and emit one
 # combined hook output.
 
-set -euo pipefail
+set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
 
 read_hook_input

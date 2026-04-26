@@ -3,7 +3,7 @@
 # no PostToolUse caught (e.g. staging changes from a Bash git command)
 # still surfaces. Informational only — never blocks turn-end.
 
-set -euo pipefail
+set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
 
 read_hook_input

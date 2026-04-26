@@ -3,7 +3,7 @@
 # diffs against. Runs on every source — including `compact`, which
 # starts a fresh session id with no prior baseline of its own.
 
-set -euo pipefail
+set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
 
 read_hook_input

@@ -2,7 +2,18 @@
 # Shared helpers for git-mesh advice hooks.
 # Sourced by the per-event scripts under ${CLAUDE_PLUGIN_ROOT}/bin.
 
-set -euo pipefail
+set -uo pipefail
+
+# Hooks are informational; an internal failure must never block Claude's
+# turn or surface as a non-blocking exit-code error in the transcript.
+# Trap any uncaught error, write a breadcrumb to stderr, and exit 0.
+_advice_hook_err() {
+  local rc=$? line=$1
+  printf 'git-mesh advice hook: error rc=%s at line %s in %s\n' \
+    "$rc" "$line" "${BASH_SOURCE[1]:-?}" >&2
+  exit 0
+}
+trap '_advice_hook_err $LINENO' ERR
 
 # Read the hook payload once into $HOOK_INPUT.
 read_hook_input() {
@@ -80,8 +91,18 @@ render_advice_in() {
 emit_advice_text() {
   local event="$1" text="$2"
   [ -n "$text" ] || return 0
-  jq -nc --arg e "$event" --arg c "$text" \
-    '{hookSpecificOutput: {hookEventName: $e, additionalContext: $c}, systemMessage: $c}'
+  # Only PreToolUse, UserPromptSubmit, PostToolUse, and PostToolBatch
+  # accept hookSpecificOutput.additionalContext. Stop (and any other
+  # event) must use only top-level fields like systemMessage.
+  case "$event" in
+    PreToolUse|UserPromptSubmit|PostToolUse|PostToolBatch)
+      jq -nc --arg e "$event" --arg c "$text" \
+        '{hookSpecificOutput: {hookEventName: $e, additionalContext: $c}, systemMessage: $c}'
+      ;;
+    *)
+      jq -nc --arg c "$text" '{systemMessage: $c}'
+      ;;
+  esac
 }
 
 # Convenience: render advice for a single repo (cwd) and emit JSON.
