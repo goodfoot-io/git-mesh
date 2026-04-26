@@ -44,6 +44,12 @@ pub struct AdviceArgs {
     /// already-seen topics in `docs-seen.jsonl` are suppressed.
     #[arg(long)]
     pub documentation: bool,
+
+    /// When `baseline.state` is absent, automatically take a snapshot before
+    /// proceeding. A present-but-corrupt or unreadable baseline still fails
+    /// closed — only the missing case triggers auto-bootstrap.
+    #[arg(long)]
+    pub snapshot_if_missing: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -65,8 +71,15 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     validate_session_id(&args.session_id)?;
     match args.command {
         Some(AdviceCommand::Snapshot) => run_advice_snapshot(repo, args.session_id),
-        Some(AdviceCommand::Read { paths }) => run_advice_read(repo, args.session_id, paths),
-        None => run_advice_render(repo, &args.session_id, args.documentation),
+        Some(AdviceCommand::Read { paths }) => {
+            run_advice_read(repo, args.session_id, paths, args.snapshot_if_missing)
+        }
+        None => run_advice_render(
+            repo,
+            &args.session_id,
+            args.documentation,
+            args.snapshot_if_missing,
+        ),
     }
 }
 
@@ -78,7 +91,12 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
 ///
 /// Implements parent §Phase 4 step list. Pre-stdout ordering of state
 /// mutations is load-bearing for broken-pipe safety — see step 16.
-fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bool) -> Result<i32> {
+fn run_advice_render(
+    repo: &gix::Repository,
+    session_id: &str,
+    documentation: bool,
+    snapshot_if_missing: bool,
+) -> Result<i32> {
     use crate::advice::candidates::{
         CandidateInput, MeshRange, MeshRangeStatus, StagedAddr, StagingState,
     };
@@ -112,15 +130,19 @@ fn run_advice_render(repo: &gix::Repository, session_id: &str, documentation: bo
 
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
-    let store = SessionStore::open(wd, &gd, session_id)?;
+    let mut store = SessionStore::open(wd, &gd, session_id)?;
     let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
 
-    // Step 2: require baseline.state — fail closed.
+    // Step 2: require baseline.state — fail closed unless --snapshot-if-missing.
     if !store.dir().join("baseline.state").exists() {
-        bail!(
-            "no baseline for session `{session_id}`; run snapshot first \
-             (`git mesh advice {session_id} snapshot`)"
-        );
+        if snapshot_if_missing {
+            snapshot_into(&mut store, repo, &gd)?;
+        } else {
+            bail!(
+                "no baseline for session `{session_id}`; run snapshot first \
+                 (`git mesh advice {session_id} snapshot`)"
+            );
+        }
     }
     let baseline = store.read_baseline()?;
 
@@ -567,26 +589,26 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
-/// Capture the current workspace tree into the file-backed session store.
-fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32> {
-    use crate::advice::session::SessionStore;
+/// Perform a baseline snapshot into an already-open `store`. Resets the
+/// JSONLs and *.objects dirs, captures the current workspace tree, writes
+/// `baseline.state`, and mirrors it to `last-flush.state`. The caller must
+/// hold the store's lock — do NOT reopen the store here to avoid a second
+/// flock on the same directory.
+fn snapshot_into(
+    store: &mut crate::advice::session::SessionStore,
+    repo: &gix::Repository,
+    gd: &std::path::Path,
+) -> Result<()> {
     use crate::advice::session::state::BaselineState;
     use crate::advice::workspace_tree;
 
-    let wd = work_dir(repo)?;
-    let gd = repo.git_dir().to_path_buf();
-    let mut store = SessionStore::open(wd, &gd, &session_id)?;
-
-    // Reset the JSONLs and any prior *.objects/.
     store.reset()?;
 
-    // Capture into baseline.objects/.
     let baseline_objects = store.baseline_objects_dir();
     std::fs::create_dir_all(&baseline_objects)
         .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", baseline_objects.display()))?;
     let tree = workspace_tree::capture(repo, &baseline_objects)?;
 
-    // Compute index_sha (last 20 bytes of real index, hex).
     let index_path = gd.join("index");
     let index_sha = if let Ok(bytes) = std::fs::read(&index_path) {
         if bytes.len() >= 20 {
@@ -613,7 +635,6 @@ fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32
     };
     store.write_baseline(&state)?;
 
-    // Mirror baseline -> last-flush.
     let last_flush_objects = store.last_flush_objects_dir();
     if last_flush_objects.exists() {
         std::fs::remove_dir_all(&last_flush_objects).ok();
@@ -621,25 +642,45 @@ fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32
     copy_dir_recursive(&baseline_objects, &last_flush_objects)?;
     store.write_last_flush(&state)?;
 
+    Ok(())
+}
+
+/// Capture the current workspace tree into the file-backed session store.
+fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32> {
+    use crate::advice::session::SessionStore;
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let mut store = SessionStore::open(wd, &gd, &session_id)?;
+    snapshot_into(&mut store, repo, &gd)?;
     Ok(0)
 }
 
 /// Record read events in the file-backed session store.
-fn run_advice_read(repo: &gix::Repository, session_id: String, paths: Vec<String>) -> Result<i32> {
+fn run_advice_read(
+    repo: &gix::Repository,
+    session_id: String,
+    paths: Vec<String>,
+    snapshot_if_missing: bool,
+) -> Result<i32> {
     use crate::advice::session::SessionStore;
     use crate::advice::session::state::ReadRecord;
     use crate::advice::session::store::LockTimeout;
 
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
-    let store = SessionStore::open(wd, &gd, &session_id)?;
+    let mut store = SessionStore::open(wd, &gd, &session_id)?;
 
-    // Require baseline.state — fail closed.
+    // Require baseline.state — fail closed unless --snapshot-if-missing.
     if !store.dir().join("baseline.state").exists() {
-        bail!(
-            "no baseline for session `{session_id}`; run snapshot first \
-             (`git mesh advice {session_id} snapshot`)"
-        );
+        if snapshot_if_missing {
+            snapshot_into(&mut store, repo, &gd)?;
+        } else {
+            bail!(
+                "no baseline for session `{session_id}`; run snapshot first \
+                 (`git mesh advice {session_id} snapshot`)"
+            );
+        }
     }
 
     if paths.is_empty() {

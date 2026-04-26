@@ -82,7 +82,7 @@ bash_candidate_dirs() {
 # Silent if there's nothing to say or no baseline yet.
 render_advice_in() {
   local repo_root="$1" sid="$2"
-  (cd "$repo_root" && git mesh advice "$sid" 2>/dev/null) || true
+  (cd "$repo_root" && git mesh advice "$sid" --snapshot-if-missing 2>/dev/null) || true
 }
 
 # Wrap rendered advice text in the hook output JSON, mirroring it into

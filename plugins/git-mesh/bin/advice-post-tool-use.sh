@@ -77,7 +77,7 @@ if [ "$tool" = "Read" ]; then
         end=$((offset + limit - 1))
         spec="$rel#L${offset}-L${end}"
       fi
-      (cd "$file_root" && git mesh advice "$sid" read "$spec" >/dev/null 2>&1) || true
+      (cd "$file_root" && git mesh advice "$sid" --snapshot-if-missing read "$spec" >/dev/null 2>&1) || true
     fi
   fi
 fi
