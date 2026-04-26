@@ -292,7 +292,35 @@ fn render_human(
     options: HumanRenderOptions,
 ) -> Result<()> {
     for m in meshes {
-        let mesh_findings: Vec<&Finding> = findings.iter().filter(|f| f.mesh == m.name).collect();
+        // Include every tracked range — Fresh ones synthesized as
+        // `Finding`s so default/oneline/stat/patch all list the full
+        // mesh. Order follows the mesh's stored range order, with
+        // per-layer expansions inlined for non-Fresh ranges.
+        let mesh_findings_owned: Vec<Finding> = m
+            .ranges
+            .iter()
+            .flat_map(|r| {
+                if r.status == RangeStatus::Fresh {
+                    vec![Finding {
+                        mesh: m.name.clone(),
+                        range_id: r.range_id.clone(),
+                        status: RangeStatus::Fresh,
+                        source: None,
+                        anchored: r.anchored.clone(),
+                        current: r.current.clone(),
+                        acknowledged_by: r.acknowledged_by.clone(),
+                        culprit: None,
+                    }]
+                } else {
+                    findings
+                        .iter()
+                        .filter(|f| f.mesh == m.name && f.range_id == r.range_id)
+                        .cloned()
+                        .collect()
+                }
+            })
+            .collect();
+        let mesh_findings: Vec<&Finding> = mesh_findings_owned.iter().collect();
         let mesh_pending: Vec<&PendingFinding> = pending
             .iter()
             .filter(|p| pending_mesh(p) == m.name.as_str())
@@ -310,7 +338,10 @@ fn render_human(
         }
 
         let mesh_total = m.ranges.len();
-        let mesh_stale = mesh_findings.len();
+        let mesh_stale = mesh_findings
+            .iter()
+            .filter(|f| f.status != RangeStatus::Fresh)
+            .count();
         println!("mesh {}", m.name);
         println!();
         println!("{mesh_stale} stale of {mesh_total} ranges:");
