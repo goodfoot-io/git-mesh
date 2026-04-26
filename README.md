@@ -53,6 +53,27 @@ for the project model and workflow.
 exit 1 when drift is found, exit 0 with `--no-exit-code`. The
 `pre-commit` subcommand likewise exits 1 on in-flight drift.
 
+### `git mesh show --format` placeholders
+
+| Placeholder | Expansion | Trigger |
+|---|---|---|
+| `%H` | Full mesh commit SHA | per commit |
+| `%h` | Abbreviated mesh commit SHA (7 chars) | per commit |
+| `%an` | Author name | per commit |
+| `%ae` | Author email | per commit |
+| `%ad` | Author date (RFC 2822) | per commit |
+| `%ar` | Author date, relative | per commit |
+| `%s` | Subject (first line of message) | per commit |
+| `%p` | Range path | per range |
+| `%r` | Range extent (`#L<s>-L<e>`, empty for whole-file) | per range |
+| `%P` | Path + extent (`path#L<s>-L<e>`, or just path for whole-file) | per range |
+| `%a` | Anchor SHA (full 40 chars) | per range |
+| `%A` | Anchor SHA (8-char abbrev; full with `--no-abbrev`) | per range |
+| `%%` | Literal `%` | — |
+| `%n` | Newline | — |
+
+When any per-range placeholder is present in the format string, one output line is emitted per range. Otherwise, one line is emitted per mesh commit. Unknown placeholders are rejected with exit code 2.
+
 ## VS Code Extension
 
 The VS Code extension is named `git-mesh` and publishes as

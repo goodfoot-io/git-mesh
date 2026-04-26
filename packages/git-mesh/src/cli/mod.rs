@@ -135,7 +135,27 @@ pub struct ShowArgs {
     #[arg(long)]
     pub oneline: bool,
 
-    /// Format-string override.
+    /// Format-string override. Supported placeholders:
+    ///
+    /// Commit-level (one line per mesh commit):
+    ///   %H   full mesh commit SHA
+    ///   %h   abbreviated mesh commit SHA (7 chars)
+    ///   %an  author name
+    ///   %ae  author email
+    ///   %ad  author date (RFC 2822)
+    ///   %ar  author date, relative
+    ///   %s   subject (first line of message)
+    ///
+    /// Per-range (one line per range when any of these is present):
+    ///   %p   range path
+    ///   %r   range extent (#L<start>-L<end>, or empty for whole-file)
+    ///   %P   path + extent (path#L<start>-L<end>, or just path for whole-file)
+    ///   %a   anchor SHA (full 40 chars)
+    ///   %A   anchor SHA (abbreviated 8 chars; full when --no-abbrev is set)
+    ///
+    /// Special: %% → literal %; %n → newline.
+    ///
+    /// Unknown placeholders are rejected with exit code 2.
     #[arg(long, value_name = "FMT")]
     pub format: Option<String>,
 

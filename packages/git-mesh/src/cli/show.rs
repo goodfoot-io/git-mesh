@@ -2,12 +2,284 @@
 
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::range::read_range;
-use crate::types::RangeExtent;
+use crate::types::{Range, RangeExtent};
 use crate::{
-    list_mesh_names, ls_all, ls_by_path, ls_by_path_range, mesh_commit_info, mesh_commit_info_at,
-    mesh_log, read_mesh, read_mesh_at,
+    MeshCommitInfo, list_mesh_names, ls_all, ls_by_path, ls_by_path_range, mesh_commit_info,
+    mesh_commit_info_at, mesh_log, read_mesh, read_mesh_at,
 };
 use anyhow::Result;
+
+// ---------------------------------------------------------------------------
+// Format-string types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FormatToken {
+    Literal(String),
+    Newline,
+    Commit(CommitField),
+    Range(RangeField),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitField {
+    /// `%H` — full mesh commit SHA
+    CommitHash,
+    /// `%h` — 7-char abbreviated mesh commit SHA
+    CommitHashShort,
+    /// `%an` — author name
+    AuthorName,
+    /// `%ae` — author email
+    AuthorEmail,
+    /// `%ad` — author date (RFC 2822)
+    AuthorDate,
+    /// `%ar` — author date, relative
+    AuthorDateRelative,
+    /// `%s` — subject (first line of message)
+    Subject,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RangeField {
+    /// `%p` — range path
+    Path,
+    /// `%r` — range extent specifier (`#L<s>-L<e>` or empty for whole-file)
+    RangeSpec,
+    /// `%P` — path + range spec
+    PathWithSpec,
+    /// `%a` — anchor SHA (full)
+    AnchorFull,
+    /// `%A` — anchor SHA (abbreviated, honors `--no-abbrev`)
+    AnchorAbbrev,
+}
+
+const SUPPORTED: &str = "%H, %h, %an, %ae, %ad, %ar, %s, %p, %r, %P, %a, %A";
+
+/// Parse a format string into a vector of tokens, returning an error for
+/// any unknown placeholder.
+pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
+    let mut tokens: Vec<FormatToken> = Vec::new();
+    let mut literal = String::new();
+    let mut chars = fmt.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            literal.push(c);
+            continue;
+        }
+        let Some(&nc) = chars.peek() else {
+            // Trailing lone `%` — treat as literal.
+            literal.push('%');
+            break;
+        };
+        match nc {
+            '%' => {
+                chars.next();
+                literal.push('%');
+            }
+            'n' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Newline);
+            }
+            'H' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Commit(CommitField::CommitHash));
+            }
+            'h' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Commit(CommitField::CommitHashShort));
+            }
+            's' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Commit(CommitField::Subject));
+            }
+            'p' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Range(RangeField::Path));
+            }
+            'r' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Range(RangeField::RangeSpec));
+            }
+            'P' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Range(RangeField::PathWithSpec));
+            }
+            'a' => {
+                // Could be `%an`, `%ae`, `%ad`, `%ar`, or `%a` (anchor full).
+                chars.next(); // consume 'a'
+                let sub = chars.peek().copied();
+                match sub {
+                    Some('n') => {
+                        chars.next();
+                        if !literal.is_empty() {
+                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                        }
+                        tokens.push(FormatToken::Commit(CommitField::AuthorName));
+                    }
+                    Some('e') => {
+                        chars.next();
+                        if !literal.is_empty() {
+                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                        }
+                        tokens.push(FormatToken::Commit(CommitField::AuthorEmail));
+                    }
+                    Some('d') => {
+                        chars.next();
+                        if !literal.is_empty() {
+                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                        }
+                        tokens.push(FormatToken::Commit(CommitField::AuthorDate));
+                    }
+                    Some('r') => {
+                        chars.next();
+                        if !literal.is_empty() {
+                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                        }
+                        tokens.push(FormatToken::Commit(CommitField::AuthorDateRelative));
+                    }
+                    // `%a` alone (no recognized sub-char) → anchor SHA full
+                    None | Some(_) => {
+                        // peek was already consumed for 'a'; we need to check if
+                        // the next char could form a known two-char token.
+                        // Only emit Range::AnchorFull if next char is NOT 'n','e','d','r'
+                        // (those were handled above). Since we've already peeked and those
+                        // cases didn't match, this is `%a` with something unrecognized after it
+                        // OR end of string. Treat standalone `%a` as anchor full.
+                        if !literal.is_empty() {
+                            tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                        }
+                        // But we must check if the next char makes an unknown 2-char seq.
+                        // At this point `sub` = chars.peek() — if it's a letter, that's an unknown.
+                        if let Some(s) = sub
+                            && s.is_ascii_alphabetic()
+                        {
+                            // Unknown `%a<X>` sequence.
+                            chars.next(); // consume the unknown sub-char
+                            let tok = format!("a{s}");
+                            return Err(anyhow::anyhow!(
+                                "unknown format placeholder \"%{tok}\"; supported: {SUPPORTED}"
+                            ));
+                        }
+                        tokens.push(FormatToken::Range(RangeField::AnchorFull));
+                    }
+                }
+            }
+            'A' => {
+                chars.next();
+                if !literal.is_empty() {
+                    tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
+                }
+                tokens.push(FormatToken::Range(RangeField::AnchorAbbrev));
+            }
+            other => {
+                chars.next();
+                // Check if this is a multi-char unknown like `%xx` — we already consumed
+                // the first char after `%`, so emit error for this single-char unknown.
+                // But we should also accumulate subsequent chars for better error messages.
+                // For now: report the single unknown char.
+                return Err(anyhow::anyhow!(
+                    "unknown format placeholder \"%{other}\"; supported: {SUPPORTED}"
+                ));
+            }
+        }
+    }
+
+    if !literal.is_empty() {
+        tokens.push(FormatToken::Literal(literal));
+    }
+
+    Ok(tokens)
+}
+
+fn has_range_token(tokens: &[FormatToken]) -> bool {
+    tokens
+        .iter()
+        .any(|t| matches!(t, FormatToken::Range(_)))
+}
+
+/// Render a single line from the token vector against the mesh commit info and
+/// an optional range context. Range tokens require `range` to be `Some`.
+pub(crate) fn render_tokens(
+    tokens: &[FormatToken],
+    info: &MeshCommitInfo,
+    meta: &crate::git::CommitMeta,
+    range: Option<&Range>,
+    no_abbrev: bool,
+) -> String {
+    let mut out = String::new();
+    for tok in tokens {
+        match tok {
+            FormatToken::Literal(s) => out.push_str(s),
+            FormatToken::Newline => out.push('\n'),
+            FormatToken::Commit(f) => match f {
+                CommitField::CommitHash => out.push_str(&info.commit_oid),
+                CommitField::CommitHashShort => {
+                    out.push_str(&info.commit_oid[..7.min(info.commit_oid.len())]);
+                }
+                CommitField::AuthorName => out.push_str(&meta.author_name),
+                CommitField::AuthorEmail => out.push_str(&meta.author_email),
+                CommitField::AuthorDate => out.push_str(&meta.author_date_rfc2822),
+                CommitField::AuthorDateRelative => out.push_str(
+                    &crate::cli::stale_output::format_relative(meta.committer_time),
+                ),
+                CommitField::Subject => out.push_str(&meta.summary),
+            },
+            FormatToken::Range(f) => {
+                let r = range.expect("range token present but no range context — invariant violated");
+                match f {
+                    RangeField::Path => out.push_str(&r.path),
+                    RangeField::RangeSpec => {
+                        if let RangeExtent::Lines { start, end } = r.extent {
+                            out.push_str(&format!("#L{start}-L{end}"));
+                        }
+                        // Whole-file → empty string (no push)
+                    }
+                    RangeField::PathWithSpec => {
+                        out.push_str(&r.path);
+                        if let RangeExtent::Lines { start, end } = r.extent {
+                            out.push_str(&format!("#L{start}-L{end}"));
+                        }
+                    }
+                    RangeField::AnchorFull => out.push_str(&r.anchor_sha),
+                    RangeField::AnchorAbbrev => {
+                        if no_abbrev {
+                            out.push_str(&r.anchor_sha);
+                        } else {
+                            out.push_str(&r.anchor_sha[..8.min(r.anchor_sha.len())]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Public run functions
+// ---------------------------------------------------------------------------
 
 pub fn run_list(repo: &gix::Repository) -> Result<i32> {
     let names = list_mesh_names(repo)?;
@@ -48,8 +320,27 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
     // --format=<FMT> short-circuits the default rendering (§10.4).
     if let Some(fmt) = &args.format {
-        let rendered = render_format(repo, &mesh, &info, fmt, args.no_abbrev)?;
-        println!("{rendered}");
+        let tokens = match parse_format(fmt) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("git-mesh: {e}");
+                return Ok(2);
+            }
+        };
+
+        let meta = crate::git::commit_meta(repo, &info.commit_oid)
+            .map_err(|e| anyhow::anyhow!("commit meta: {e}"))?;
+
+        if has_range_token(&tokens) {
+            for id in &mesh.ranges {
+                let r = read_range(repo, id)?;
+                let line = render_tokens(&tokens, &info, &meta, Some(&r), args.no_abbrev);
+                println!("{line}");
+            }
+        } else {
+            let line = render_tokens(&tokens, &info, &meta, None, args.no_abbrev);
+            println!("{line}");
+        }
         return Ok(0);
     }
 
@@ -99,179 +390,6 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     Ok(0)
 }
 
-/// Substitute mesh-specific `%(…)` placeholders, then shell out to
-/// `git show -s --format=<residual>` to evaluate any remaining standard
-/// commit placeholders (`%H`, `%s`, …) against the mesh tip commit.
-fn render_format(
-    repo: &gix::Repository,
-    mesh: &crate::types::Mesh,
-    info: &crate::MeshCommitInfo,
-    fmt: &str,
-    no_abbrev: bool,
-) -> anyhow::Result<String> {
-    let substituted = substitute_mesh_placeholders(repo, mesh, fmt, no_abbrev)?;
-    if substituted.contains('%') {
-        substitute_commit_placeholders(repo, &substituted, &info.commit_oid)
-    } else {
-        Ok(substituted)
-    }
-}
-
-/// Minimal `git show --format=` emulation: supports the common single-letter
-/// placeholders `%H`, `%h`, `%s`, `%an`, `%ae`, `%ad`, `%B`, `%cd`, `%cr`,
-/// `%n`, and `%%`. Unknown `%X` tokens are left literal — matching git's
-/// own behavior.
-fn substitute_commit_placeholders(
-    repo: &gix::Repository,
-    fmt: &str,
-    commit_oid: &str,
-) -> anyhow::Result<String> {
-    let meta = crate::git::commit_meta(repo, commit_oid)
-        .map_err(|e| anyhow::anyhow!("commit meta: {e}"))?;
-    let mut out = String::with_capacity(fmt.len());
-    let mut chars = fmt.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        let Some(nc) = chars.next() else {
-            out.push('%');
-            break;
-        };
-        match nc {
-            '%' => out.push('%'),
-            'n' => out.push('\n'),
-            'H' => out.push_str(commit_oid),
-            'h' => out.push_str(&commit_oid[..7.min(commit_oid.len())]),
-            's' => out.push_str(&meta.summary),
-            'B' => out.push_str(meta.message.trim_end_matches('\n')),
-            'a' | 'c' => {
-                let Some(sub) = chars.next() else {
-                    out.push('%');
-                    out.push(nc);
-                    break;
-                };
-                match (nc, sub) {
-                    ('a', 'n') => out.push_str(&meta.author_name),
-                    ('a', 'e') => out.push_str(&meta.author_email),
-                    ('a', 'd') | ('c', 'd') => out.push_str(&meta.author_date_rfc2822),
-                    ('c', 'r') => out.push_str(&crate::cli::stale_output::format_relative(
-                        meta.committer_time,
-                    )),
-                    _ => {
-                        out.push('%');
-                        out.push(nc);
-                        out.push(sub);
-                    }
-                }
-            }
-            other => {
-                out.push('%');
-                out.push(other);
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Replace every `%(ranges)`, `%(ranges:count)`, `%(config:<key>)`, and
-/// any unknown `%(…)` tokens. Standard `%X` placeholders are left alone
-/// for `git show --format=` to handle.
-fn substitute_mesh_placeholders(
-    repo: &gix::Repository,
-    mesh: &crate::types::Mesh,
-    fmt: &str,
-    no_abbrev: bool,
-) -> anyhow::Result<String> {
-    let mut out = String::with_capacity(fmt.len());
-    let mut chars = fmt.char_indices().peekable();
-    while let Some((_, c)) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        // Look ahead for `(`; anything else is an ordinary %X token.
-        match chars.peek().map(|(_, nc)| *nc) {
-            Some('(') => {
-                chars.next(); // consume '('
-                let mut token = String::new();
-                let mut closed = false;
-                for (_, nc) in chars.by_ref() {
-                    if nc == ')' {
-                        closed = true;
-                        break;
-                    }
-                    token.push(nc);
-                }
-                if !closed {
-                    // Malformed — leave literal.
-                    out.push('%');
-                    out.push('(');
-                    out.push_str(&token);
-                    continue;
-                }
-                out.push_str(&evaluate_mesh_token(repo, mesh, &token, no_abbrev));
-            }
-            _ => {
-                // Pass through — git will render it.
-                out.push('%');
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn evaluate_mesh_token(
-    repo: &gix::Repository,
-    mesh: &crate::types::Mesh,
-    token: &str,
-    no_abbrev: bool,
-) -> String {
-    match token {
-        "ranges" => {
-            let mut lines = Vec::with_capacity(mesh.ranges.len());
-            for id in &mesh.ranges {
-                match read_range(repo, id) {
-                    Ok(r) => {
-                        let sha = if no_abbrev {
-                            r.anchor_sha.clone()
-                        } else {
-                            short(&r.anchor_sha).to_string()
-                        };
-                        let addr = match r.extent {
-                            RangeExtent::Lines { start, end } => {
-                                format!("{}#L{}-L{}", r.path, start, end)
-                            }
-                            RangeExtent::Whole => format!("{}  (whole)", r.path),
-                        };
-                        lines.push(format!("{sha}  {addr}"));
-                    }
-                    Err(_) => lines.push(format!("<missing>  <{id}>")),
-                }
-            }
-            lines.join("\n")
-        }
-        "ranges:count" => mesh.ranges.len().to_string(),
-        t if t.starts_with("config:") => {
-            let key = &t["config:".len()..];
-            match key {
-                "copy-detection" => match mesh.config.copy_detection {
-                    crate::types::CopyDetection::Off => "off".into(),
-                    crate::types::CopyDetection::SameCommit => "same-commit".into(),
-                    crate::types::CopyDetection::AnyFileInCommit => "any-file-in-commit".into(),
-                    crate::types::CopyDetection::AnyFileInRepo => "any-file-in-repo".into(),
-                },
-                "ignore-whitespace" => mesh.config.ignore_whitespace.to_string(),
-                // Unknown config key — documented choice: empty string.
-                _ => String::new(),
-            }
-        }
-        // Unknown mesh placeholder — leave literal.
-        other => format!("%({other})"),
-    }
-}
-
 pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
     let entries = match args.target {
         None => ls_all(repo)?,
@@ -295,4 +413,219 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
 
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::CommitMeta;
+    use crate::types::RangeExtent;
+
+    fn fake_info() -> MeshCommitInfo {
+        MeshCommitInfo {
+            commit_oid: "abcdef1234567890abcdef1234567890abcdef12".to_string(),
+            author_name: "Alice Author".to_string(),
+            author_email: "alice@example.com".to_string(),
+            author_date: "Mon, 01 Jan 2024 00:00:00 +0000".to_string(),
+            summary: "the subject line".to_string(),
+            message: "the subject line\n\nbody".to_string(),
+        }
+    }
+
+    fn fake_meta() -> CommitMeta {
+        CommitMeta {
+            author_name: "Alice Author".to_string(),
+            author_email: "alice@example.com".to_string(),
+            author_date_rfc2822: "Mon, 01 Jan 2024 00:00:00 +0000".to_string(),
+            committer_time: 1704067200,
+            summary: "the subject line".to_string(),
+            message: "the subject line\n\nbody".to_string(),
+        }
+    }
+
+    fn fake_range_lines() -> Range {
+        Range {
+            anchor_sha: "deadbeef1234567890abcdef1234567890abcdef".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            path: "src/foo.rs".to_string(),
+            extent: RangeExtent::Lines { start: 10, end: 20 },
+            blob: "bloboid1".to_string(),
+        }
+    }
+
+    fn fake_range_whole() -> Range {
+        Range {
+            anchor_sha: "cafebabe1234567890abcdef1234567890abcdef".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            path: "docs/guide.md".to_string(),
+            extent: RangeExtent::Whole,
+            blob: "bloboid2".to_string(),
+        }
+    }
+
+    #[test]
+    fn commit_placeholder_big_h() {
+        let tokens = parse_format("%H").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "abcdef1234567890abcdef1234567890abcdef12");
+    }
+
+    #[test]
+    fn commit_placeholder_h_abbrev() {
+        let tokens = parse_format("%h").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "abcdef1");
+    }
+
+    #[test]
+    fn commit_placeholder_s() {
+        let tokens = parse_format("%s").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "the subject line");
+    }
+
+    #[test]
+    fn commit_placeholder_an() {
+        let tokens = parse_format("%an").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "Alice Author");
+    }
+
+    #[test]
+    fn commit_placeholder_ae() {
+        let tokens = parse_format("%ae").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "alice@example.com");
+    }
+
+    #[test]
+    fn commit_placeholder_ad() {
+        let tokens = parse_format("%ad").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "Mon, 01 Jan 2024 00:00:00 +0000");
+    }
+
+    #[test]
+    fn commit_placeholder_ar_produces_relative_time() {
+        let tokens = parse_format("%ar").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        // We just check it's non-empty; the exact relative string depends on wall time.
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn range_placeholder_p_lines() {
+        let tokens = parse_format("%p").unwrap();
+        let r = fake_range_lines();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        assert_eq!(out, "src/foo.rs");
+    }
+
+    #[test]
+    fn range_placeholder_r_lines() {
+        let tokens = parse_format("%r").unwrap();
+        let r = fake_range_lines();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        assert_eq!(out, "#L10-L20");
+    }
+
+    #[test]
+    fn range_placeholder_r_whole_is_empty() {
+        let tokens = parse_format("%r").unwrap();
+        let r = fake_range_whole();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn range_placeholder_big_p_lines() {
+        let tokens = parse_format("%P").unwrap();
+        let r = fake_range_lines();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        assert_eq!(out, "src/foo.rs#L10-L20");
+    }
+
+    #[test]
+    fn range_placeholder_big_p_whole_is_just_path() {
+        let tokens = parse_format("%P").unwrap();
+        let r = fake_range_whole();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        assert_eq!(out, "docs/guide.md");
+    }
+
+    #[test]
+    fn range_placeholder_a_full() {
+        let tokens = parse_format("%a").unwrap();
+        let r = fake_range_lines();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        assert_eq!(out, "deadbeef1234567890abcdef1234567890abcdef");
+    }
+
+    #[test]
+    fn range_placeholder_big_a_abbrev() {
+        let tokens = parse_format("%A").unwrap();
+        let r = fake_range_lines();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), false);
+        assert_eq!(out, "deadbeef");
+    }
+
+    #[test]
+    fn range_placeholder_big_a_no_abbrev() {
+        let tokens = parse_format("%A").unwrap();
+        let r = fake_range_lines();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r), true);
+        assert_eq!(out, "deadbeef1234567890abcdef1234567890abcdef");
+    }
+
+    #[test]
+    fn percent_percent_escapes_literal() {
+        let tokens = parse_format("100%%").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "100%");
+    }
+
+    #[test]
+    fn percent_n_is_newline() {
+        let tokens = parse_format("a%nb").unwrap();
+        let out = render_tokens(&tokens, &fake_info(), &fake_meta(), None, false);
+        assert_eq!(out, "a\nb");
+    }
+
+    #[test]
+    fn has_range_token_true_for_range_placeholders() {
+        assert!(has_range_token(&parse_format("%p").unwrap()));
+        assert!(has_range_token(&parse_format("%r").unwrap()));
+        assert!(has_range_token(&parse_format("%P").unwrap()));
+        assert!(has_range_token(&parse_format("%a").unwrap()));
+        assert!(has_range_token(&parse_format("%A").unwrap()));
+    }
+
+    #[test]
+    fn has_range_token_false_for_commit_only() {
+        assert!(!has_range_token(&parse_format("%H %s %an").unwrap()));
+    }
+
+    #[test]
+    fn unknown_placeholder_big_s_rejected() {
+        let err = parse_format("%S").unwrap_err();
+        assert!(err.to_string().contains("%S"), "{err}");
+        assert!(err.to_string().contains("supported:"), "{err}");
+    }
+
+    #[test]
+    fn unknown_placeholder_xx_rejected() {
+        // %x → unknown single char
+        let err = parse_format("%x").unwrap_err();
+        assert!(err.to_string().contains("supported:"), "{err}");
+    }
+
+    #[test]
+    fn unknown_placeholder_az_rejected() {
+        let err = parse_format("%aZ").unwrap_err();
+        assert!(err.to_string().contains("supported:"), "{err}");
+    }
 }
