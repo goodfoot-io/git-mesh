@@ -111,6 +111,13 @@ pub struct Candidate {
     pub trigger_path: String,
     pub trigger_start: Option<i64>,
     pub trigger_end: Option<i64>,
+    /// The recorded mesh range on the trigger side — the range the
+    /// developer's edit hit. Surfaced in the bullet list so the mesh's
+    /// complete range set is visible. Empty path = unknown / not
+    /// applicable (e.g. cross-cutting candidates).
+    pub touched_path: String,
+    pub touched_start: Option<i64>,
+    pub touched_end: Option<i64>,
     /// Bracket marker appended to the partner line (CHANGED, STAGED, …).
     /// Empty = no marker.
     pub partner_marker: String,
@@ -206,6 +213,9 @@ fn bare_candidate(
         trigger_path: trigger_path.to_string(),
         trigger_start,
         trigger_end,
+        touched_path: String::new(),
+        touched_start: None,
+        touched_end: None,
         partner_marker: String::new(),
         partner_clause: String::new(),
         density: kind.default_density(),
@@ -269,13 +279,19 @@ fn partner_candidates_for_trigger_kind(
             } else {
                 (Some(partner.start as i64), Some(partner.end as i64))
             };
-            bare_candidate(
+            let mut c = bare_candidate(
                 &partner.name,
                 &partner.why,
                 kind,
                 (&partner_path, ps, pe),
                 (trigger_path, trigger_start, trigger_end),
-            )
+            );
+            c.touched_path = touched.path.to_string_lossy().to_string();
+            if !touched.whole {
+                c.touched_start = Some(touched.start as i64);
+                c.touched_end = Some(touched.end as i64);
+            }
+            c
         })
         .collect()
 }
@@ -515,6 +531,11 @@ fn delta_path_partners_inner(
             );
             c.partner_marker = marker;
             c.partner_clause = clause;
+            c.touched_path = range_path.to_string();
+            if !range.whole {
+                c.touched_start = Some(range.start as i64);
+                c.touched_end = Some(range.end as i64);
+            }
             if effective_partner_path != partner_path_str {
                 c.old_path = Some(partner_path_str);
                 c.new_path = Some(effective_partner_path);

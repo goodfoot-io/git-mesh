@@ -115,8 +115,10 @@ fn render_mesh_block(
         out.push_str(&format!("# triggered by {addr}\n"));
     }
 
-    // Partner addresses (deduped by (path,start,end)).
-    let mut seen_partner: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
+    // Partner addresses (deduped by (path,start,end)). The trigger range
+    // is included in the same bullet list so the mesh's complete range
+    // set is visible — partners first per Goal #1, then the trigger.
+    let mut seen_bullet: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
         std::collections::BTreeSet::new();
     for c in cands {
         let key = (
@@ -124,7 +126,7 @@ fn render_mesh_block(
             c.partner_start,
             c.partner_end,
         );
-        if !seen_partner.insert(key) {
+        if !seen_bullet.insert(key) {
             continue;
         }
         let addr = format_addr(&c.partner_path, c.partner_start, c.partner_end);
@@ -137,6 +139,19 @@ fn render_mesh_block(
             line.push_str(" — ");
             line.push_str(&c.partner_clause);
         }
+        out.push_str(&truncate_line(&line));
+        out.push('\n');
+    }
+    for c in cands {
+        if c.touched_path.is_empty() {
+            continue;
+        }
+        let key = (c.touched_path.clone(), c.touched_start, c.touched_end);
+        if !seen_bullet.insert(key) {
+            continue;
+        }
+        let addr = format_addr(&c.touched_path, c.touched_start, c.touched_end);
+        let line = format!("# - {addr}");
         out.push_str(&truncate_line(&line));
         out.push('\n');
     }
@@ -646,6 +661,9 @@ mod tests {
             trigger_path: "t.rs".into(),
             trigger_start: None,
             trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
             partner_marker: String::new(),
             partner_clause: String::new(),
             density: Density::L0,
