@@ -198,7 +198,7 @@ render rather than being silently lost.
 
 ### Deferred detectors
 
-Two detectors are deferred to a follow-up card and currently return no
+Two detectors are deferred to card `main-1-2-4` (`Advice delta redesign — Sub-card D`) and currently return no
 candidates:
 
 - `detect_delta_intersects_mesh` — implements §11 row 1 ("Path ∩

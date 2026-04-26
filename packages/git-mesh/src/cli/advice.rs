@@ -321,6 +321,10 @@ fn run_advice_render(
     current_objects_guard.disarm();
 
     // e) Write last-flush.state with the consolidated read_cursor (2a).
+    // SAFETY: session lock held (acquired in SessionStore::open and kept for
+    // the command lifetime); concurrent `git mesh advice <id> read` calls
+    // block on the same flock, so no new ReadRecord can be appended between
+    // the reads_since_cursor call above and reads_byte_len here.
     let new_cursor = store.reads_byte_len()?;
     let new_last_flush = crate::advice::session::state::BaselineState {
         schema_version: crate::advice::session::SCHEMA_VERSION,
@@ -422,12 +426,23 @@ fn build_touch_intervals(
 /// on any failure, including when git isn't usable — the caller falls back
 /// to baseline diff in that case. (Finding 2b.)
 fn tree_resolves_in(
-    _repo: &gix::Repository,
+    repo: &gix::Repository,
     tree_sha: &str,
     objects_dir: &std::path::Path,
 ) -> bool {
+    // Set GIT_OBJECT_DIRECTORY to the target pack exclusively and clear
+    // GIT_ALTERNATE_OBJECT_DIRECTORIES so that worktree alternates or
+    // info/alternates entries cannot resolve the tree from outside the
+    // expected objects dir.  Without the empty-string override a shared
+    // object pool (or an info/alternates entry) would cause this check to
+    // return true even when objects_dir does not actually contain the tree,
+    // re-introducing the silent-wrong-delta failure the fallback was designed
+    // to prevent.
+    let repo_path = repo.path().parent().unwrap_or(repo.path());
     let out = std::process::Command::new("git")
+        .current_dir(repo_path)
         .env("GIT_OBJECT_DIRECTORY", objects_dir)
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", "")
         .args(["cat-file", "-e", tree_sha])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

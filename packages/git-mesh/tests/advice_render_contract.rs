@@ -381,3 +381,80 @@ fn successful_render_advances_seen_sets() -> Result<()> {
     assert_ne!(lf_after, baseline, "last-flush.state must advance");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// F2: tree_resolves_in must not resolve via info/alternates — the check is
+// restricted to last-flush.objects/ only.  If a shared object pool (or an
+// info/alternates entry) contains the stale tree, tree_resolves_in must still
+// return false so that the fallback to baseline fires.
+// ---------------------------------------------------------------------------
+#[test]
+fn stale_last_flush_via_alternates_triggers_fallback() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let sid = session_id("alt-fallback");
+
+    // First snapshot + render so last-flush.objects/ is populated with a
+    // real tree object.
+    run_advice(&repo, &sid, &["snapshot"])?;
+    repo.write_file("file1.txt", "altered\n")?;
+    let out = run_advice(&repo, &sid, &[])?;
+    assert!(out.status.success(), "first render failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    let dir = session_dir(&repo, &sid);
+    let lf_objects = dir.join("last-flush.objects");
+    assert!(lf_objects.is_dir(), "last-flush.objects must exist after first render");
+
+    // Read the tree_sha recorded in last-flush.state — that object lives in
+    // last-flush.objects/ right now.
+    let lf_bytes = std::fs::read(dir.join("last-flush.state"))?;
+    let lf_val: serde_json::Value = serde_json::from_slice(&lf_bytes)?;
+    let stale_tree = lf_val["tree_sha"].as_str().expect("tree_sha field").to_string();
+
+    // Move last-flush.objects to a separate "alternate pool" directory, then
+    // register it via info/alternates so the standard git object lookup would
+    // find the tree through the alternate chain.
+    let alt_pool = dir.join("stale-alternate-pool");
+    std::fs::rename(&lf_objects, &alt_pool)?;
+    assert!(!lf_objects.exists(), "last-flush.objects must be gone after move");
+
+    // Write info/alternates pointing at the stale pool.
+    let alt_info_dir = repo.path().join(".git").join("objects").join("info");
+    std::fs::create_dir_all(&alt_info_dir)?;
+    std::fs::write(
+        alt_info_dir.join("alternates"),
+        format!("{}\n", alt_pool.display()),
+    )?;
+
+    // Recreate an empty last-flush.objects dir (so the path-existence check
+    // in run_advice_render passes) but leave it empty — the tree cannot be
+    // found inside it.
+    std::fs::create_dir(&lf_objects)?;
+
+    // Keep last-flush.state pointing at stale_tree (unchanged).  The tree is
+    // only reachable via the alternate, not from lf_objects itself.
+    repo.write_file("file1.txt", "another-edit\n")?;
+    let out = run_advice(&repo, &sid, &[])?;
+    assert!(
+        out.status.success(),
+        "render must fall back gracefully; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("last-flush state inconsistent"),
+        "expected fallback warning (tree only in alternate, not in last-flush.objects); got: {stderr}"
+    );
+    // Confirm the stale_tree itself was only reachable via the alternate by
+    // verifying a plain cat-file without GIT_ALTERNATE_OBJECT_DIRECTORIES=""
+    // would have found it (sanity check that the alternate was set up).
+    let found_via_normal = std::process::Command::new("git")
+        .current_dir(repo.path())
+        .args(["cat-file", "-e", &stale_tree])
+        .status()?
+        .success();
+    assert!(
+        found_via_normal,
+        "sanity: git should resolve stale tree via info/alternates in normal lookup"
+    );
+    Ok(())
+}

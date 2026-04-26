@@ -333,8 +333,9 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
 /// Why deferred: requires hunk-range data on `DiffEntry`. Emitting
 /// `Partner` for every modified meshed path would burn fingerprints in
 /// the dedupe set before correct candidates exist (not recoverable
-/// without manual reset). Tracked as a follow-up card; do not enable
-/// until `DiffEntry` carries hunk ranges and intersection is range-exact.
+/// without manual reset). Tracked in card `main-1-2-4` (`Advice delta
+/// redesign — Sub-card D`); do not enable until `DiffEntry` carries hunk
+/// ranges and intersection is range-exact.
 pub fn detect_delta_intersects_mesh(_input: &CandidateInput<'_>) -> Vec<Candidate> {
     Vec::new()
 }
@@ -394,8 +395,9 @@ pub fn detect_rename_consequence(input: &CandidateInput<'_>) -> Vec<Candidate> {
 /// Why deferred: requires blob line counts on `DiffEntry`. Emitting
 /// `RangeCollapse` on every modified meshed path would pollute the
 /// fingerprint set; once correct collapses arrive their fingerprints
-/// would already be burned. Tracked as a follow-up card; do not enable
-/// until `DiffEntry` carries old/new line counts.
+/// would already be burned. Tracked in card `main-1-2-4` (`Advice delta
+/// redesign — Sub-card D`); do not enable until `DiffEntry` carries
+/// old/new line counts.
 pub fn detect_range_shrink(_input: &CandidateInput<'_>) -> Vec<Candidate> {
     Vec::new()
 }
