@@ -108,10 +108,28 @@ fn render_with_flag_corrupt_baseline_still_bails() -> Result<()> {
     // Overwrite baseline.state with garbage.
     std::fs::write(dir.join("baseline.state"), b"not-valid-json")?;
 
+    let corrupt_bytes = b"not-valid-json";
     let out = run_render(&repo, &sid, &["--snapshot-if-missing"])?;
     assert!(
         !out.status.success(),
         "corrupt baseline with --snapshot-if-missing must still fail closed"
+    );
+    // File must not have been overwritten — bytes are exactly the corrupt payload.
+    let after_bytes = std::fs::read(dir.join("baseline.state"))?;
+    assert_eq!(
+        after_bytes.as_slice(),
+        corrupt_bytes,
+        "corrupt baseline.state must not be overwritten by --snapshot-if-missing"
+    );
+    // stderr must indicate a parse failure, not the "no baseline" missing message.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("no baseline for session"),
+        "stderr must not contain the missing-baseline message for a corrupt baseline; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("parse state file"),
+        "stderr must mention parse failure for a corrupt baseline; got: {stderr}"
     );
     Ok(())
 }

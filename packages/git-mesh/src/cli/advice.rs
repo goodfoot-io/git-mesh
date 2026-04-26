@@ -633,14 +633,14 @@ fn snapshot_into(
         captured_at,
         read_cursor: 0,
     };
-    store.write_baseline(&state)?;
-
     let last_flush_objects = store.last_flush_objects_dir();
     if last_flush_objects.exists() {
         std::fs::remove_dir_all(&last_flush_objects).ok();
     }
     copy_dir_recursive(&baseline_objects, &last_flush_objects)?;
     store.write_last_flush(&state)?;
+    // `baseline.state` is written last so its presence witnesses last-flush durability.
+    store.write_baseline(&state)?;
 
     Ok(())
 }
@@ -671,6 +671,15 @@ fn run_advice_read(
     let gd = repo.git_dir().to_path_buf();
     let mut store = SessionStore::open(wd, &gd, &session_id)?;
 
+    if paths.is_empty() {
+        bail!("git mesh advice <id> read: at least one path is required");
+    }
+
+    // Validate every path/range first; only append if all are valid.
+    for spec in &paths {
+        validate_read_spec(repo, spec)?;
+    }
+
     // Require baseline.state — fail closed unless --snapshot-if-missing.
     if !store.dir().join("baseline.state").exists() {
         if snapshot_if_missing {
@@ -681,15 +690,6 @@ fn run_advice_read(
                  (`git mesh advice {session_id} snapshot`)"
             );
         }
-    }
-
-    if paths.is_empty() {
-        bail!("git mesh advice <id> read: at least one path is required");
-    }
-
-    // Validate every path/range first; only append if all are valid.
-    for spec in &paths {
-        validate_read_spec(repo, spec)?;
     }
 
     let now = chrono::Utc::now().to_rfc3339();
