@@ -33,5 +33,5 @@ emit_advice() {
   out="$(git mesh advice "$sid" 2>/dev/null || true)"
   [ -n "$out" ] || return 0
   jq -nc --arg e "$event" --arg c "$out" \
-    '{hookSpecificOutput: {hookEventName: $e, additionalContext: $c}}'
+    '{hookSpecificOutput: {hookEventName: $e, additionalContext: $c}, systemMessage: $c}'
 }
