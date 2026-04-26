@@ -427,38 +427,104 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
                 }
                 out.extend(cands);
             }
-            DiffEntry::Renamed { from, to, old_oid, new_oid, .. } => {
-                let mut cands_from = delta_path_partners(input, from);
-                for c in &mut cands_from {
-                    c.old_blob = old_oid.clone();
+            DiffEntry::Renamed { from, to, new_oid, .. } => {
+                // When `from` is a meshed path, detect_rename_consequence
+                // will emit an L2 candidate covering the re-record; skip
+                // producing partner candidates here to avoid duplicating
+                // partners and surfacing the old (non-existent) path as a
+                // trigger.
+                //
+                // When `from` is NOT a meshed path but `to` is (a file was
+                // renamed *into* a meshed location), treat it like an Added.
+                let from_is_meshed = input
+                    .mesh_ranges
+                    .iter()
+                    .any(|r| r.path.to_string_lossy() == from.as_str());
+                if !from_is_meshed {
+                    let mut cands_to = delta_path_partners(input, to);
+                    for c in &mut cands_to {
+                        c.new_blob = new_oid.clone();
+                    }
+                    out.extend(cands_to);
                 }
-                out.extend(cands_from);
-                let mut cands_to = delta_path_partners(input, to);
-                for c in &mut cands_to {
-                    c.new_blob = new_oid.clone();
-                }
-                out.extend(cands_to);
             }
         }
     }
     out
 }
 
+/// Build a map of `old_path → new_path` for all renames in `session_delta`.
+fn session_rename_map(input: &CandidateInput<'_>) -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    for entry in input.session_delta {
+        if let DiffEntry::Renamed { from, to, .. } = entry {
+            m.insert(from.clone(), to.clone());
+        }
+    }
+    m
+}
+
 fn delta_path_partners(input: &CandidateInput<'_>, path: &str) -> Vec<Candidate> {
+    delta_path_partners_inner(input, path, &session_rename_map(input))
+}
+
+fn delta_path_partners_inner(
+    input: &CandidateInput<'_>,
+    path: &str,
+    rename_map: &std::collections::HashMap<String, String>,
+) -> Vec<Candidate> {
     if path_is_internal(path, input.internal_path_prefixes) {
         return Vec::new();
     }
     let mut out = Vec::new();
     for range in input.mesh_ranges {
         let range_path = range.path.to_string_lossy();
-        if path == range_path.as_ref() {
-            out.extend(partner_candidates_for_trigger(
-                input, path, None, None, range,
-            ));
+        if path != range_path.as_ref() {
+            continue;
+        }
+        // Emit one candidate per partner range in this mesh.
+        for partner in input.mesh_ranges {
+            if partner.name != range.name || same_range(partner, range) {
+                continue;
+            }
+            let partner_path_str = partner.path.to_string_lossy().to_string();
+            let (ps, pe) = if partner.whole {
+                (None, None)
+            } else {
+                (Some(partner.start as i64), Some(partner.end as i64))
+            };
+            // If the partner range's path was renamed in the session, surface
+            // the new path instead of the old (non-existent) path, and annotate
+            // with [RENAMED] / was <old>.
+            let (effective_partner_path, marker, clause) =
+                if let Some(new_path) = rename_map.get(&partner_path_str) {
+                    (
+                        new_path.clone(),
+                        "[RENAMED]".to_string(),
+                        format!("was {partner_path_str}"),
+                    )
+                } else {
+                    (partner_path_str.clone(), String::new(), String::new())
+                };
+            let mut c = bare_candidate(
+                &partner.name,
+                &partner.why,
+                ReasonKind::Partner,
+                (&effective_partner_path, ps, pe),
+                (path, None, None),
+            );
+            c.partner_marker = marker;
+            c.partner_clause = clause;
+            if effective_partner_path != partner_path_str {
+                c.old_path = Some(partner_path_str);
+                c.new_path = Some(effective_partner_path);
+            }
+            out.push(c);
         }
     }
     out
 }
+
 
 /// Emit `Terminal` for `mesh_ranges` rows with Changed/Moved/Terminal status.
 pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
@@ -509,34 +575,42 @@ pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
     out
 }
 
-/// Emit `RenameLiteral` for `session_delta` Renamed entries whose old path is
-/// meshed.
+/// Emit `RenameLiteral` (L2) for `session_delta` Renamed entries whose old path
+/// is a meshed range, with a ready-to-run `git mesh rm/add/commit` command.
+///
+/// When the renamed path (`from`) is uniquely determined (exactly one Renamed
+/// entry maps it to a single `to`), emit a single L2 candidate carrying the
+/// re-record command sequence. The trigger is the new path (`to`) — the old
+/// path no longer exists on disk. The `partner_path` is also `to` so that the
+/// bullet renders as an actionable address.
 pub fn detect_rename_consequence(input: &CandidateInput<'_>) -> Vec<Candidate> {
     let mut out = Vec::new();
     for entry in input.session_delta {
         if let DiffEntry::Renamed { from, to, .. } = entry {
             for range in input.mesh_ranges {
                 let range_path = range.path.to_string_lossy();
-                if from.as_str() == range_path.as_ref() {
-                    out.extend(partner_candidates_for_trigger_kind(
-                        input,
-                        ReasonKind::RenameLiteral,
-                        from,
-                        None,
-                        None,
-                        range,
-                    ));
+                if from.as_str() != range_path.as_ref() {
+                    continue;
                 }
-                if to.as_str() == range_path.as_ref() {
-                    out.extend(partner_candidates_for_trigger_kind(
-                        input,
-                        ReasonKind::RenameLiteral,
-                        to,
-                        None,
-                        None,
-                        range,
-                    ));
-                }
+                // `from` is a meshed path. Emit a single L2 candidate with
+                // the rm/add/commit command. Use `to` as both trigger and
+                // partner so the rendered address is navigable.
+                let mesh = &range.name;
+                let command = format!(
+                    "git mesh rm  {mesh} {from}\ngit mesh add {mesh} {to}\ngit mesh commit {mesh}"
+                );
+                let mut c = bare_candidate(
+                    mesh,
+                    &range.why,
+                    ReasonKind::RenameLiteral,
+                    (to, None, None),
+                    (to, None, None),
+                );
+                c.density = Density::L2;
+                c.command = command;
+                c.old_path = Some(from.clone());
+                c.new_path = Some(to.clone());
+                out.push(c);
             }
         }
     }
@@ -1031,7 +1105,8 @@ mod tests {
     // ── detect_rename_consequence ────────────────────────────────────────────
 
     /// A session_delta Renamed entry whose `from` path is meshed must produce
-    /// a RenameLiteral Candidate for the other ranges in the mesh.
+    /// an L2 RenameLiteral Candidate with the rm/add/commit command.
+    /// The trigger and partner_path are both the new path (`to`).
     #[test]
     fn rename_of_meshed_path_emits_rename_literal() {
         let ranges = [
@@ -1058,10 +1133,99 @@ mod tests {
             },
         };
         let result = detect_rename_consequence(&input);
+        // One L2 candidate per meshed range that was renamed (src/old.rs).
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].reason_kind, ReasonKind::RenameLiteral);
-        assert_eq!(result[0].trigger_path, "src/old.rs");
-        assert_eq!(result[0].partner_path, "src/caller.rs");
+        assert_eq!(result[0].density, Density::L2);
+        // Trigger and partner are the new (navigable) path.
+        assert_eq!(result[0].trigger_path, "src/new.rs");
+        assert_eq!(result[0].partner_path, "src/new.rs");
+        // old/new paths record the rename.
+        assert_eq!(result[0].old_path, Some("src/old.rs".to_string()));
+        assert_eq!(result[0].new_path, Some("src/new.rs".to_string()));
+        // Command carries the rm/add/commit triple.
+        assert!(
+            result[0].command.contains("git mesh rm  ren-mesh src/old.rs"),
+            "command must include rm: {:?}",
+            result[0].command
+        );
+        assert!(
+            result[0].command.contains("git mesh add ren-mesh src/new.rs"),
+            "command must include add: {:?}",
+            result[0].command
+        );
+        assert!(
+            result[0].command.contains("git mesh commit ren-mesh"),
+            "command must include commit: {:?}",
+            result[0].command
+        );
+    }
+
+    /// Full Bug 5 scenario: Renamed { from: src/foo.ts, to: src/bar.ts } in both
+    /// session_delta and incr_delta, plus a partner range on src/uses.ts.
+    ///
+    /// detect_delta_intersects_mesh must produce:
+    ///   - one Partner candidate with partner_path="src/bar.ts", partner_marker="[RENAMED]",
+    ///     partner_clause="was src/foo.ts", trigger_path="src/uses.ts"
+    ///     (from processing Modified { src/uses.ts } with rename resolution)
+    ///
+    /// detect_rename_consequence must produce:
+    ///   - one L2 RenameLiteral candidate with command containing rm/add/commit
+    #[test]
+    fn bug5_rename_of_meshed_path_full_scenario() {
+        let ranges = [
+            make_whole_mesh_range("link", "src/foo.ts"),
+            make_whole_mesh_range("link", "src/uses.ts"),
+        ];
+        let renamed = DiffEntry::Renamed {
+            from: "src/foo.ts".to_string(),
+            to: "src/bar.ts".to_string(),
+            score: 95,
+            old_oid: None,
+            new_oid: None,
+        };
+        let modified = DiffEntry::Modified {
+            path: "src/uses.ts".to_string(),
+            old_oid: None,
+            new_oid: None,
+        };
+        let delta = [renamed, modified];
+        let input = CandidateInput {
+            session_delta: &delta,
+            incr_delta: &delta,
+            new_reads: &[],
+            touch_intervals: &[],
+            mesh_ranges: &ranges,
+            internal_path_prefixes: &[],
+            staging: StagingState { adds: &[], removes: &[] },
+        };
+
+        // (a) delta detector: one Partner candidate with [RENAMED] annotation
+        let delta_cands = detect_delta_intersects_mesh(&input);
+        // Only one candidate expected: from Modified { src/uses.ts } → partner src/bar.ts
+        // (Renamed { src/foo.ts } is skipped since from is meshed)
+        assert_eq!(
+            delta_cands.len(),
+            1,
+            "expected exactly one delta partner candidate; got: {delta_cands:#?}"
+        );
+        assert_eq!(delta_cands[0].partner_path, "src/bar.ts");
+        assert_eq!(delta_cands[0].partner_marker, "[RENAMED]");
+        assert_eq!(delta_cands[0].partner_clause, "was src/foo.ts");
+        assert_eq!(delta_cands[0].trigger_path, "src/uses.ts");
+
+        // (b) rename consequence detector: one L2 candidate with rm/add/commit
+        let rename_cands = detect_rename_consequence(&input);
+        assert_eq!(
+            rename_cands.len(),
+            1,
+            "expected exactly one rename consequence candidate; got: {rename_cands:#?}"
+        );
+        assert_eq!(rename_cands[0].reason_kind, ReasonKind::RenameLiteral);
+        assert_eq!(rename_cands[0].density, Density::L2);
+        assert!(rename_cands[0].command.contains("git mesh rm  link src/foo.ts"));
+        assert!(rename_cands[0].command.contains("git mesh add link src/bar.ts"));
+        assert!(rename_cands[0].command.contains("git mesh commit link"));
     }
 
     // ── detect_range_shrink ──────────────────────────────────────────────────

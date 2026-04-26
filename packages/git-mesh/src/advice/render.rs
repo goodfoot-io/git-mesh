@@ -310,7 +310,7 @@ fn render_cross_cutting(c: &Candidate) -> String {
 
 fn command_lead_in(kind: ReasonKind) -> &'static str {
     match kind {
-        ReasonKind::RenameLiteral => "To record the rename:",
+        ReasonKind::RenameLiteral => "to re-record after the rename, run:",
         ReasonKind::RangeCollapse => "To re-record with the new extent:",
         ReasonKind::LosingCoherence => "To narrow or retire the group:",
         ReasonKind::SymbolRename => "To re-record both sides:",
@@ -751,6 +751,54 @@ mod tests {
         assert!(
             !out.contains("# triggered by"),
             "must not emit triggered-by line for empty trigger_path; got:\n{out}"
+        );
+    }
+
+    /// Bug 5: a candidate with partner_marker="[RENAMED]" and partner_clause
+    /// "was src/foo.ts" must render as:
+    ///   `# - src/bar.ts [RENAMED] — was src/foo.ts`
+    #[test]
+    fn renamed_partner_renders_marker_and_clause() {
+        let mut c = cand("link", "src/bar.ts");
+        c.partner_start = None;
+        c.partner_end = None;
+        c.trigger_path = "src/uses.ts".into();
+        c.partner_marker = "[RENAMED]".into();
+        c.partner_clause = "was src/foo.ts".into();
+        let out = render(&[c], &[], false);
+        assert!(
+            out.contains("# - src/bar.ts [RENAMED] — was src/foo.ts"),
+            "must render renamed partner with marker and clause; got:\n{out}"
+        );
+    }
+
+    /// Bug 5: an L2 RenameLiteral candidate with a command must emit the
+    /// command block with the correct lead-in.
+    #[test]
+    fn rename_literal_l2_renders_command_block() {
+        let mut c = cand("link", "src/bar.ts");
+        c.partner_start = None;
+        c.partner_end = None;
+        c.trigger_path = "src/bar.ts".into();
+        c.reason_kind = ReasonKind::RenameLiteral;
+        c.density = Density::L2;
+        c.command = "git mesh rm  link src/foo.ts\ngit mesh add link src/bar.ts\ngit mesh commit link".into();
+        let out = render(&[c], &[], false);
+        assert!(
+            out.contains("# to re-record after the rename, run:"),
+            "must emit rename lead-in; got:\n{out}"
+        );
+        assert!(
+            out.contains("#   git mesh rm  link src/foo.ts"),
+            "must emit rm command; got:\n{out}"
+        );
+        assert!(
+            out.contains("#   git mesh add link src/bar.ts"),
+            "must emit add command; got:\n{out}"
+        );
+        assert!(
+            out.contains("#   git mesh commit link"),
+            "must emit commit command; got:\n{out}"
         );
     }
 
