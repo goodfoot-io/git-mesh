@@ -395,11 +395,35 @@ pub fn read_git_text(repo: &gix::Repository, oid: &str) -> Result<String> {
 }
 
 /// Resolve a commit-ish to a full commit OID.
+///
+/// Errors are curated at this boundary so the upstream `gix-revision`
+/// `Display` (which embeds `/.cargo/registry/.../gix-revision-x.y.z/src/...rs:NNN`)
+/// never reaches CLI stderr. Callers prefix the originating flag (e.g.
+/// `--since`, `--at`) themselves.
 pub fn resolve_commit(repo: &gix::Repository, commit_ish: &str) -> Result<String> {
     let id = repo
         .rev_parse_single(commit_ish)
-        .map_err(|e| Error::Git(format!("rev-parse `{commit_ish}`: {e}")))?;
+        .map_err(|e| Error::Git(curate_rev_parse_error(commit_ish, &e.to_string())))?;
     Ok(id.detach().to_string())
+}
+
+/// Translate the upstream `gix-revision` error string into a clean,
+/// host-stable message. Recognized variants:
+///
+/// - `couldn't parse revision` → "not a valid revision"
+/// - `delegate.traverse(NthAncestor(N))` → "has fewer than N ancestors"
+/// - anything else → "could not resolve `<rev>`"
+fn curate_rev_parse_error(commit_ish: &str, raw: &str) -> String {
+    if let Some(after) = raw.split("NthAncestor(").nth(1)
+        && let Some(num_str) = after.split(')').next()
+        && let Ok(n) = num_str.parse::<u64>()
+    {
+        return format!("has fewer than {n} ancestors");
+    }
+    if raw.contains("couldn't parse revision") {
+        return "not a valid revision".to_string();
+    }
+    format!("could not resolve `{commit_ish}`")
 }
 
 /// True if `ancestor` is an ancestor of `descendant` (or equal).

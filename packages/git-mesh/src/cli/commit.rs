@@ -40,7 +40,9 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // the stage-time precheck and the prepare_add path operate on the
     // same anchor (independent of clap arg ordering).
     let anchor_oid: Option<String> = match args.at.as_deref() {
-        Some(s) => Some(crate::git::resolve_commit(repo, s)?),
+        Some(s) => Some(
+            crate::git::resolve_commit(repo, s).map_err(|e| anyhow!("--at `{s}`: {e}"))?,
+        ),
         None => None,
     };
 
