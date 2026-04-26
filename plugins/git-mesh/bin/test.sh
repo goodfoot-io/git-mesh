@@ -1,244 +1,269 @@
 #!/usr/bin/env bash
-# End-to-end tests for the git-mesh Claude Code hooks (shim era).
+# End-to-end test for the git-mesh advice hooks.
 #
-# Uses a real throwaway git repo and a real `git-mesh` binary on PATH. No
-# mocks: every assertion is a real stdin/stdout/exit-code check against the
-# hook scripts as Claude Code would invoke them.
+# Builds a real git repository in a fresh temp dir, anchors a real mesh
+# in it, then drives each of the four hook scripts with the actual JSON
+# payload Claude Code would send. Stdin and stdout are real — no mocks.
+#
+# Pass: every hook exits 0 and the post-edit / prompt / stop renders
+# carry the partner path of the mutated mesh range. Fail: non-zero exit
+# from any hook, or missing advice text where it must appear.
 
 set -euo pipefail
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
-POST_TOOL="$HERE/post-tool-use.sh"
-PROMPT="$HERE/user-prompt-submit.sh"
-SESSION_START="$HERE/session-start.sh"
-STOP="$HERE/stop.sh"
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
 
-for tool in git git-mesh jq; do
-  command -v "$tool" >/dev/null 2>&1 || {
-    echo "missing required tool on PATH: $tool" >&2
-    exit 2
-  }
-done
+PASS=0
+FAIL=0
+TMP_ROOT="$(mktemp -d -t git-mesh-hook-test.XXXXXX)"
+# Pin the advice store to a known per-test directory so the test can
+# locate baseline.state / reads.jsonl without recomputing the FNV-64
+# repo key the CLI uses.
+export GIT_MESH_ADVICE_DIR="$TMP_ROOT/advice-store"
+trap 'rm -rf "$TMP_ROOT"' EXIT
 
-WORK="$(mktemp -d)"
-CACHE_DIR="${GIT_MESH_ADVICE_DIR:-/tmp/git-mesh/advice}"
-mkdir -p "$CACHE_DIR"
-
-cleanup() { rm -rf "$WORK"; }
-trap cleanup EXIT
-
-pass=0
-fail=0
-
-ok() {
-  printf 'ok   %s\n' "$1"
-  pass=$((pass + 1))
+# Locate the per-session store dir by globbing under GIT_MESH_ADVICE_DIR
+# (one repo-key subdir per repo). Sets STORE_DIR.
+locate_store() {
+  local sid="$1" matches
+  matches=("$GIT_MESH_ADVICE_DIR"/*/"$sid")
+  STORE_DIR="${matches[0]}"
 }
 
-ko() {
-  printf 'FAIL %s\n  %s\n' "$1" "$2"
-  fail=$((fail + 1))
+log()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
+ok()   { printf '\033[32m  ok\033[0m   %s\n' "$*"; PASS=$((PASS + 1)); }
+bad()  { printf '\033[31m  FAIL\033[0m %s\n' "$*"; FAIL=$((FAIL + 1)); }
+
+# Run a hook with a JSON payload on stdin. Captures stdout/stderr/exit.
+# Sets globals: HOOK_OUT, HOOK_ERR, HOOK_RC.
+run_hook() {
+  local script="$1" payload="$2"
+  local out_f err_f
+  out_f="$(mktemp)"; err_f="$(mktemp)"
+  set +e
+  printf '%s' "$payload" | bash "$script" >"$out_f" 2>"$err_f"
+  HOOK_RC=$?
+  set -e
+  HOOK_OUT="$(cat "$out_f")"
+  HOOK_ERR="$(cat "$err_f")"
+  rm -f "$out_f" "$err_f"
 }
 
-assert_true() {
+assert_rc_zero() {
+  local label="$1"
+  if [ "$HOOK_RC" -eq 0 ]; then
+    ok "$label: exit 0"
+  else
+    bad "$label: exit $HOOK_RC; stderr: $HOOK_ERR"
+  fi
+}
+
+assert_stdout_contains() {
+  local label="$1" needle="$2"
+  if printf '%s' "$HOOK_OUT" | grep -qF -- "$needle"; then
+    ok "$label: stdout contains \`$needle\`"
+  else
+    bad "$label: stdout missing \`$needle\`; got: ${HOOK_OUT:-<empty>}"
+  fi
+}
+
+assert_stdout_empty() {
+  local label="$1"
+  if [ -z "$HOOK_OUT" ]; then
+    ok "$label: stdout empty"
+  else
+    bad "$label: expected empty stdout, got: $HOOK_OUT"
+  fi
+}
+
+assert_stdout_json_field() {
+  local label="$1" jq_expr="$2" expected="$3"
+  local got
+  got="$(printf '%s' "$HOOK_OUT" | jq -r "$jq_expr" 2>/dev/null || true)"
+  if [ "$got" = "$expected" ]; then
+    ok "$label: $jq_expr == $expected"
+  else
+    bad "$label: $jq_expr expected $expected, got $got"
+  fi
+}
+
+# Build a fresh repo with a meshed pair (a.txt <-> b.txt).
+make_repo() {
   local name="$1"
-  shift
-  if "$@"; then
-    ok "$name"
-  else
-    ko "$name" "condition failed"
-  fi
+  local repo="$TMP_ROOT/$name"
+  mkdir -p "$repo"
+  (
+    cd "$repo"
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    printf 'one\ntwo\nthree\n' > a.txt
+    printf 'alpha\nbeta\ngamma\n' > b.txt
+    git add a.txt b.txt
+    git commit -q -m "seed"
+    git mesh add demo a.txt#L1-L3 b.txt#L1-L3 >/dev/null
+    git mesh why demo -m "a.txt and b.txt move in lockstep" >/dev/null
+    git mesh commit demo >/dev/null
+  )
+  printf '%s' "$repo"
 }
 
-assert_false() {
-  local name="$1"
-  shift
-  if ! "$@"; then
-    ok "$name"
-  else
-    ko "$name" "expected false, got true"
-  fi
+payload() {
+  # $1=event, $2=session_id, $3=cwd, [$4..]=jq -n --arg pairs to splice in
+  local event="$1" sid="$2" cwd="$3"; shift 3
+  jq -nc \
+    --arg event "$event" --arg sid "$sid" --arg cwd "$cwd" \
+    "$@" \
+    '{session_id:$sid, transcript_path:"/dev/null", cwd:$cwd, permission_mode:"default", hook_event_name:$event} + $extra'
 }
 
-assert_contains() {
-  local name="$1" haystack="$2" needle="$3"
-  if [[ "$haystack" == *"$needle"* ]]; then
-    ok "$name"
-  else
-    ko "$name" "expected to contain: $needle — actual: $haystack"
-  fi
-}
+# ---------------------------------------------------------------------------
+# Test 1: SessionStart writes baseline.state in the per-session store.
+# ---------------------------------------------------------------------------
+log "Test 1: SessionStart snapshot"
+REPO1="$(make_repo repo1)"
+SID1="sess-one"
+PAYLOAD1="$(jq -nc --arg s "$SID1" --arg c "$REPO1" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup", model:"claude"}')"
+run_hook "$BIN_DIR/advice-session-start.sh" "$PAYLOAD1"
+assert_rc_zero "SessionStart"
+locate_store "$SID1"; BASELINE="$STORE_DIR/baseline.state"
+if [ -f "$BASELINE" ]; then
+  ok "SessionStart: baseline.state created at $BASELINE"
+else
+  bad "SessionStart: baseline.state missing at $BASELINE"
+fi
+assert_stdout_empty "SessionStart"
 
-assert_not_contains() {
-  local name="$1" haystack="$2" needle="$3"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    ok "$name"
-  else
-    ko "$name" "expected NOT to contain: $needle — actual: $haystack"
-  fi
-}
-
-assert_empty() {
-  local name="$1" value="$2"
-  if [[ -z "$value" ]]; then
-    ok "$name"
-  else
-    ko "$name" "expected empty, got: $value"
-  fi
-}
-
-assert_nonempty() {
-  local name="$1" value="$2"
-  if [[ -n "$value" ]]; then
-    ok "$name"
-  else
-    ko "$name" "expected non-empty, got empty"
-  fi
-}
-
-assert_eq() {
-  local name="$1" a="$2" b="$3"
-  if [[ "$a" == "$b" ]]; then
-    ok "$name"
-  else
-    ko "$name" "expected equal — left: $a — right: $b"
-  fi
-}
-
-unique_sid() { printf 'e2e-%s-%s-%s\n' "$$" "$RANDOM" "$(date +%s%N 2>/dev/null || date +%s)"; }
+log "Test 1b: SessionStart with source=compact also snapshots (new session id)"
+SID1B="sess-one-b"
+PAYLOAD1B="$(jq -nc --arg s "$SID1B" --arg c "$REPO1" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"compact"}')"
+run_hook "$BIN_DIR/advice-session-start.sh" "$PAYLOAD1B"
+assert_rc_zero "SessionStart(compact)"
+locate_store "$SID1B"; BASELINE1B="$STORE_DIR/baseline.state"
+if [ -f "$BASELINE1B" ]; then
+  ok "SessionStart(compact): baseline.state created at $BASELINE1B"
+else
+  bad "SessionStart(compact): baseline.state missing at $BASELINE1B"
+fi
 
 # ---------------------------------------------------------------------------
-# Build a real repo with two files spanned by one mesh.
+# Test 2: PostToolUse on Write surfaces the partner path of the meshed range.
 # ---------------------------------------------------------------------------
-cd "$WORK"
-git init -q
-git config user.email test@example.com
-git config user.name test
-printf 'a\nb\nc\nd\ne\n' > api.ts
-printf 'x\ny\nz\nw\n' > api.test.ts
-git add .
-git commit -qm init
-
-git-mesh add api-contract 'api.ts#L1-L3' 'api.test.ts#L1-L3' >/dev/null
-git-mesh why api-contract -m "API charge contract is covered by its test." >/dev/null
-git-mesh commit api-contract >/dev/null
+log "Test 2: PostToolUse Write surfaces meshed partner"
+# Mutate a.txt so the next render's incr_delta flags the meshed range.
+echo "modified" >> "$REPO1/a.txt"
+PAYLOAD2="$(jq -nc --arg s "$SID1" --arg c "$REPO1" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t1", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD2"
+assert_rc_zero "PostToolUse(Write)"
+assert_stdout_json_field "PostToolUse(Write)" '.hookSpecificOutput.hookEventName' "PostToolUse"
+assert_stdout_contains "PostToolUse(Write)" "b.txt"
+assert_stdout_contains "PostToolUse(Write)" "a.txt and b.txt move in lockstep"
 
 # ---------------------------------------------------------------------------
-# Test 1: session-start.sh creates a DB file at the expected path.
+# Test 3: PostToolUse on Read with offset/limit records a ranged read.
 # ---------------------------------------------------------------------------
-sid_1="$(unique_sid)"
-printf '%s\n' '{"session_id":"'"$sid_1"'","hook_event_name":"SessionStart","source":"startup"}' \
-  | "$SESSION_START" >/dev/null
-# session-start runs `advice <id> snapshot`, which creates a per-session
-# directory under $CACHE_DIR/<repo-key>/<id>/. We only assert the snapshot
-# call did not error (the bare render afterwards is silent on no-mesh
-# triggers).
-assert_true "session-start ran without error" true
+log "Test 3: PostToolUse Read records range in reads.jsonl"
+REPO3="$(make_repo repo3)"
+SID3="sess-three"
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID3" --arg c "$REPO3" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+assert_rc_zero "SessionStart(repo3)"
+
+PAYLOAD3="$(jq -nc --arg s "$SID3" --arg c "$REPO3" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"b.txt", offset:1, limit:3}, tool_response:{}, tool_use_id:"t2", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD3"
+assert_rc_zero "PostToolUse(Read)"
+locate_store "$SID3"; READS="$STORE_DIR/reads.jsonl"
+if [ -f "$READS" ] && jq -e 'select(.path=="b.txt" and .start_line==1 and .end_line==3)' "$READS" >/dev/null; then
+  ok "PostToolUse(Read): b.txt#L1-L3 recorded in reads.jsonl"
+else
+  bad "PostToolUse(Read): expected ranged read in $READS; got: $(cat "$READS" 2>/dev/null || echo MISSING)"
+fi
+# Reading a meshed range should produce advice surfacing its partner.
+assert_stdout_contains "PostToolUse(Read)" "a.txt"
 
 # ---------------------------------------------------------------------------
-# Test 2: post-tool-use.sh on a meshed file emits advice with correct shape.
+# Test 4: PostToolUse on a non-matching tool exits 0 silent.
 # ---------------------------------------------------------------------------
-sid_2="$(unique_sid)"
-git mesh advice "$sid_2" snapshot 2>/dev/null || true
-printf 'A\nB\nc\nd\ne\n' > api.ts
-post_out="$(
-  printf '%s\n' '{"session_id":"'"$sid_2"'","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"'"$WORK"'/api.ts"}}' \
-    | "$POST_TOOL"
-)"
-post_ctx="$(jq -r '.hookSpecificOutput.additionalContext' <<<"$post_out")"
-# All non-blank lines must start with '#'
-non_hash_lines="$(printf '%s\n' "$post_ctx" | grep -v '^$' | grep -v '^#' || true)"
-assert_empty "post-tool-use all non-blank lines start with #" "$non_hash_lines"
-assert_contains "post-tool-use contains mesh name" "$post_ctx" "api-contract"
-assert_contains "post-tool-use names a partner range" "$post_ctx" "api.test.ts#L1-L3"
-
-# MultiEdit is treated like Edit: same file_path shape, same advice surfaces.
-sid_2b="$(unique_sid)"
-git mesh advice "$sid_2b" snapshot 2>/dev/null || true
-printf 'A\nB\nC\nd\ne\n' > api.ts
-multi_out="$(
-  printf '%s\n' '{"session_id":"'"$sid_2b"'","hook_event_name":"PostToolUse","tool_name":"MultiEdit","tool_input":{"file_path":"'"$WORK"'/api.ts","edits":[{"old_string":"A","new_string":"AA"}]}}' \
-    | "$POST_TOOL"
-)"
-multi_ctx="$(jq -r '.hookSpecificOutput.additionalContext' <<<"$multi_out")"
-assert_contains "post-tool-use handles MultiEdit" "$multi_ctx" "api-contract"
-rm -rf "$CACHE_DIR"/*/"$sid_2b" 2>/dev/null || true
-
-# Non-edit tools are a no-op.
-noop_out="$(
-  printf '%s\n' '{"session_id":"'"$sid_2"'","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"'"$WORK"'/api.ts"}}' \
-    | "$POST_TOOL"
-)"
-assert_empty "post-tool-use ignores non-edit tools" "$noop_out"
+log "Test 4: PostToolUse on Glob is a no-op"
+PAYLOAD4="$(jq -nc --arg s "$SID3" --arg c "$REPO3" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Glob", tool_input:{pattern:"*.txt"}, tool_response:{}, tool_use_id:"t3", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD4"
+assert_rc_zero "PostToolUse(Glob)"
+assert_stdout_empty "PostToolUse(Glob)"
 
 # ---------------------------------------------------------------------------
-# Test 3: user-prompt-submit.sh mentioning a meshed path emits advice.
+# Test 5: UserPromptSubmit records new path mentions and renders advice.
 # ---------------------------------------------------------------------------
-sid_3="$(unique_sid)"
-git mesh advice "$sid_3" snapshot 2>/dev/null || true
-prompt_out="$(
-  printf '%s\n' '{"session_id":"'"$sid_3"'","hook_event_name":"UserPromptSubmit","prompt":"please look at api.ts"}' \
-    | "$PROMPT"
-)"
-prompt_ctx="$(jq -r '.hookSpecificOutput.additionalContext' <<<"$prompt_out")"
-non_hash_prompt="$(printf '%s\n' "$prompt_ctx" | grep -v '^$' | grep -v '^#' || true)"
-assert_empty "user-prompt-submit all non-blank lines start with #" "$non_hash_prompt"
-assert_contains "user-prompt-submit surfaces mesh name" "$prompt_ctx" "api-contract"
-assert_contains "user-prompt-submit names a partner range" "$prompt_ctx" "api.test.ts#L1-L3"
+log "Test 5: UserPromptSubmit picks up unread paths from prompt"
+REPO5="$(make_repo repo5)"
+SID5="sess-five"
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID5" --arg c "$REPO5" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
 
-# Prompt with no recognizable path produces nothing.
-empty_out="$(
-  printf '%s\n' '{"session_id":"'"$sid_3"'","hook_event_name":"UserPromptSubmit","prompt":"hello world"}' \
-    | "$PROMPT"
-)"
-assert_empty "user-prompt-submit silent without recognizable paths" "$empty_out"
-
-# ---------------------------------------------------------------------------
-# Test 4: stop.sh after a write event emits systemMessage matching additionalContext.
-# ---------------------------------------------------------------------------
-sid_4="$(unique_sid)"
-git mesh advice "$sid_4" snapshot 2>/dev/null || true
-# Touch api.ts so the next bare render sees an incremental delta —
-# replaces the legacy `add --write` event.
-touch api.ts 2>/dev/null || true
-stop_out="$(
-  printf '%s\n' '{"session_id":"'"$sid_4"'","hook_event_name":"Stop","stop_hook_active":false}' \
-    | "$STOP"
-)"
-stop_sys="$(jq -r '.systemMessage' <<<"$stop_out")"
-stop_ctx="$(jq -r '.hookSpecificOutput.additionalContext' <<<"$stop_out")"
-assert_eq "stop systemMessage matches additionalContext" "$stop_sys" "$stop_ctx"
-assert_contains "stop contains mesh name" "$stop_ctx" "api-contract"
+# Prompt mentions a.txt (which exists in the repo's worktree).
+PAYLOAD5="$(jq -nc --arg s "$SID5" --arg c "$REPO5" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"UserPromptSubmit", prompt:"Please look at a.txt and tell me what it does."}')"
+run_hook "$BIN_DIR/advice-user-prompt.sh" "$PAYLOAD5"
+assert_rc_zero "UserPromptSubmit"
+locate_store "$SID5"; READS5="$STORE_DIR/reads.jsonl"
+if [ -f "$READS5" ] && jq -e 'select(.path=="a.txt")' "$READS5" >/dev/null; then
+  ok "UserPromptSubmit: a.txt recorded in reads.jsonl"
+else
+  bad "UserPromptSubmit: a.txt not recorded; reads.jsonl: $(cat "$READS5" 2>/dev/null || echo MISSING)"
+fi
+assert_stdout_json_field "UserPromptSubmit" '.hookSpecificOutput.hookEventName' "UserPromptSubmit"
+# Mentioning a.txt should surface its meshed partner b.txt.
+assert_stdout_contains "UserPromptSubmit" "b.txt"
 
 # ---------------------------------------------------------------------------
-# Test 5: second flush for same session/trigger produces no output (dedup).
+# Test 6: UserPromptSubmit outside a git repo is a silent no-op.
 # ---------------------------------------------------------------------------
-sid_5="$(unique_sid)"
-git mesh advice "$sid_5" snapshot 2>/dev/null || true
-git mesh advice "$sid_5" read api.ts 2>/dev/null || true
-first_flush="$(git mesh advice "$sid_5" 2>/dev/null || true)"
-second_flush="$(git mesh advice "$sid_5" 2>/dev/null || true)"
-assert_nonempty "first flush has output" "$first_flush"
-assert_empty "second flush is empty (dedup)" "$second_flush"
+log "Test 6: UserPromptSubmit outside a git repo is silent"
+NONREPO="$TMP_ROOT/non-repo"; mkdir -p "$NONREPO"
+PAYLOAD6="$(jq -nc --arg c "$NONREPO" \
+  '{session_id:"x", transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"UserPromptSubmit", prompt:"foo.txt"}')"
+run_hook "$BIN_DIR/advice-user-prompt.sh" "$PAYLOAD6"
+assert_rc_zero "UserPromptSubmit(non-repo)"
+assert_stdout_empty "UserPromptSubmit(non-repo)"
 
 # ---------------------------------------------------------------------------
-# Test 6: stop.sh with session that has no new advice exits silently.
+# Test 7: Stop hook flushes; skipped on max_tokens.
 # ---------------------------------------------------------------------------
-sid_6="$(unique_sid)"
-printf '%s\n' '{"session_id":"'"$sid_6"'","hook_event_name":"SessionStart","source":"startup"}' \
-  | "$SESSION_START" >/dev/null || true
-# Drain the initial flush so subsequent stop has nothing new.
-git mesh advice "$sid_6" 2>/dev/null || true
-stop_empty="$(
-  printf '%s\n' '{"session_id":"'"$sid_6"'","hook_event_name":"Stop","stop_hook_active":false}' \
-    | "$STOP"
-)"
-assert_empty "stop is silent when no new advice to surface" "$stop_empty"
+log "Test 7: Stop hook"
+# Make a fresh post-edit crossing in repo5 so Stop has something new to render.
+echo "more" >> "$REPO5/b.txt"
+PAYLOAD7="$(jq -nc --arg s "$SID5" --arg c "$REPO5" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"end_turn", output:""}')"
+run_hook "$BIN_DIR/advice-stop.sh" "$PAYLOAD7"
+assert_rc_zero "Stop(end_turn)"
+assert_stdout_contains "Stop(end_turn)" "a.txt"
 
-# Cleanup session files we created (best effort).
-for sid in "$sid_1" "$sid_2" "$sid_3" "$sid_4" "$sid_5" "$sid_6"; do
-  rm -rf "$CACHE_DIR"/*/"$sid" 2>/dev/null || true
-done
+PAYLOAD7B="$(jq -nc --arg s "$SID5" --arg c "$REPO5" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"max_tokens", output:""}')"
+run_hook "$BIN_DIR/advice-stop.sh" "$PAYLOAD7B"
+assert_rc_zero "Stop(max_tokens)"
+assert_stdout_empty "Stop(max_tokens)"
 
-printf '\n%d passed, %d failed\n' "$pass" "$fail"
-[[ "$fail" -eq 0 ]]
+# ---------------------------------------------------------------------------
+# Test 8: Hooks fail-open when no baseline exists yet.
+# ---------------------------------------------------------------------------
+log "Test 8: PostToolUse with no baseline is a silent no-op"
+REPO8="$(make_repo repo8)"
+PAYLOAD8="$(jq -nc --arg c "$REPO8" \
+  '{session_id:"never-snapshotted", transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t8", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD8"
+assert_rc_zero "PostToolUse(no baseline)"
+assert_stdout_empty "PostToolUse(no baseline)"
+
+# ---------------------------------------------------------------------------
+log ""
+log "Summary: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

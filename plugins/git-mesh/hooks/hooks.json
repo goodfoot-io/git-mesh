@@ -1,24 +1,13 @@
 {
-  "description": "Surface git-mesh relationship context and drift findings to Claude during edits and at turn boundaries.",
+  "description": "Surface git-mesh advice as Claude crosses anchored line-range couplings.",
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/session-start.sh",
-            "timeout": 20
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|MultiEdit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-tool-use.sh",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/advice-session-start.sh",
             "timeout": 15
           }
         ]
@@ -26,22 +15,36 @@
     ],
     "UserPromptSubmit": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/user-prompt-submit.sh",
-            "timeout": 10
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/advice-user-prompt.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Bash|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/advice-post-tool-use.sh",
+            "timeout": 15
           }
         ]
       }
     ],
     "Stop": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/stop.sh",
-            "timeout": 20
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/advice-stop.sh",
+            "timeout": 15
           }
         ]
       }
