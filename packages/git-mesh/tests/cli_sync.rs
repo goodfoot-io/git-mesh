@@ -18,7 +18,41 @@ fn push_with_missing_remote_errors() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     let out = repo.run_mesh(["push", "absent"])?;
-    assert!(!out.status.success());
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "operational failure must exit 1, not 2 (clap usage)"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("remote not found: absent"),
+        "stderr={stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fetch_usage_error_exits_two() -> Result<()> {
+    // Clap usage error (unknown flag) keeps exit 2 — the standard
+    // POSIX convention used by `git`, `cargo`, etc.
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["fetch", "--bogus"])?;
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument") || stderr.contains("--bogus"),
+        "stderr={stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fetch_runtime_missing_remote_exits_one() -> Result<()> {
+    // Runtime/operational failure (remote not configured) exits 1,
+    // distinct from the clap usage exit-2.
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["fetch", "absent"])?;
+    assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("remote not found: absent"),

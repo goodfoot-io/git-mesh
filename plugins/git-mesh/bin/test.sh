@@ -322,6 +322,33 @@ assert_rc_zero "PostToolUse(Bash git -C)"
 assert_stdout_contains "PostToolUse(Bash git -C)" "b.txt"
 
 # ---------------------------------------------------------------------------
+# Test 12: CLI exit-code split — operational failures (exit 1) vs
+# clap usage errors (exit 2). Mirrors the convention documented in
+# README.md "Exit codes". Wrapper lives at packages/git-mesh/src/main.rs.
+# ---------------------------------------------------------------------------
+log "Test 12: exit-code split (runtime=1, usage=2)"
+REPO12="$(make_repo repo12)"
+
+assert_mesh_exit() {
+  local label="$1" expected="$2" repo="$3"; shift 3
+  local rc
+  set +e
+  ( cd "$repo" && git mesh "$@" >/dev/null 2>&1 )
+  rc=$?
+  set -e
+  if [ "$rc" -eq "$expected" ]; then
+    ok "$label: exit $rc"
+  else
+    bad "$label: expected exit $expected, got $rc"
+  fi
+}
+
+assert_mesh_exit "fetch nope (runtime: missing remote)" 1 "$REPO12" fetch nope
+assert_mesh_exit "fetch --bogus (usage: bad flag)" 2 "$REPO12" fetch --bogus
+assert_mesh_exit "delete missing (runtime: mesh not found)" 1 "$REPO12" delete missing-mesh
+assert_mesh_exit "commit empty (runtime: nothing staged)" 1 "$REPO12" commit no-such-mesh
+
+# ---------------------------------------------------------------------------
 log ""
 log "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

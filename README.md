@@ -37,6 +37,22 @@ git mesh stale frontend-backend-sync
 See [docs/git-mesh-the-missing-handbook.md](./docs/git-mesh-the-missing-handbook.md)
 for the project model and workflow.
 
+### Exit codes
+
+`git-mesh` follows the POSIX convention used by `git` and `cargo`:
+
+- **0** — success.
+- **1** — operational failure: the command was well-formed, but
+  the environment or repository state prevents completion.
+  Example: `git mesh fetch nope` when `nope` is not a configured
+  remote, or `git mesh commit foo` with nothing staged.
+- **2** — usage error: the command itself is malformed (unknown
+  flag, missing required argument). Example: `git mesh fetch --bogus`.
+
+`git mesh stale` overlays its own §10.4 contract on top of this:
+exit 1 when drift is found, exit 0 with `--no-exit-code`. The
+`pre-commit` subcommand likewise exits 1 on in-flight drift.
+
 ## VS Code Extension
 
 The VS Code extension is named `git-mesh` and publishes as

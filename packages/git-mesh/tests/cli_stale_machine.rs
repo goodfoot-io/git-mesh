@@ -151,14 +151,16 @@ fn github_actions_emits_warning_annotation() -> Result<()> {
 
 #[test]
 
-fn tool_error_exits_two() -> Result<()> {
-    // Running outside a git repo is the canonical "tool error" (§10.4).
+fn tool_error_exits_one() -> Result<()> {
+    // Running outside a git repo is an operational failure: the
+    // command is well-formed, the environment is missing. Operational
+    // failures exit 1; exit 2 is reserved for clap usage errors.
     let dir = tempfile::tempdir()?;
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(dir.path())
         .args(["stale"])
         .output()?;
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.status.code(), Some(1));
     Ok(())
 }
 

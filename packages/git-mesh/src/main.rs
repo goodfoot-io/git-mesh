@@ -20,8 +20,18 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("error: {error:#}");
-            std::process::exit(2);
+            // Clap usage errors (bad flag, missing arg) keep clap's
+            // own exit-2 contract (and its formatted message, plus
+            // exit 0 for `--help` / `--version`). Everything else is
+            // an operational failure → exit 1, matching the convention
+            // used by `git`, `cargo`, and POSIX tooling.
+            match error.downcast::<clap::Error>() {
+                Ok(clap_err) => clap_err.exit(),
+                Err(error) => {
+                    eprintln!("error: {error:#}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
