@@ -36,7 +36,12 @@ pub struct AdviceArgs {
     #[command(subcommand)]
     pub command: Option<AdviceCommand>,
 
-    /// Append per-reason documentation blocks to the render output.
+    /// Append per-reason documentation blocks to the render. Blocks emit
+    /// only when the flush surfaces a reason with an associated doc topic
+    /// (rename, range shrink, symbol rename, cross-mesh overlap, terminal
+    /// state, etc.); pure partner-read surfacings have no topic and
+    /// produce no extra output. Each topic emits once per session —
+    /// already-seen topics in `docs-seen.jsonl` are suppressed.
     #[arg(long)]
     pub documentation: bool,
 }
