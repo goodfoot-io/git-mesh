@@ -9,19 +9,29 @@ jobs:
   build-cli:
     name: Build CLI (Rust)
     runs-on: ubuntu-latest
+    env:
+      GIT_MESH_CARGO_TARGET_ROOT: ${{ runner.temp }}/git-mesh-target
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install mold and clang
+        run: sudo apt-get update && sudo apt-get install -y mold clang
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: packages/git-mesh
+          workspaces: packages/git-mesh -> ${{ runner.temp }}/git-mesh-target
 
       - name: Cargo check
         run: cd packages/git-mesh && cargo check --quiet
@@ -30,7 +40,7 @@ jobs:
         run: cd packages/git-mesh && cargo clippy --quiet -- -D warnings
 
       - name: Cargo test
-        run: cd packages/git-mesh && cargo test --quiet -- --test-threads=1
+        run: cd packages/git-mesh && cargo nextest run --build-jobs 1
 
       - name: Cargo build (release)
         run: cd packages/git-mesh && cargo build --release
@@ -39,7 +49,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: git-mesh-cli
-          path: packages/git-mesh/target/release/git-mesh
+          path: ${{ runner.temp }}/git-mesh-target/build/release/git-mesh
           retention-days: 1
 
   build-extension:

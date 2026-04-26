@@ -83,6 +83,42 @@ It does not register a custom editor, Markdown renderer, search UI, or webview.
     └── release.sh
 ```
 
+## Development Prerequisites
+
+Before running tests or building the CLI locally, install the following tools:
+
+**cargo-nextest** (test runner):
+
+```bash
+cargo install cargo-nextest --locked
+```
+
+For faster installation using prebuilt binaries, see the
+[nextest install docs](https://nexte.st/book/pre-built-binaries.html).
+
+**Linker (Linux only):**
+
+```bash
+sudo apt-get install mold clang   # Ubuntu/Debian
+```
+
+On macOS no extra install is required — the mold linker config is gated to
+Linux GNU targets only.
+
+**Shared Cargo target directory:**
+
+`packages/git-mesh` scripts default `CARGO_TARGET_DIR` to
+`$HOME/.cache/git-mesh/cargo-target/<kind>`, shared across all worktrees and
+`/workspace`. Override the root via `GIT_MESH_CARGO_TARGET_ROOT`:
+
+```bash
+GIT_MESH_CARGO_TARGET_ROOT=/tmp/my-target yarn test
+```
+
+Note: `yarn build:clean` (and any `cargo clean`) wipes the entire shared cache
+at `$GIT_MESH_CARGO_TARGET_ROOT` (or `$HOME/.cache/git-mesh/cargo-target`),
+affecting all worktrees that use that root.
+
 ## Contributing
 
 ```bash
