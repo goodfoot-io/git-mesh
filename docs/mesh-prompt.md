@@ -5,7 +5,7 @@ You're adding a mesh to the dependency database. The mesh fires when someone rea
 This applies in two situations:
 
 1. **Active edits.** You're committing a change. Anchor the mesh in the same commit that creates the coupling.
-2. **Existing code or docs.** You're reading or maintaining material that already contains a coupling no one has anchored. Anchor it now, against the current ranges, with `--at HEAD` (see *Anchoring against existing code*). Don't wait for a hypothetical future commit to "make it relevant."
+2. **Existing code or docs.** You're reading or maintaining material that already contains a coupling no one has anchored. Anchor it now, against the current ranges (see *Anchoring against existing code*). Don't wait for a hypothetical future commit to "make it relevant."
 
 You're not documenting your code. You're documenting **what the off-screen world does to it**, or what one anchor relies on the other anchor to stay true. If a region is internally self-explanatory and has no external consumers or load-bearing reader, no mesh.
 
@@ -35,6 +35,7 @@ Style rules that apply to every why:
 
 - **Prose, not log entries.** No leading keyword like `contract:`, `spec:`, `note:`, `fix:`. The mesh name carries the label; the why is documentation.
 - **Role-words, not filenames.** The ranges already carry the paths. The why says "the doc," "the parser," "the runbook," "the responder," "the migration," "the client." A path appears in the why only when the path *itself* is what the partner depends on (a hard-coded script reference, a generated file referenced by name in CI). Repeating a filename the ranges already carry locks the why to current names — a rename then invalidates the prose along with the anchor.
+- **Sharpen role-words when one side isn't enough.** The point is disambiguation, not minimalism. When both anchors share a role-word — both prose ("the doc"), both code ("the handler"), both runbooks — reach for sharper role-words ("the threat entry" / "the paired control," "the request doc" / "the parser," "the runbook step" / "the alert handler") before falling back to filenames. If one role-word genuinely covers both sides, the why isn't specific enough yet.
 - **State what is, not what could go wrong.** "The doc states the body shape the parser honors" is correct. "Don't rename this or the parser breaks" is the wrong shape. The developer infers the failure mode from their own intent. Phrases like *racy*, *invisible*, *silently breaks*, *will fail* leak knowledge of outcomes you may not actually have and narrow the protection to one failure mode.
 - **Name asymmetry in the prose, not as a prefix.** Promises and governance dependencies are directional. Use clauses like "the doc is the source of truth when they disagree," "the spec promises the shape the parser honors," "the ADR governs the assumption the sort relies on." This is more honest than a `Specification:` prefix because it forces you to name *which* side is normative.
 - **No bundling.** A why naming three things ("strict parser, field names load-bearing, owner: billing") usually means the mesh is trying to carry more than one relationship and should be split. Ownership and review triggers belong in CODEOWNERS and PR descriptions.
@@ -65,14 +66,14 @@ Kebab-case slug naming the *relationship*, not either side, optionally prefixed 
 When the coupling already exists in history and you're meshing it now rather than at the moment of creation:
 
 ```bash
-git mesh add <category>/<slug> --at HEAD \
+git mesh add <category>/<slug> \
   <path>#L<start>-L<end> \
   <partner-path>#L<start>-L<end>
 git mesh why <category>/<slug> -m "<one prose sentence>"
 git mesh commit <category>/<slug>
 ```
 
-`--at HEAD` (or any ref / SHA) anchors the ranges at a specific historical commit instead of the post-commit hook moment. Use this when reading or maintaining existing material — you don't need to wait for an active edit. Skim the surrounding region first to confirm it's actually load-bearing and the partner is path-addressable; if not, it's a link, not a mesh.
+Use this when reading or maintaining existing material — you don't need to wait for an active edit. Skim the surrounding region first to confirm it's actually load-bearing and the partner is path-addressable; if not, it's a link, not a mesh. Pass `--at <ref|SHA>` only when the anchor should be a specific historical commit rather than the current one.
 
 ## What not to mesh
 

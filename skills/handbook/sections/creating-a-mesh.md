@@ -46,6 +46,7 @@ The reader opens the files to see the mechanism for themselves; the why's job is
 
 - **The mesh name carries the label.** The why is prose; don't restate the name as a prefix or use a git-style leading keyword (`contract:`, `spec:`, `gov:`, `note:`). If the why's first words restate the name, drop them.
 - **The ranges carry the paths.** Describe the relationship in role-words — "the doc," "the parser," "the client," "the runbook," "the responder," "the migration" — rather than repeating filenames. A why without filenames survives a rename. Name a path only when the path itself is part of the dependency (a hard-coded script reference, a generated file invoked by name). External proper nouns the ranges don't carry (vendor names like `Stripe`, system names like `Kafka`) are fine.
+- **Sharpen the role-words when one side isn't enough.** The point of role-words is disambiguation, not minimalism. When both anchors are prose ("the doc" applies to both) or both are code ("the handler" applies to both), reach for sharper role-words — "the threat entry" and "the paired control," "the request doc" and "the parser," "the runbook step" and "the alert handler" — before falling back to filenames. If one role-word genuinely covers both sides, the why isn't yet specific enough.
 - **For asymmetric relationships, name which side is normative in prose.** "The doc is the source of truth when they disagree." "X promises the shape Y honors." "X governs the assumption Y relies on." Don't smuggle this in as a category prefix.
 
 Avoid restating the diff, embedding incidental implementation properties (parser strictness, current field names), scolding, or bundling ownership and review triggers — those belong in source comments, commit messages, CODEOWNERS, and PR descriptions.
@@ -103,17 +104,17 @@ git commit -m "Wire checkout to charge API"   # post-commit hook runs `git mesh 
 
 ## Documenting existing code
 
-When the relationship already exists in history, anchor explicitly:
+When the relationship already exists in history:
 
 ```bash
-git mesh add auth/token-contract --at HEAD \
+git mesh add auth/token-contract \
   packages/auth/token.ts#L88-L104 \
   packages/auth/crypto.ts#L12-L40
 git mesh why auth/token-contract -m "Token verification depends on signature verification."
 git mesh commit auth/token-contract
 ```
 
-`--at <commit-ish>` accepts any ref, tag, or SHA. Use it when the anchor should be a specific historical commit rather than the post-commit hook moment.
+Use `--at <commit-ish>` (any ref, tag, or SHA) only when the anchor should be a specific historical commit other than the current one.
 
 ## First-commit requirements
 

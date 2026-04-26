@@ -264,6 +264,64 @@ assert_rc_zero "PostToolUse(no baseline)"
 assert_stdout_empty "PostToolUse(no baseline)"
 
 # ---------------------------------------------------------------------------
+# Test 9: PostToolUse Write resolves the repo from the file path even
+# when cwd points at a different repo.
+# ---------------------------------------------------------------------------
+log "Test 9: PostToolUse Write resolves repo from tool target"
+REPO9A="$(make_repo repo9a)"   # cwd repo, no advice expected
+REPO9B="$(make_repo repo9b)"   # target repo (separate meshed pair)
+SID9="sess-nine"
+# Snapshot the target repo (the file's repo), not cwd's.
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID9" --arg c "$REPO9B" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+echo "edited" >> "$REPO9B/a.txt"
+PAYLOAD9="$(jq -nc --arg s "$SID9" --arg c "$REPO9A" --arg fp "$REPO9B/a.txt" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:$fp}, tool_response:{}, tool_use_id:"t9", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD9"
+assert_rc_zero "PostToolUse(cross-repo Write)"
+assert_stdout_contains "PostToolUse(cross-repo Write)" "b.txt"
+assert_stdout_contains "PostToolUse(cross-repo Write)" "a.txt and b.txt move in lockstep"
+
+# ---------------------------------------------------------------------------
+# Test 10: PostToolUse Bash with `cd /other-repo && …` resolves to that
+# repo's advice store.
+# ---------------------------------------------------------------------------
+log "Test 10: PostToolUse Bash parses cd into a separate repo"
+REPO10A="$(make_repo repo10a)"
+REPO10B="$(make_repo repo10b)"
+SID10="sess-ten"
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID10" --arg c "$REPO10B" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+echo "bash-edit" >> "$REPO10B/a.txt"
+CMD10="cd $REPO10B && echo done"
+PAYLOAD10="$(jq -nc --arg s "$SID10" --arg c "$REPO10A" --arg cmd "$CMD10" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t10", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD10"
+assert_rc_zero "PostToolUse(Bash cd)"
+assert_stdout_contains "PostToolUse(Bash cd)" "b.txt"
+
+# ---------------------------------------------------------------------------
+# Test 11: PostToolUse Bash with `git -C /other-repo …` resolves the
+# target repo even without a cd.
+# ---------------------------------------------------------------------------
+log "Test 11: PostToolUse Bash parses git -C target"
+REPO11A="$(make_repo repo11a)"
+REPO11B="$(make_repo repo11b)"
+SID11="sess-eleven"
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID11" --arg c "$REPO11B" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+echo "via-git-C" >> "$REPO11B/a.txt"
+CMD11="git -C $REPO11B status"
+PAYLOAD11="$(jq -nc --arg s "$SID11" --arg c "$REPO11A" --arg cmd "$CMD11" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t11", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD11"
+assert_rc_zero "PostToolUse(Bash git -C)"
+assert_stdout_contains "PostToolUse(Bash git -C)" "b.txt"
+
+# ---------------------------------------------------------------------------
 log ""
 log "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
