@@ -726,11 +726,7 @@ fn run_advice_suggest() -> Result<i32> {
 
     // Fail closed: at least one valid session must exist.
     if sessions.is_empty() {
-        bail!(
-            "no sessions found under `{}`; a session directory must contain \
-             reads.jsonl or touches.jsonl",
-            advice_dir.display()
-        );
+        bail!("{}", no_sessions_error_message(&advice_dir));
     }
 
     // Attempt to open the git repo for the history channel.
@@ -813,17 +809,32 @@ fn load_jsonl_lines<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> R
 
 /// Load all sessions from a directory by scanning subdirectories.
 ///
-/// Each subdirectory that contains `reads.jsonl` and/or `touches.jsonl`
-/// is treated as one session. Sessions are sorted by directory name for
-/// deterministic ordering.
+/// Layout classification (per finding 1 and finding 2):
+///
+/// **Repo-key isolation (finding 1):**
+/// - When `gix::discover(".")` succeeds AND we are not in fixture mode: only sessions under
+///   `<base>/<preferred_key>/` are eligible. If none exist for that key, an empty `Vec` is
+///   returned (the outer fail-closed `bail!` then fires with a message naming the key).
+/// - When `gix::discover(".")` fails (not in a repo) OR `GIT_MESH_SUGGEST_FIXTURE=1`: all
+///   flat sessions and all two-level sessions across all keys are eligible (cross-corpus).
+///
+/// **Flat-vs-nested classification (finding 2):**
+/// A directory at the first level is classified as:
+/// - **session dir** (flat): has `reads.jsonl`/`touches.jsonl` AND has NO subdirectories
+///   that themselves contain `reads.jsonl`/`touches.jsonl`.
+/// - **repo_key dir** (nested): has at least one subdirectory that contains
+///   `reads.jsonl`/`touches.jsonl`.
+/// - **ambiguous**: has both session files AND nested session subdirs. A stderr warning is
+///   emitted and the nested interpretation is preferred (real sessions not silently dropped).
+/// - **empty/unrelated**: skipped silently.
 fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest::SessionRecord>> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
-    // Compute the current repo key so we can prefer sessions for this repo.
-    // If we are not in a repo (e.g. fixture mode), `preferred_key` is None
-    // and all sessions are accepted.
+    let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
+
+    // Compute the current repo key. None means "not in a repo" → cross-corpus mode.
     let preferred_key: Option<String> = gix::discover(".")
         .ok()
         .and_then(|repo| {
@@ -832,8 +843,12 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
             Some(crate::advice::session::store::repo_key(&root, &git_dir))
         });
 
-    /// Load all session directories found directly under `session_root`.
-    fn load_session_dirs(
+    // Cross-corpus mode: fixture mode OR not inside any repo.
+    let cross_corpus = fixture_mode || preferred_key.is_none();
+
+    /// Returns all subdirectories of `session_root` that contain
+    /// `reads.jsonl` or `touches.jsonl` (i.e. valid session dirs).
+    fn nested_session_dirs(
         session_root: &std::path::Path,
     ) -> Result<Vec<std::path::PathBuf>> {
         if !session_root.exists() {
@@ -873,13 +888,11 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
         Ok(sessions)
     }
 
-    // Walk the first level of `dir`.
-    // For each subdirectory:
-    //   - If it directly contains reads.jsonl or touches.jsonl → flat/fixture layout
-    //   - Otherwise → two-level real layout; descend one more level
+    // Classify each first-level subdirectory.
     let mut flat_dirs: Vec<std::path::PathBuf> = Vec::new();
-    let mut two_level_preferred: Vec<std::path::PathBuf> = Vec::new();
-    let mut two_level_other: Vec<std::path::PathBuf> = Vec::new();
+    // Maps repo_key string → session dirs collected from that key dir.
+    let mut keyed_sessions: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
+        std::collections::HashMap::new();
 
     let first_level: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", dir.display()))?
@@ -889,41 +902,93 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
         .collect();
 
     for entry in first_level {
-        let has_session_files = entry.join("reads.jsonl").exists()
+        let has_own_session_files = entry.join("reads.jsonl").exists()
             || entry.join("touches.jsonl").exists();
-        if has_session_files {
-            // Flat/fixture layout: this entry itself is a session dir.
-            flat_dirs.push(entry);
-        } else {
-            // Two-level layout: this entry is a repo_key directory.
-            let key = entry
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let is_preferred = preferred_key.as_deref() == Some(key.as_str());
-            let sub_dirs = load_session_dirs(&entry)?;
-            if is_preferred {
-                two_level_preferred.extend(sub_dirs);
-            } else {
-                two_level_other.extend(sub_dirs);
+        let nested = nested_session_dirs(&entry)?;
+        let has_nested_sessions = !nested.is_empty();
+
+        match (has_own_session_files, has_nested_sessions) {
+            (true, false) => {
+                // Pure flat/fixture session dir.
+                flat_dirs.push(entry);
+            }
+            (false, true) => {
+                // Pure repo_key dir — descend.
+                let key = entry
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                keyed_sessions.entry(key).or_default().extend(nested);
+            }
+            (true, true) => {
+                // Ambiguous: stray session files at the key level AND real nested sessions.
+                // Prefer nested (so real sessions are not silently dropped) and warn.
+                eprintln!(
+                    "git mesh advice suggest: warning: `{}` contains both session files \
+                     (reads.jsonl/touches.jsonl) and session subdirectories; \
+                     treating as a repo-key directory (nested sessions preferred)",
+                    entry.display()
+                );
+                let key = entry
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                keyed_sessions.entry(key).or_default().extend(nested);
+            }
+            (false, false) => {
+                // Empty or unrelated directory — skip silently.
             }
         }
     }
 
-    // Prefer: flat fixture dirs + preferred repo sessions.
-    // If we are in a repo but no sessions exist for it, fall back to all two-level sessions
-    // so the corpus is still usable (e.g. in fixture/test scenarios with arbitrary keys).
-    let mut chosen_dirs = flat_dirs;
-    if !two_level_preferred.is_empty() {
-        // Preferred repo has sessions — use only those (plus any flat dirs above).
-        chosen_dirs.extend(two_level_preferred);
-    } else {
-        // No preferred sessions: accept all two-level sessions regardless of repo key.
-        chosen_dirs.extend(two_level_other);
-    }
-    chosen_dirs.sort();
+    // Assemble the chosen session dirs according to repo-key isolation rules.
+    let mut chosen_dirs: Vec<std::path::PathBuf> = Vec::new();
 
+    if cross_corpus {
+        // Fixture mode or not in a repo: accept all flat + all keyed sessions.
+        chosen_dirs.extend(flat_dirs);
+        for (_, dirs) in keyed_sessions {
+            chosen_dirs.extend(dirs);
+        }
+    } else {
+        // Strict repo-key isolation: only flat dirs + sessions under the preferred key.
+        // Flat dirs are always accepted (fixture/legacy layout coexists with keyed layout).
+        chosen_dirs.extend(flat_dirs);
+        let pk = preferred_key.as_deref().unwrap_or("");
+        if let Some(dirs) = keyed_sessions.remove(pk) {
+            chosen_dirs.extend(dirs);
+        }
+        // If preferred_key had no sessions: chosen_dirs may contain only flat dirs or be
+        // empty. The outer fail-closed bail! will fire with a message naming the key.
+    }
+
+    chosen_dirs.sort();
     sessions_from_dirs(chosen_dirs)
+}
+
+/// Format a "no sessions found" error message that names the preferred repo key when
+/// we are inside a repo, so the user can locate where sessions should be written.
+pub(crate) fn no_sessions_error_message(advice_dir: &std::path::Path) -> String {
+    let preferred_key: Option<String> = gix::discover(".")
+        .ok()
+        .and_then(|repo| {
+            let root = repo.workdir().map(|p| p.to_path_buf())?;
+            let git_dir = repo.git_dir().to_path_buf();
+            Some(crate::advice::session::store::repo_key(&root, &git_dir))
+        });
+    let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
+    match (preferred_key, fixture_mode) {
+        (Some(key), false) => format!(
+            "no sessions found under `{}/{key}`; a session directory must contain \
+             reads.jsonl or touches.jsonl",
+            advice_dir.display()
+        ),
+        _ => format!(
+            "no sessions found under `{}`; a session directory must contain \
+             reads.jsonl or touches.jsonl",
+            advice_dir.display()
+        ),
+    }
 }
 
 /// Capture the current workspace tree into the file-backed session store.
