@@ -24,7 +24,7 @@
     "build:debug": "yarn workspaces foreach -A run build:debug",
     "clean:tsbuildinfo": "find . \\( -name 'tsconfig.tsbuildinfo' -o -name 'tsconfig.typecheck-main.tsbuildinfo' \\) -not -path '*/node_modules/*' -not -path '*/.worktrees/*' -delete",
     "validate": "bash scripts/validate.sh",
-    "bump": "bash scripts/bump.sh && yarn install",
+    "bump": "bash scripts/bump.sh",
     "release": "bash scripts/release.sh"
   },
   "private": true,
