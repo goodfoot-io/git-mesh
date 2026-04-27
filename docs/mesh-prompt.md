@@ -13,8 +13,6 @@ You're not documenting your code. You're documenting **what the off-screen world
 
 Ask: *did this region create or rely on a coupling that isn't visible from the lines themselves?* If a literal you wrote is parsed by something else as a string, if a function name you defined is read by configuration, if an order you established is required by a downstream consumer, if a sleep is masking something, if a doc states a body shape a parser honors, if a runbook step is followed by a responder under deadline — that's a mesh.
 
-The sharpest test: **if you can't name the wrong decision a reader of one anchor would make under deadline when the other changes silently, it's a link, not a mesh.** "Read this when changing X" is not a wrong decision; "ship a broken integration," "mishandle an incident," "violate the contract" are.
-
 Anchors can be code or prose. A Markdown section, an ADR clause, a contract paragraph, a runbook step are first-class anchor sites alongside source files.
 
 ## How to anchor
@@ -55,7 +53,7 @@ Kebab-case slug naming the *relationship*, not either side, optionally prefixed 
 
 - For ranges that form a thing together, name what they form: `checkout-request-flow`, `tier-rollout`, `auth-token`, `rate-limits`.
 - For one side that promises or governs the other, name the contract or rule: `charge-request-contract`, `uuidv4-lex-order`, `p1-payment-runbook`.
-- For prose-to-prose citations or summaries, name what's being kept in sync: `architecture-summary-sync`, `threat-model-controls-link`.
+- For prose-to-prose citations or summaries, name what's being kept in sync: `architecture-summary-sync`, `threat-model-controls-sync`.
 - Avoid naming after one anchor (`charge-ts-deps`, `adr-0017-impl`); the slug should survive a rename or rewrite of either side.
 - Avoid `misc`, `temp`, `frontend`.
 - Load up the *name* with the label so the why doesn't have to. If the why's first words restate the slug, drop them.
@@ -73,7 +71,7 @@ git mesh why <category>/<slug> -m "<one prose sentence>"
 git mesh commit <category>/<slug>
 ```
 
-Use this when reading or maintaining existing material — you don't need to wait for an active edit. Skim the surrounding region first to confirm it's actually load-bearing and the partner is path-addressable; if not, it's a link, not a mesh. Pass `--at <ref|SHA>` only when the anchor should be a specific historical commit rather than the current one.
+Use this when reading or maintaining existing material — you don't need to wait for an active edit. Skim the surrounding region first to confirm it's actually load-bearing and the partner is path-addressable; if not, see *What not to mesh* and skip it. Pass `--at <ref|SHA>` only when the anchor should be a specific historical commit rather than the current one.
 
 ## What not to mesh
 
@@ -82,7 +80,7 @@ Use this when reading or maintaining existing material — you don't need to wai
 - **Local code structure or style.** Meshes are for cross-cutting couplings, not for "this function is complex" or "consider refactoring."
 - **Purely descriptive prose against code that is itself the source of truth.** A tutorial paragraph, a README walkthrough, a code-comment paraphrased into a doc — none of these are load-bearing. Reach for a mesh only when someone reads the prose and acts on it under stakes.
 - **Things that aren't path-addressable.** Production data shape, external service config, runtime database state — if there's no path in the repo where the dependency lives, the mesh can't anchor and doesn't belong here. Document those somewhere with a different shape.
-- **Things a type, schema, validator, or test already enforces.** Use that mechanism — it rejects violations automatically.
+- **Anything a formal dependency system already tracks.** Imports, type signatures, schemas, validators, build-graph edges, foreign keys, tests — if a compiler, type checker, or runtime rejects violations automatically, the coupling is already visible. Use that mechanism. Mesh only the couplings that no formal system can see.
 
 ## Read sensibly across all interactions
 

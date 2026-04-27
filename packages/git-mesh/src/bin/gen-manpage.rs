@@ -56,8 +56,8 @@ fn main() -> anyhow::Result<()> {
 
 /// Hand-authored DESCRIPTION section.
 ///
-/// Defines the mesh contract — what a mesh is, the why's role, the difference
-/// between a mesh and a link, and re-anchoring on drift.
+/// Defines the mesh contract — what a mesh is, the why's role, and re-anchoring
+/// on drift.
 const DESCRIPTION_SECTION: &str = r#".SH DESCRIPTION
 .B git mesh
 tracks implicit semantic dependencies in a Git repository: couplings between
@@ -72,18 +72,6 @@ and survives a rewrite of either side.
 .PP
 The standing question at commit time: did this change create or rely on a
 coupling that is not visible from the lines themselves?
-.PP
-.B Mesh vs.\& link.
-The sharpest test: if you cannot name the wrong decision a reader of one anchor
-would make under deadline when the other changes silently, it is a link, not a
-mesh.
-.RI ( \(lqRead\ this\ when\ changing\ X\(rq
-is not a wrong decision;
-.IR \(lqship\ a\ broken\ integration\(rq ,
-.IR \(lqviolate\ the\ contract\(rq ,
-and
-.I \(lqmishandle\ an\ incident\(rq
-are.)
 .PP
 .B Writing the why.
 Name the relationship the ranges hold in one prose sentence, written so it
