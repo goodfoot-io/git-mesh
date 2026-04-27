@@ -14,10 +14,11 @@ use std::process::Command;
 use support::TestRepo;
 
 /// Create a linked worktree off `repo` at HEAD on a new branch and
-/// return its path. The worktree directory is inside the temp repo so
-/// it's cleaned up with the parent.
-fn add_worktree(repo: &TestRepo, name: &str) -> Result<std::path::PathBuf> {
-    let wt = repo.path().parent().unwrap().join(format!("wt-{name}"));
+/// return the worktree dir (and its owning tempdir, which must outlive
+/// the worktree).
+fn add_worktree(repo: &TestRepo, name: &str) -> Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let owner = tempfile::tempdir()?;
+    let wt = owner.path().join("wt");
     repo.run_git([
         "worktree",
         "add",
@@ -26,13 +27,13 @@ fn add_worktree(repo: &TestRepo, name: &str) -> Result<std::path::PathBuf> {
         wt.to_str().unwrap(),
         "HEAD",
     ])?;
-    Ok(wt)
+    Ok((owner, wt))
 }
 
 #[test]
 fn append_add_works_from_worktree() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let wt = add_worktree(&repo, "wt1")?;
+    let (_owner, wt) = add_worktree(&repo, "wt1")?;
     let gix = gix::open(&wt)?;
     append_add(&gix, "m", "file1.txt", 1, 5, None)?;
     let s = read_staging(&gix, "m")?;
@@ -44,7 +45,7 @@ fn append_add_works_from_worktree() -> Result<()> {
 #[test]
 fn append_remove_works_from_worktree() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let wt = add_worktree(&repo, "wt2")?;
+    let (_owner, wt) = add_worktree(&repo, "wt2")?;
     let gix = gix::open(&wt)?;
     append_remove(&gix, "m", "file1.txt", 1, 5)?;
     Ok(())
@@ -53,7 +54,7 @@ fn append_remove_works_from_worktree() -> Result<()> {
 #[test]
 fn cli_mesh_add_works_from_worktree() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let wt = add_worktree(&repo, "wt3")?;
+    let (_owner, wt) = add_worktree(&repo, "wt3")?;
     let out = Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(&wt)
         .args(["add", "doc/feature", "file1.txt#L1-L5"])

@@ -208,8 +208,7 @@ fn run_why_reader(repo: &gix::Repository, name: &str, at: Option<&str>) -> Resul
 
 fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
     crate::validation::validate_mesh_name(name)?;
-    let wd = crate::git::work_dir(repo)?;
-    let staging_dir = wd.join(".git").join("mesh").join("staging");
+    let staging_dir = crate::git::mesh_dir(repo).join("staging");
     std::fs::create_dir_all(&staging_dir)?;
 
     // Determine template content (§6.3):
@@ -279,8 +278,7 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
     // both `.git/mesh/staging/` files and any mesh that still has an
     // existing staging entry. If any commit fails, report all failures
     // and exit non-zero. If none are staged, exit 0 with a clear message.
-    let wd = crate::git::work_dir(repo)?;
-    let dir = wd.join(".git").join("mesh").join("staging");
+    let dir = crate::git::mesh_dir(repo).join("staging");
     let mut candidates: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if dir.exists() {
         for entry in std::fs::read_dir(&dir)? {

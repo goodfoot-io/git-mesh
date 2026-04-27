@@ -73,8 +73,7 @@ const PRE_COMMIT_MARKER: &str = "git mesh pre-commit";
 
 pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
     let mut out = Vec::new();
-    let wd = crate::git::work_dir(repo)?;
-    let git_dir = wd.join(".git");
+    let git_dir = crate::git::git_dir(repo).to_path_buf();
 
     // ---- Hook checks --------------------------------------------------
     check_hook(
@@ -416,11 +415,7 @@ fn read_range_safe(repo: &gix::Repository, range_id: &str) -> Option<crate::type
 /// finding for every mismatch (or missing/empty hash). Per
 /// `<fail-closed>`, an empty/absent meta hash is treated as tampering.
 fn check_sidecar_integrity(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
-    let wd = match crate::git::work_dir(repo) {
-        Ok(w) => w,
-        Err(_) => return,
-    };
-    let dir = wd.join(".git").join("mesh").join("staging");
+    let dir = crate::git::mesh_dir(repo).join("staging");
     if !dir.exists() {
         return;
     }
@@ -470,11 +465,7 @@ fn check_sidecar_integrity(repo: &gix::Repository, out: &mut Vec<DoctorFinding>)
 }
 
 fn check_file_index(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
-    let wd = match crate::git::work_dir(repo) {
-        Ok(w) => w,
-        Err(_) => return,
-    };
-    let p = wd.join(".git").join("mesh").join("file-index");
+    let p = crate::git::mesh_dir(repo).join("file-index");
     let problem: Option<String> = if !p.exists() {
         Some("file index missing".into())
     } else {

@@ -579,8 +579,7 @@ pub(crate) fn read_conflicted_paths(repo: &gix::Repository) -> Result<HashSet<St
 }
 
 pub(crate) fn read_index_trailer(repo: &gix::Repository) -> Result<[u8; 20]> {
-    let workdir = git::work_dir(repo)?;
-    let index_path = workdir.join(".git").join("index");
+    let index_path = git::git_dir(repo).join("index");
     let bytes = std::fs::read(&index_path)?;
     if bytes.len() < 20 {
         return Err(Error::Git("index too short for trailer".into()));

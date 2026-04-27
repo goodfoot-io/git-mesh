@@ -143,10 +143,7 @@ fn mesh_names_with_staging(repo: &gix::Repository) -> Result<Vec<String>> {
         .map_err(anyhow::Error::from)?
         .into_iter()
         .collect();
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| anyhow::anyhow!("bare repository"))?;
-    let staging = workdir.join(".git").join("mesh").join("staging");
+    let staging = crate::git::mesh_dir(repo).join("staging");
     if staging.is_dir() {
         for entry in std::fs::read_dir(&staging)? {
             let entry = entry?;
