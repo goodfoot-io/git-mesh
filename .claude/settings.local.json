@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(rm -f /workspace/.git/mesh/staging/*)",
-      "Read(//workspace/**)",
-      "Bash(/home/node/.cards/worktrees/workspace-c52ddf65/cards/main-11/1/packages/git-mesh/target/release/git-mesh add *)"
-    ]
-  }
-}

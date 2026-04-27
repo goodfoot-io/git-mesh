@@ -79,3 +79,4 @@ scripts/ssh/
 packages/git-mesh/bin/git-mesh
 npm/git-mesh-*/bin/git-mesh
 npm/git-mesh-*/bin/git-mesh.exe
+.claude/settings.local.json
