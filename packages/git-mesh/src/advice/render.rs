@@ -1036,7 +1036,10 @@ mod tests {
     }
 
     /// Regression: rendered output must never contain the word "group" (case-insensitive,
-    /// whole word) in user-visible text, for any ReasonKind, with or without --documentation.
+    /// whole word) in user-visible text, for any ReasonKind at any density level
+    /// (L0, L1, L2), with or without --documentation. This covers the L1 excerpt
+    /// branch (density >= 1) and the L2 command-lead-in branch (density == 2) in
+    /// addition to the base L0 path.
     /// Internal symbol names (REASON_NEW_GROUP, new_group, etc.) are not rendered to output.
     #[test]
     fn no_group_word_in_rendered_output() {
@@ -1055,48 +1058,67 @@ mod tests {
             CRK::Terminal,
         ];
         let re = regex_word_group();
-        for kind in &all_kinds {
-            let c = Candidate {
-                mesh: "test-mesh".into(),
-                mesh_why: "why text".into(),
-                reason_kind: *kind,
-                partner_path: "b.rs".into(),
-                partner_start: Some(1),
-                partner_end: Some(5),
-                trigger_path: "t.rs".into(),
-                trigger_start: None,
-                trigger_end: None,
-                touched_path: String::new(),
-                touched_start: None,
-                touched_end: None,
-                partner_marker: String::new(),
-                partner_clause: String::new(),
-                density: CDensity::L0,
-                command: String::new(),
-                excerpt_of_path: String::new(),
-                excerpt_start: None,
-                excerpt_end: None,
-                old_blob: None,
-                new_blob: None,
-                old_path: None,
-                new_path: None,
+
+        // Create a temp file with enough lines so excerpt reads succeed for L1/L2.
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let tmp_path = tmp.path().to_str().unwrap().to_string();
+        {
+            use std::io::Write as _;
+            let mut f = tmp.as_file();
+            for i in 1..=10 {
+                writeln!(f, "line {i}: example content").unwrap();
+            }
+        }
+
+        for density in [CDensity::L0, CDensity::L1, CDensity::L2] {
+            let (excerpt_of_path, excerpt_start, excerpt_end, command) = match density {
+                CDensity::L0 => (String::new(), None, None, String::new()),
+                CDensity::L1 => (tmp_path.clone(), Some(1), Some(5), String::new()),
+                CDensity::L2 => (tmp_path.clone(), Some(1), Some(5), "git mesh stale".into()),
             };
-            let s = candidate_to_suggestion(&c);
-            let topics: Vec<String> = kind.doc_topic().into_iter().map(str::to_string).collect();
-            // Without --documentation
-            let out_bare = render(&[s.clone()], &[], false);
-            assert!(
-                !re(&out_bare),
-                "bare render for {:?} contains the word 'group': {:?}",
-                kind, out_bare
-            );
-            // With --documentation
-            let out_doc = render(&[s], &topics, true);
-            assert!(
-                !re(&out_doc),
-                "--documentation render for {:?} contains the word 'group': {:?}",
-                kind, out_doc
-            );
+            for kind in &all_kinds {
+                let c = Candidate {
+                    mesh: "test-mesh".into(),
+                    mesh_why: "why text".into(),
+                    reason_kind: *kind,
+                    partner_path: "b.rs".into(),
+                    partner_start: Some(1),
+                    partner_end: Some(5),
+                    trigger_path: "t.rs".into(),
+                    trigger_start: None,
+                    trigger_end: None,
+                    touched_path: String::new(),
+                    touched_start: None,
+                    touched_end: None,
+                    partner_marker: String::new(),
+                    partner_clause: String::new(),
+                    density,
+                    command: command.clone(),
+                    excerpt_of_path: excerpt_of_path.clone(),
+                    excerpt_start,
+                    excerpt_end,
+                    old_blob: None,
+                    new_blob: None,
+                    old_path: None,
+                    new_path: None,
+                };
+                let s = candidate_to_suggestion(&c);
+                let topics: Vec<String> = kind.doc_topic().into_iter().map(str::to_string).collect();
+                // Without --documentation
+                let out_bare = render(&[s.clone()], &[], false);
+                assert!(
+                    !re(&out_bare),
+                    "bare render for {:?} density={:?} contains the word 'group': {:?}",
+                    kind, density, out_bare
+                );
+                // With --documentation
+                let out_doc = render(&[s], &topics, true);
+                assert!(
+                    !re(&out_doc),
+                    "--documentation render for {:?} density={:?} contains the word 'group': {:?}",
+                    kind, density, out_doc
+                );
+            }
         }
     }
 

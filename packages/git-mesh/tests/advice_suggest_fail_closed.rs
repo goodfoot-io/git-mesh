@@ -1,7 +1,8 @@
 //! Fail-closed tests for `git mesh advice suggest`.
 //!
 //! Verifies that the binary exits non-zero with a useful error message when
-//! `GIT_MESH_ADVICE_DIR` is unset or points at an empty directory. (Finding #3.)
+//! `GIT_MESH_ADVICE_DIR` is unset or points at an empty directory. Also covers
+//! the fixture-mode stderr notice emitted when `GIT_MESH_SUGGEST_FIXTURE=1`.
 
 use std::process::Command;
 
@@ -61,5 +62,40 @@ fn suggest_fails_when_advice_dir_is_empty() {
     assert!(
         stderr.contains("no sessions") || stderr.contains("reads.jsonl") || stderr.contains("touches.jsonl"),
         "stderr must mention missing sessions; got: {stderr:?}"
+    );
+}
+
+#[test]
+fn suggest_stderr_contains_fixture_mode_notice_when_fixture_env_set() {
+    // Create a directory with at least one session so the command does not
+    // fail on "no sessions found" before reaching the fixture-mode code path.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session_dir = dir.path().join("session-001");
+    std::fs::create_dir_all(&session_dir).expect("mkdir");
+    std::fs::write(
+        session_dir.join("reads.jsonl"),
+        "{\"path\":\"a.rs\",\"ts\":\"2024-01-01T00:00:00Z\"}\n",
+    )
+    .expect("write reads.jsonl");
+
+    let out = run_suggest_with_env(&[
+        ("GIT_MESH_ADVICE_DIR", dir.path().to_str().unwrap()),
+        ("GIT_MESH_SUGGEST_FIXTURE", "1"),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("fixture mode") && stderr.contains("GIT_MESH_SUGGEST_FIXTURE"),
+        "stderr must contain fixture-mode notice when GIT_MESH_SUGGEST_FIXTURE=1; got: {stderr:?}"
+    );
+}
+
+#[test]
+fn suggest_stderr_has_no_fixture_mode_notice_in_normal_mode() {
+    // Point at a missing dir (will fail closed) but NOT in fixture mode.
+    let out = run_suggest_with_env(&[("GIT_MESH_ADVICE_DIR", "/tmp/nonexistent-git-mesh-test-dir")]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("fixture mode"),
+        "stderr must NOT contain fixture-mode notice in normal mode; got: {stderr:?}"
     );
 }

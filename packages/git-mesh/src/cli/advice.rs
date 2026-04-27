@@ -704,7 +704,7 @@ fn run_advice_suggest() -> Result<i32> {
     let advice_dir_str = std::env::var("GIT_MESH_ADVICE_DIR").unwrap_or_default();
     if advice_dir_str.is_empty() {
         bail!(
-            "error: GIT_MESH_ADVICE_DIR is not set; the suggester is the parity surface \
+            "GIT_MESH_ADVICE_DIR is not set; the suggester is the parity surface \
              and requires a captured session corpus"
         );
     }
@@ -713,7 +713,7 @@ fn run_advice_suggest() -> Result<i32> {
     // Fail closed: the directory must exist.
     if !advice_dir.exists() {
         bail!(
-            "error: GIT_MESH_ADVICE_DIR points at a directory that does not exist: `{}`",
+            "GIT_MESH_ADVICE_DIR points at a directory that does not exist: `{}`",
             advice_dir.display()
         );
     }
@@ -727,7 +727,7 @@ fn run_advice_suggest() -> Result<i32> {
     // Fail closed: at least one valid session must exist.
     if sessions.is_empty() {
         bail!(
-            "error: no sessions found under `{}`; a session directory must contain \
+            "no sessions found under `{}`; a session directory must contain \
              reads.jsonl or touches.jsonl",
             advice_dir.display()
         );
@@ -740,6 +740,9 @@ fn run_advice_suggest() -> Result<i32> {
     // Using GIT_MESH_ADVICE_DIR to gate history has been removed: a custom advice
     // directory is a valid user configuration and must not silently degrade quality.
     let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
+    if fixture_mode {
+        eprintln!("fixture mode: GIT_MESH_SUGGEST_FIXTURE is set; historical-cochange channel disabled");
+    }
     let (repo_opt, repo_root) = if cfg.history_enabled && !fixture_mode {
         match gix::discover(".") {
             Ok(repo) => {
@@ -814,41 +817,113 @@ fn load_jsonl_lines<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> R
 /// is treated as one session. Sessions are sorted by directory name for
 /// deterministic ordering.
 fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest::SessionRecord>> {
-    use crate::advice::session::state::{ReadRecord, TouchInterval};
-    use crate::advice::suggest::SessionRecord;
-
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
-    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+    // Compute the current repo key so we can prefer sessions for this repo.
+    // If we are not in a repo (e.g. fixture mode), `preferred_key` is None
+    // and all sessions are accepted.
+    let preferred_key: Option<String> = gix::discover(".")
+        .ok()
+        .and_then(|repo| {
+            let root = repo.workdir().map(|p| p.to_path_buf())?;
+            let git_dir = repo.git_dir().to_path_buf();
+            Some(crate::advice::session::store::repo_key(&root, &git_dir))
+        });
+
+    /// Load all session directories found directly under `session_root`.
+    fn load_session_dirs(
+        session_root: &std::path::Path,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        if !session_root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(session_root)
+            .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", session_root.display()))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+            .map(|e| e.path())
+            .filter(|p| p.join("reads.jsonl").exists() || p.join("touches.jsonl").exists())
+            .collect();
+        dirs.sort();
+        Ok(dirs)
+    }
+
+    fn sessions_from_dirs(
+        dirs: Vec<std::path::PathBuf>,
+    ) -> Result<Vec<crate::advice::suggest::SessionRecord>> {
+        use crate::advice::session::state::{ReadRecord, TouchInterval};
+        use crate::advice::suggest::SessionRecord;
+        let mut sessions = Vec::new();
+        for entry in dirs {
+            let reads_path = entry.join("reads.jsonl");
+            let touches_path = entry.join("touches.jsonl");
+            let sid = entry
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if sid.is_empty() {
+                continue;
+            }
+            let reads = load_jsonl_lines::<ReadRecord>(&reads_path)?;
+            let touches = load_jsonl_lines::<TouchInterval>(&touches_path)?;
+            sessions.push(SessionRecord { sid, reads, touches });
+        }
+        Ok(sessions)
+    }
+
+    // Walk the first level of `dir`.
+    // For each subdirectory:
+    //   - If it directly contains reads.jsonl or touches.jsonl → flat/fixture layout
+    //   - Otherwise → two-level real layout; descend one more level
+    let mut flat_dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut two_level_preferred: Vec<std::path::PathBuf> = Vec::new();
+    let mut two_level_other: Vec<std::path::PathBuf> = Vec::new();
+
+    let first_level: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", dir.display()))?
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .map(|e| e.path())
         .collect();
-    entries.sort();
 
-    let mut sessions = Vec::new();
-    for entry in entries {
-        let reads_path = entry.join("reads.jsonl");
-        let touches_path = entry.join("touches.jsonl");
-        // A valid session directory has at least one of reads/touches.
-        if !reads_path.exists() && !touches_path.exists() {
-            continue;
+    for entry in first_level {
+        let has_session_files = entry.join("reads.jsonl").exists()
+            || entry.join("touches.jsonl").exists();
+        if has_session_files {
+            // Flat/fixture layout: this entry itself is a session dir.
+            flat_dirs.push(entry);
+        } else {
+            // Two-level layout: this entry is a repo_key directory.
+            let key = entry
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let is_preferred = preferred_key.as_deref() == Some(key.as_str());
+            let sub_dirs = load_session_dirs(&entry)?;
+            if is_preferred {
+                two_level_preferred.extend(sub_dirs);
+            } else {
+                two_level_other.extend(sub_dirs);
+            }
         }
-        let sid = entry
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if sid.is_empty() {
-            continue;
-        }
-        let reads = load_jsonl_lines::<ReadRecord>(&reads_path)?;
-        let touches = load_jsonl_lines::<TouchInterval>(&touches_path)?;
-        sessions.push(SessionRecord { sid, reads, touches });
     }
-    Ok(sessions)
+
+    // Prefer: flat fixture dirs + preferred repo sessions.
+    // If we are in a repo but no sessions exist for it, fall back to all two-level sessions
+    // so the corpus is still usable (e.g. in fixture/test scenarios with arbitrary keys).
+    let mut chosen_dirs = flat_dirs;
+    if !two_level_preferred.is_empty() {
+        // Preferred repo has sessions — use only those (plus any flat dirs above).
+        chosen_dirs.extend(two_level_preferred);
+    } else {
+        // No preferred sessions: accept all two-level sessions regardless of repo key.
+        chosen_dirs.extend(two_level_other);
+    }
+    chosen_dirs.sort();
+
+    sessions_from_dirs(chosen_dirs)
 }
 
 /// Capture the current workspace tree into the file-backed session store.
