@@ -1,0 +1,4 @@
+#!/bin/sh
+# Replaced by postinstall with a symlink to the native binary.
+echo "@goodfoot/git-mesh: Installation incomplete. Run 'npm install @goodfoot/git-mesh' to finish setup." >&2
+exit 1

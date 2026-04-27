@@ -77,7 +77,9 @@ yarn-error.log*
 scripts/ssh/
 
 # git-mesh CLI binaries (produced by cargo build / postinstall)
-packages/git-mesh/bin/git-mesh
+# Note: packages/git-mesh/bin/git-mesh is the committed shell stub that
+# npm bin-links against during `npm install`; postinstall replaces it
+# with a symlink to the platform binary on consumer machines.
 npm/git-mesh-*/bin/git-mesh
 npm/git-mesh-*/bin/git-mesh.exe
 .claude/settings.local.json
