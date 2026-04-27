@@ -697,9 +697,8 @@ fn render_hint_for_reason(reason: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::advice::candidates::{Density, MeshRange, MeshRangeStatus, ReasonKind, candidate_to_suggestion};
-    use crate::advice::suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
-    use std::path::PathBuf;
+    use crate::advice::candidates::candidate_to_suggestion;
+    use crate::advice::suggestion::Suggestion;
 
     /// Build a minimal drift Suggestion via candidate_to_suggestion, mirroring
     /// the old `cand()` helper that built a Candidate.
@@ -757,8 +756,8 @@ mod tests {
 
     #[test]
     fn blank_comment_lines_between_blocks() {
-        let mut s1 = sugg("m1", "b.rs");
-        let mut s2 = sugg("m2", "c.rs");
+        let s1 = sugg("m1", "b.rs");
+        let s2 = sugg("m2", "c.rs");
         let out = render(&[s1, s2], &[], false);
         assert!(out.contains("#\n"));
     }
@@ -766,7 +765,7 @@ mod tests {
     #[test]
     fn marker_appended_when_present() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
-        let mut c = Candidate {
+        let c = Candidate {
             mesh: "m1".into(),
             mesh_why: "why text".into(),
             reason_kind: CRK::Partner,

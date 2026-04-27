@@ -89,7 +89,7 @@ pub fn apriori_stats(
 mod tests {
     use super::*;
     use crate::advice::suggest::evidence::PairState;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     fn make_pair_state(sessions: &[&str]) -> PairState {
         PairState {

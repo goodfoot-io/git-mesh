@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use git_mesh::advice::suggest::{
     build_idf, jaccard, per_edge_cohesion, range_tokens_of, tokens_of, trigram_cohesion,
-    trigrams_of, CanonicalId, RangeTokens,
+    trigrams_of, CanonicalId,
 };
 
 // ---------------------------------------------------------------------------
