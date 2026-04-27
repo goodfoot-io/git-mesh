@@ -133,6 +133,29 @@ pub(crate) fn work_dir(repo: &gix::Repository) -> Result<&Path> {
         .ok_or_else(|| Error::Git("bare repositories are not supported".into()))
 }
 
+/// Per-repository git directory. For a linked worktree this resolves
+/// to `<main-git-dir>/worktrees/<id>` rather than `<workdir>/.git`,
+/// which in a worktree is a pointer file (not a directory). All
+/// `mesh/` filesystem state must be anchored here, not under the
+/// workdir's `.git`.
+pub(crate) fn git_dir(repo: &gix::Repository) -> &Path {
+    repo.git_dir()
+}
+
+/// Per-repository `mesh/` root inside the git dir. Use this — never
+/// `work_dir().join(".git").join("mesh")` — so worktrees and bare-ish
+/// configurations resolve correctly.
+pub(crate) fn mesh_dir(repo: &gix::Repository) -> std::path::PathBuf {
+    git_dir(repo).join("mesh")
+}
+
+/// Common (shared) git directory. For a linked worktree this points at
+/// the main repository's `.git/`, where shared state like `config` and
+/// `lfs/objects/` lives.
+pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
+    repo.common_dir()
+}
+
 /// Write raw bytes as a blob and return its hex OID.
 pub(crate) fn write_blob_bytes(repo: &gix::Repository, bytes: &[u8]) -> Result<String> {
     let id = repo
@@ -695,8 +718,7 @@ pub(crate) fn write_local_config_value(
     key: &'static str,
     value: &str,
 ) -> Result<()> {
-    let wd = work_dir(repo)?;
-    let path = wd.join(".git").join("config");
+    let path = common_dir(repo).join("config");
     let mut file =
         gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)
             .map_err(|e| Error::Git(format!("load config: {e}")))?;

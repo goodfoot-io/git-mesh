@@ -16,7 +16,7 @@
 //! config <key> <value>
 //! ```
 
-use crate::git::{self, work_dir};
+use crate::git;
 use crate::types::{
     CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE, NormalizationStamp,
     RangeExtent,
@@ -201,8 +201,7 @@ pub fn list_staged_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
 }
 
 fn staging_dir(repo: &gix::Repository) -> Result<PathBuf> {
-    let wd = work_dir(repo)?;
-    Ok(wd.join(".git").join("mesh").join("staging"))
+    Ok(git::mesh_dir(repo).join("staging"))
 }
 
 /// Encode a mesh name for use as a single filesystem-path component.

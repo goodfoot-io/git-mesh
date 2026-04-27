@@ -1,6 +1,6 @@
 //! `.git/mesh/file-index` — derived lookup table (§3.4).
 
-use crate::git::work_dir;
+use crate::git::mesh_dir;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::range::read_range;
 use crate::types::RangeExtent;
@@ -19,8 +19,7 @@ pub struct IndexEntry {
 }
 
 fn index_path(repo: &gix::Repository) -> Result<PathBuf> {
-    let wd = work_dir(repo)?;
-    Ok(wd.join(".git").join("mesh").join("file-index"))
+    Ok(mesh_dir(repo).join("file-index"))
 }
 
 pub fn rebuild_index(repo: &gix::Repository) -> Result<()> {

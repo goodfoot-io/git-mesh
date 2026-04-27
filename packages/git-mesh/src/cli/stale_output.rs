@@ -197,8 +197,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
 }
 
 fn staging_only_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
-    let workdir = crate::git::work_dir(repo)?;
-    let dir = workdir.join(".git").join("mesh").join("staging");
+    let dir = crate::git::mesh_dir(repo).join("staging");
     let mut out = Vec::new();
     if !dir.is_dir() {
         return Ok(out);

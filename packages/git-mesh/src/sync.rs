@@ -104,8 +104,7 @@ pub fn ensure_refspec_configured(repo: &gix::Repository, remote: &str) -> Result
     }
 
     // Write to `.git/config` directly.
-    let wd = work_dir(repo)?;
-    let path = wd.join(".git").join("config");
+    let path = crate::git::common_dir(repo).join("config");
     let mut file =
         gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)
             .map_err(|e| Error::Git(format!("load config: {e}")))?;
@@ -155,8 +154,7 @@ pub fn dedupe_mesh_refspecs(repo: &gix::Repository, remote: &str) -> Result<(usi
         return Ok((0, 0));
     }
 
-    let wd = work_dir(repo)?;
-    let path = wd.join(".git").join("config");
+    let path = crate::git::common_dir(repo).join("config");
     let mut file =
         gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local)
             .map_err(|e| Error::Git(format!("load config: {e}")))?;
