@@ -311,6 +311,128 @@ fn suggest_pure_nested_key_dir_no_warning() {
 }
 
 // ---------------------------------------------------------------------------
+// Finding (new): strict-mode flat-dir exclusion
+// ---------------------------------------------------------------------------
+
+/// In strict mode (real repo, no FIXTURE env), flat dirs at `<base>/<sid>/` must NOT be
+/// loaded. A stderr warning must name the skipped count. Only sessions under the preferred
+/// key are eligible.
+#[test]
+fn suggest_strict_mode_excludes_flat_dirs() {
+    let base = tempfile::tempdir().expect("tempdir");
+
+    // Init a real git repo and compute its key.
+    let repo_tmp = tempfile::tempdir().expect("repo tempdir");
+    Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(repo_tmp.path())
+        .output()
+        .expect("git init");
+    let repo_key = {
+        let root = std::fs::canonicalize(repo_tmp.path()).expect("canonicalize repo");
+        let git_dir = root.join(".git");
+        compute_repo_key(&root, &git_dir)
+    };
+
+    // Populate the preferred key with session `sa`.
+    let preferred_key_dir = base.path().join(&repo_key);
+    write_reads_jsonl(&preferred_key_dir.join("sa"), "preferred/src/main.rs");
+
+    // Populate a flat (foreign) session `flat-sb` directly under base.
+    let flat_dir = base.path().join("flat-sb");
+    write_reads_jsonl(&flat_dir, "foreign/src/lib.rs");
+
+    let out = Command::new(BIN)
+        .current_dir(repo_tmp.path())
+        .env_remove("GIT_MESH_SUGGEST_FIXTURE")
+        .env_remove("GIT_MESH_ADVICE_DIR")
+        .env("GIT_MESH_ADVICE_DIR", base.path().to_str().unwrap())
+        .env("GIT_MESH_SUGGEST_HISTORY", "0")
+        .env("HOME", "/tmp")
+        .args(["advice", "suggest"])
+        .output()
+        .expect("spawn git-mesh");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Must find the preferred-key sessions.
+    assert!(
+        !stderr.contains("no sessions found"),
+        "strict mode: preferred-key sessions not found; stderr: {stderr:?}"
+    );
+
+    // Flat sessions must NOT appear in suggestions.
+    assert!(
+        !stdout.contains("foreign"),
+        "strict mode: flat-dir foreign path leaked into suggestions; stdout: {stdout:?}"
+    );
+
+    // A warning naming the skipped flat dir count must be emitted.
+    assert!(
+        stderr.contains("skipping") && stderr.contains("flat session dir"),
+        "strict mode: expected skipped-flat-dirs warning in stderr; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("1"),
+        "strict mode: expected count '1' in skipped-flat-dirs warning; stderr: {stderr:?}"
+    );
+}
+
+/// In fixture mode (GIT_MESH_SUGGEST_FIXTURE=1), flat dirs ARE eligible alongside keyed
+/// sessions. No skipped-flat-dirs warning should appear.
+#[test]
+fn suggest_fixture_mode_includes_flat_dirs() {
+    let base = tempfile::tempdir().expect("tempdir");
+
+    // Init a real git repo and compute its key.
+    let repo_tmp = tempfile::tempdir().expect("repo tempdir");
+    Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(repo_tmp.path())
+        .output()
+        .expect("git init");
+    let repo_key = {
+        let root = std::fs::canonicalize(repo_tmp.path()).expect("canonicalize repo");
+        let git_dir = root.join(".git");
+        compute_repo_key(&root, &git_dir)
+    };
+
+    // Populate the preferred key with session `sa`.
+    let preferred_key_dir = base.path().join(&repo_key);
+    write_reads_jsonl(&preferred_key_dir.join("sa"), "preferred/src/main.rs");
+
+    // Populate a flat (foreign) session `flat-sb` directly under base.
+    let flat_dir = base.path().join("flat-sb");
+    write_reads_jsonl(&flat_dir, "foreign/src/lib.rs");
+
+    let out = Command::new(BIN)
+        .current_dir(repo_tmp.path())
+        .env("GIT_MESH_SUGGEST_FIXTURE", "1")
+        .env_remove("GIT_MESH_ADVICE_DIR")
+        .env("GIT_MESH_ADVICE_DIR", base.path().to_str().unwrap())
+        .env("GIT_MESH_SUGGEST_HISTORY", "0")
+        .env("HOME", "/tmp")
+        .args(["advice", "suggest"])
+        .output()
+        .expect("spawn git-mesh");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // Fixture mode: both sa and flat-sb must be eligible — no "no sessions found".
+    assert!(
+        !stderr.contains("no sessions found"),
+        "fixture mode: sessions not found; stderr: {stderr:?}"
+    );
+
+    // No skipped-flat-dirs warning in fixture mode.
+    assert!(
+        !stderr.contains("skipping") || !stderr.contains("flat session dir"),
+        "fixture mode: unexpected skipped-flat-dirs warning; stderr: {stderr:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Helper: compute repo_key the same way as store::repo_key
 // ---------------------------------------------------------------------------
 

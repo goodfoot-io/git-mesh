@@ -951,15 +951,28 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
             chosen_dirs.extend(dirs);
         }
     } else {
-        // Strict repo-key isolation: only flat dirs + sessions under the preferred key.
-        // Flat dirs are always accepted (fixture/legacy layout coexists with keyed layout).
-        chosen_dirs.extend(flat_dirs);
+        // Strict repo-key isolation: ONLY sessions under <base>/<preferred_key>/<sid>/ are
+        // eligible. Flat dirs at <base>/<sid>/ are foreign to the current repo (hand-authored
+        // fixture, leftover from a stray invocation, copied corpus, etc.) and must NOT be
+        // loaded silently. Emit a warning if any flat dirs were found so the operator can
+        // set GIT_MESH_SUGGEST_FIXTURE=1 to include them explicitly.
+        if !flat_dirs.is_empty() {
+            eprintln!(
+                "warning: skipping {} top-level flat session dir(s) under `{}` \
+                 (only sessions under `{}/{}` are eligible in strict mode; \
+                 set GIT_MESH_SUGGEST_FIXTURE=1 to include them)",
+                flat_dirs.len(),
+                dir.display(),
+                dir.display(),
+                preferred_key.as_deref().unwrap_or("<repo-key>"),
+            );
+        }
         let pk = preferred_key.as_deref().unwrap_or("");
         if let Some(dirs) = keyed_sessions.remove(pk) {
             chosen_dirs.extend(dirs);
         }
-        // If preferred_key had no sessions: chosen_dirs may contain only flat dirs or be
-        // empty. The outer fail-closed bail! will fire with a message naming the key.
+        // If preferred_key had no sessions: chosen_dirs is empty.
+        // The outer fail-closed bail! will fire with a message naming the key.
     }
 
     chosen_dirs.sort();
@@ -981,6 +994,11 @@ pub(crate) fn no_sessions_error_message(advice_dir: &std::path::Path) -> String 
         (Some(key), false) => format!(
             "no sessions found under `{}/{key}`; a session directory must contain \
              reads.jsonl or touches.jsonl",
+            advice_dir.display()
+        ),
+        (None, false) => format!(
+            "no sessions found under `{}` (running outside a repo: cross-corpus mode); \
+             a session directory must contain reads.jsonl or touches.jsonl",
             advice_dir.display()
         ),
         _ => format!(
