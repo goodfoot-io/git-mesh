@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh-darwin-arm64",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "Platform-specific binary for @goodfoot/git-mesh",
   "license": "MIT",
   "os": [

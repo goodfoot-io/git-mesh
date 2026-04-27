@@ -137,6 +137,24 @@ if [ -f "$cargo_lock" ] && [ -f "$cargo_toml" ]; then
   fi
 fi
 
+# Regenerate the man page so its embedded version matches Cargo.toml.
+# The manpage test in packages/git-mesh/tests asserts byte-equality with the checked-in artifact.
+manpage="$REPO_ROOT/packages/git-mesh/man/git-mesh.1"
+if [ -f "$manpage" ] && [ -f "$cargo_toml" ]; then
+  manpage_version=$(awk '/^\.TH/ { for (i = 1; i <= NF; i++) if ($i ~ /^"git-mesh/) { gsub(/"/, "", $(i+1)); print $(i+1); exit } }' "$manpage")
+  if [ "$manpage_version" != "$VERSION" ]; then
+    (
+      cd "$REPO_ROOT/packages/git-mesh" && \
+      env CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/sync" \
+        cargo run --quiet --bin gen-manpage -- man/git-mesh.1
+    )
+    echo "Updated: $manpage ($manpage_version -> $VERSION)"
+    updated=$((updated + 1))
+  else
+    echo "OK:      $manpage (already $VERSION)"
+  fi
+fi
+
 # Update plugin manifests under plugins/*/.claude-plugin/plugin.json
 for plugin_dir in "$REPO_ROOT"/plugins/*/; do
   plugin_json="$plugin_dir/.claude-plugin/plugin.json"
