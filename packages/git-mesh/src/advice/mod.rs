@@ -21,11 +21,11 @@ pub use candidates::{
     Candidate, CandidateInput, Density, MeshRange, MeshRangeStatus, ReasonKind,
     StagedAddr, StagingState,
     detect_delta_intersects_mesh, detect_partner_drift, detect_range_shrink,
-    detect_read_intersects_mesh, detect_rename_consequence, detect_session_co_touch,
+    detect_read_intersects_mesh, detect_rename_consequence,
     detect_staging_cross_cut,
     candidate_to_suggestion,
     DeltaIntersectsMeshDetector, PartnerDriftDetector, RangeShrinkDetector,
-    ReadIntersectsMeshDetector, RenameConsequenceDetector, SessionCoTouchDetector,
+    ReadIntersectsMeshDetector, RenameConsequenceDetector,
     StagingCrossCutDetector,
 };
 pub use fingerprint::fingerprint;

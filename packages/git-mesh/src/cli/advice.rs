@@ -66,11 +66,15 @@ pub enum AdviceCommand {
         /// Paths (optionally range-qualified) to record as reads.
         paths: Vec<String>,
     },
-    /// Run the n-ary mesh suggestion detector against every session under
-    /// `GIT_MESH_ADVICE_DIR` and emit each suggestion as one `{"v":1, …}`
-    /// JSON line on stdout. Hidden because this is the parity surface for
-    /// diffing against `node docs/analyze-v4.mjs` during development —
-    /// the user-facing advice flow is the default `git mesh advice <sid>`.
+    /// Corpus-wide debug/parity surface for the n-ary mesh suggester:
+    /// runs `run_suggest_pipeline` against every session under
+    /// `GIT_MESH_ADVICE_DIR` and emits each suggestion as one
+    /// `{"v":1, …}` JSON line on stdout.
+    ///
+    /// The same suggester now also feeds the per-session render
+    /// (`git mesh advice <SESSION_ID>`); this subcommand exists for
+    /// parity diffs against `node docs/analyze-v4.mjs` and for
+    /// inspecting the unfiltered, cross-session output.
     ///
     /// Env vars:
     ///   GIT_MESH_ADVICE_DIR            Required. Root directory of captured sessions.
@@ -78,7 +82,6 @@ pub enum AdviceCommand {
     ///   GIT_MESH_SUGGEST_HISTORY=0     Disable historical-cochange channel (mirrors JS --no-history).
     ///   GIT_MESH_SUGGEST_FIXTURE=1     Disable history channel for fixture/parity runs (prevents repo contamination).
     ///   GIT_MESH_SUGGEST_REPO_ROOT     Override repo root for cohesion file reads (default: cwd).
-    #[command(hide = true)]
     Suggest,
 }
 
@@ -338,8 +341,10 @@ fn run_advice_render(
     candidates.extend(crate::advice::candidates::detect_partner_drift(&input));
     candidates.extend(crate::advice::candidates::detect_rename_consequence(&input));
     candidates.extend(crate::advice::candidates::detect_range_shrink(&input));
-    candidates.extend(crate::advice::candidates::detect_session_co_touch(&input));
     candidates.extend(crate::advice::candidates::detect_staging_cross_cut(&input));
+    // Card main-13 slice 2: the pairwise `detect_session_co_touch` channel was
+    // replaced by the n-ary, line-bounded suggester; its output is folded into
+    // `kept_suggestions` below after fingerprint-dedup.
 
     // Step 14: filter out fingerprints in advice_seen_set.
     let mut emitted_fps: Vec<String> = Vec::new();
@@ -375,10 +380,41 @@ fn run_advice_render(
         Vec::new()
     };
     // Convert candidates to Suggestions at the Detector seam before rendering.
-    let kept_suggestions: Vec<crate::advice::suggestion::Suggestion> = kept
+    let mut kept_suggestions: Vec<crate::advice::suggestion::Suggestion> = kept
         .iter()
         .map(crate::advice::candidates::candidate_to_suggestion)
         .collect();
+
+    // Card main-13 slice 2: append n-ary, line-bounded mesh recommendations
+    // produced by the suggester pipeline (replaces the pairwise
+    // `detect_session_co_touch` channel). Fail-soft: if the corpus loader
+    // returns nothing, the suggester is skipped and the per-session render
+    // continues unchanged.
+    {
+        use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
+        let advice_dir = match std::env::var("GIT_MESH_ADVICE_DIR") {
+            Ok(s) if !s.is_empty() => std::path::PathBuf::from(s),
+            _ => store.dir().parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+        };
+        let sessions = if advice_dir.as_os_str().is_empty() {
+            Vec::new()
+        } else {
+            load_all_sessions(&advice_dir).unwrap_or_default()
+        };
+        if !sessions.is_empty() {
+            let cfg = SuggestConfig::from_env();
+            let suggester_out = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg);
+            for sug in suggester_out {
+                let fp = crate::advice::fingerprint::fingerprint_suggestion(&sug);
+                if advice_seen.contains(&fp) {
+                    continue;
+                }
+                emitted_fps.push(fp);
+                kept_suggestions.push(sug);
+            }
+        }
+    }
+
     let rendered = crate::advice::render::render(&kept_suggestions, &new_doc_topics, documentation);
 
     // Build touch intervals (finding 3): one per affected path/range from

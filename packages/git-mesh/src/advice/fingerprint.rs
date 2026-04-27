@@ -69,6 +69,30 @@ pub fn fingerprint(c: &Candidate) -> String {
     format!("{h:016x}")
 }
 
+/// Return a lowercase-hex FNV-64 fingerprint for an n-ary `Suggestion`
+/// produced by the suggester pipeline (`meta.is_none()` case).
+///
+/// Hash inputs (fixed order, each terminated by `\0`):
+/// 1. literal tag `"suggest"`
+/// 2. for each participant in order: path, start, end, whole-flag (`"1"`/`"0"`)
+///
+/// `score`, `band`, `viability`, and `label` are intentionally excluded —
+/// the same set of (path, range) participants must dedup across runs even
+/// when scoring drifts. Drift-detector suggestions (`meta.is_some()`) are
+/// fingerprinted via `fingerprint(&Candidate)` upstream and never reach
+/// this helper.
+pub fn fingerprint_suggestion(s: &crate::advice::suggestion::Suggestion) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    feed(&mut h, "suggest");
+    for p in &s.participants {
+        feed(&mut h, p.path.to_string_lossy().as_ref());
+        feed(&mut h, &p.start.to_string());
+        feed(&mut h, &p.end.to_string());
+        feed(&mut h, if p.whole { "1" } else { "0" });
+    }
+    format!("{h:016x}")
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
