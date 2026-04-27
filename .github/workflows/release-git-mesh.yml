@@ -51,6 +51,7 @@ jobs:
           target: ${{ matrix.target }}
           working-directory: packages/git-mesh
           args: --release --locked
+          cache-workspaces: packages/git-mesh
 
       - name: Copy binary to npm package
         shell: bash
