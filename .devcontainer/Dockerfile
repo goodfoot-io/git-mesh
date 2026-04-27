@@ -28,6 +28,7 @@ RUN apt update && export DEBIAN_FRONTEND=noninteractive && apt install -y less \
   xvfb \
   bc \
   bat \
+  chrony \
   wget \
   openssh-server \
   openssh-client
@@ -106,7 +107,7 @@ USER root
 
 RUN corepack enable
 
-RUN echo "node ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg" > /etc/sudoers.d/node-packages && \
+RUN echo "node ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg, /usr/sbin/chronyd" > /etc/sudoers.d/node-packages && \
   echo "node ALL=(root) NOPASSWD: /usr/bin/dbus-daemon, /usr/bin/mkdir, /usr/bin/chmod, /usr/bin/chown, /usr/bin/pgrep, /usr/bin/sleep" > /etc/sudoers.d/node-dbus && \
   chmod 0440 /etc/sudoers.d/node-packages /etc/sudoers.d/node-dbus
 

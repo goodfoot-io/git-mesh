@@ -6,6 +6,35 @@ CARGO_BIN="/home/node/.cargo/bin/cargo"
 RUSTUP_HOME="/home/node/.rustup"
 CARGO_HOME="/home/node/.cargo"
 
+# Fail fast on a wrong container clock (Docker Desktop VM drift after host sleep
+# breaks TLS, npm, git tags, etc.). When SYS_TIME is granted by docker-compose,
+# step the clock in-place; otherwise print the host-side recovery command.
+local_now=$(date -u +%s)
+http_date=$(curl -sI --max-time 5 https://www.google.com 2>/dev/null \
+    | awk -F': ' 'tolower($1)=="date"{sub(/\r$/,"",$2); print $2; exit}')
+if [ -n "$http_date" ]; then
+    remote_now=$(date -u -d "$http_date" +%s 2>/dev/null || true)
+    if [ -n "$remote_now" ]; then
+        drift=$((local_now - remote_now)); drift=${drift#-}
+        if [ "$drift" -gt 60 ]; then
+            echo "Container clock drift: ${drift}s vs network. Stepping with chrony..." >&2
+            if ! sudo -n /usr/sbin/chronyd -q 'pool pool.ntp.org iburst' >&2; then
+                cat >&2 <<'MSG'
+Failed to step the clock from inside the container.
+Likely cause: Docker Desktop VM clock drifted after the macOS host slept.
+Fix on the macOS host (not inside this container):
+
+  docker run --rm --privileged --pid=host alpine \
+    nsenter -t 1 -m -u -i -n -p -- hwclock -s
+
+Then reopen the dev container.
+MSG
+                exit 1
+            fi
+        fi
+    fi
+fi
+
 # Make all scripts in utilities directory executable
 if [ -d "/workspace/.devcontainer/utilities" ]; then
     echo "Making scripts in /workspace/.devcontainer/utilities executable..."

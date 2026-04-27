@@ -6,6 +6,8 @@ services:
     extra_hosts:
       - "git-mesh:127.0.0.1"
     init: true
+    cap_add:
+      - SYS_TIME
     build:
       context: .
       dockerfile: Dockerfile
