@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "bin": "bin/git-mesh",
   "man": [
     "man/git-mesh.1"
@@ -13,7 +13,7 @@
     "build:clean": "rm -rf \"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}\" && yarn build:man && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build\" cargo build --release",
     "test": "env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/test\" cargo nextest run --build-jobs 1",
     "lint": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/lint\" cargo clippy --quiet -- -D warnings",
-    "typecheck": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/typecheck\" cargo check --quiet"
+    "typecheck": "env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/typecheck\" cargo check --quiet --locked"
   },
   "files": [
     "bin/",
@@ -21,11 +21,11 @@
     "scripts/postinstall.js"
   ],
   "optionalDependencies": {
-    "@goodfoot/git-mesh-darwin-arm64": "1.0.15",
-    "@goodfoot/git-mesh-darwin-x64": "1.0.15",
-    "@goodfoot/git-mesh-linux-arm64": "1.0.15",
-    "@goodfoot/git-mesh-linux-x64": "1.0.15",
-    "@goodfoot/git-mesh-win32-x64": "1.0.15"
+    "@goodfoot/git-mesh-darwin-arm64": "1.0.16",
+    "@goodfoot/git-mesh-darwin-x64": "1.0.16",
+    "@goodfoot/git-mesh-linux-arm64": "1.0.16",
+    "@goodfoot/git-mesh-linux-x64": "1.0.16",
+    "@goodfoot/git-mesh-win32-x64": "1.0.16"
   },
   "repository": {
     "type": "git",

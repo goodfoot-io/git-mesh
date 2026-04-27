@@ -112,6 +112,31 @@ if [ -f "$cargo_toml" ]; then
   fi
 fi
 
+# Refresh Cargo.lock so the git-mesh entry matches the new [package] version.
+# CI uses `cargo build --locked` which fails if Cargo.lock is out of sync.
+cargo_lock="$REPO_ROOT/packages/git-mesh/Cargo.lock"
+if [ -f "$cargo_lock" ] && [ -f "$cargo_toml" ]; then
+  lock_version=$(awk '
+    /^\[\[package\]\]/ { in_pkg = 1; name = ""; next }
+    in_pkg && /^name[[:space:]]*=[[:space:]]*"git-mesh"$/ { name = "git-mesh"; next }
+    in_pkg && name == "git-mesh" && /^version[[:space:]]*=/ {
+      gsub(/"/, "", $3); print $3; exit
+    }
+    /^$/ { in_pkg = 0; name = "" }
+  ' "$cargo_lock")
+  if [ "$lock_version" != "$VERSION" ]; then
+    (
+      cd "$REPO_ROOT/packages/git-mesh" && \
+      env CARGO_TARGET_DIR="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/sync" \
+        cargo update --workspace --quiet
+    )
+    echo "Updated: $cargo_lock ($lock_version -> $VERSION)"
+    updated=$((updated + 1))
+  else
+    echo "OK:      $cargo_lock (already $VERSION)"
+  fi
+fi
+
 # Update plugin manifests under plugins/*/.claude-plugin/plugin.json
 for plugin_dir in "$REPO_ROOT"/plugins/*/; do
   plugin_json="$plugin_dir/.claude-plugin/plugin.json"
