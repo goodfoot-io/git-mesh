@@ -6,9 +6,42 @@
 //! pairwise, session-scoped advice type) in that suggestions are mined
 //! from history and scored across n participants.
 
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
 use crate::advice::candidates::{MeshRange, MeshRangeStatus};
+
+// ── DriftMeta ────────────────────────────────────────────────────────────────
+
+/// Metadata carried by drift-detector `Suggestion`s.
+///
+/// Populated by `candidate_to_suggestion`; consumed by `render.rs`.
+/// All fields carry `#[serde(default)]` so future field additions
+/// are forward-compatible with old readers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DriftMeta {
+    #[serde(default)]
+    pub reason_kind: String,
+    #[serde(default)]
+    pub partner_marker: String,
+    #[serde(default)]
+    pub partner_clause: String,
+    #[serde(default)]
+    pub density: u8,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub touched_path: String,
+    #[serde(default)]
+    pub touched_start: Option<i64>,
+    #[serde(default)]
+    pub touched_end: Option<i64>,
+    #[serde(default)]
+    pub excerpt_of_path: String,
+    #[serde(default)]
+    pub excerpt_start: Option<i64>,
+    #[serde(default)]
+    pub excerpt_end: Option<i64>,
+}
 
 // ── Confidence band ──────────────────────────────────────────────────────────
 
@@ -84,11 +117,16 @@ pub struct Suggestion {
     /// Human-readable label for the suggested mesh relationship.
     /// Empty string when the detector has no label to offer.
     pub label: String,
+
+    /// Drift-detector metadata. `Some` for drift-detector suggestions;
+    /// `None` for n-ary suggester suggestions. Dispatch on this field —
+    /// not on parsing `label` — to distinguish suggestion kinds.
+    pub meta: Option<DriftMeta>,
 }
 
 impl Serialize for Suggestion {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut s = serializer.serialize_struct("Suggestion", 6)?;
+        let mut s = serializer.serialize_struct("Suggestion", 7)?;
         s.serialize_field("v", &self.version)?;
         s.serialize_field("band", &self.band)?;
         s.serialize_field("viability", &self.viability)?;
@@ -97,6 +135,7 @@ impl Serialize for Suggestion {
         let participants: Vec<_> = self.participants.iter().map(MeshRangeView).collect();
         s.serialize_field("participants", &participants)?;
         s.serialize_field("label", &self.label)?;
+        s.serialize_field("meta", &self.meta)?;
         s.end()
     }
 }
@@ -126,7 +165,8 @@ impl Serialize for MeshRangeView<'_> {
 }
 
 impl Suggestion {
-    /// Construct a new suggestion with `version` pre-populated to `1`.
+    /// Construct a new suggestion with `version` pre-populated to `1`
+    /// and `meta` set to `None`.
     pub fn new(
         band: ConfidenceBand,
         viability: Viability,
@@ -141,6 +181,27 @@ impl Suggestion {
             score,
             participants,
             label,
+            meta: None,
+        }
+    }
+
+    /// Construct a drift-detector suggestion with explicit `DriftMeta`.
+    pub fn new_drift(
+        band: ConfidenceBand,
+        viability: Viability,
+        score: ScoreBreakdown,
+        participants: Vec<MeshRange>,
+        label: String,
+        meta: DriftMeta,
+    ) -> Self {
+        Self {
+            version: 1,
+            band,
+            viability,
+            score,
+            participants,
+            label,
+            meta: Some(meta),
         }
     }
 }

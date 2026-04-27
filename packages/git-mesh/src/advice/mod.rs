@@ -31,7 +31,7 @@ pub use candidates::{
 pub use fingerprint::fingerprint;
 pub use path_filter::is_acceptable_path;
 pub use detector::Detector;
-pub use suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
+pub use suggestion::{ConfidenceBand, DriftMeta, ScoreBreakdown, Suggestion, Viability};
 pub use suggest::{SuggestConfig, SuggestDetector};
 
 /// Re-exported submodules for test access.

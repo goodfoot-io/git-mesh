@@ -13,7 +13,6 @@
 
 use crate::advice::session::state::{ReadRecord, TouchInterval};
 use crate::advice::workspace_tree::DiffEntry;
-use serde::{Deserialize, Serialize};
 
 // ── Candidate types (preserved from former `intersections.rs`) ───────────────
 
@@ -818,9 +817,8 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
 ///   e.g. partner-drift candidates)
 ///
 /// Extra rendering fields (marker, clause, density, command, excerpt, touched)
-/// are JSON-serialized into `label` so `render.rs` can recover them without
-/// modifying `Suggestion`. This is intentionally opaque outside the
-/// candidates↔render seam.
+/// are carried in `Suggestion.meta` (a typed `DriftMeta`), not encoded
+/// as a JSON string in `label`. The renderer dispatches on `s.meta.is_some()`.
 ///
 /// `ConfidenceBand::High` is used for all drift detectors — they are
 /// deterministic, single-channel signals with no probabilistic scoring.
@@ -852,7 +850,8 @@ pub fn candidate_to_suggestion(c: &Candidate) -> crate::advice::suggestion::Sugg
         participants.push(trigger);
     }
 
-    // Encode extra rendering fields as JSON in label so render.rs can recover them.
+    use crate::advice::suggestion::DriftMeta;
+
     let meta = DriftMeta {
         reason_kind: c.reason_kind.as_str().to_string(),
         partner_marker: c.partner_marker.clone(),
@@ -870,32 +869,17 @@ pub fn candidate_to_suggestion(c: &Candidate) -> crate::advice::suggestion::Sugg
         excerpt_start: c.excerpt_start,
         excerpt_end: c.excerpt_end,
     };
-    let label = serde_json::to_string(&meta).unwrap_or_default();
 
-    Suggestion::new(
+    // Use the human-readable label (empty string — drift suggestions don't
+    // need a display label; the renderer reads everything from `meta`).
+    Suggestion::new_drift(
         ConfidenceBand::High,
         Viability::Ready,
         ScoreBreakdown { shared_id: 0.0, co_edit: 0.0, trigram: 0.0, composite: 1.0 },
         participants,
-        label,
+        String::new(),
+        meta,
     )
-}
-
-/// Metadata encoded in the `label` field of drift detector `Suggestion`s.
-/// Private to the candidates↔render seam.
-#[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct DriftMeta {
-    pub reason_kind: String,
-    pub partner_marker: String,
-    pub partner_clause: String,
-    pub density: u8,
-    pub command: String,
-    pub touched_path: String,
-    pub touched_start: Option<i64>,
-    pub touched_end: Option<i64>,
-    pub excerpt_of_path: String,
-    pub excerpt_start: Option<i64>,
-    pub excerpt_end: Option<i64>,
 }
 
 /// Zero-sized struct: wraps `detect_partner_drift` behind the `Detector` trait.

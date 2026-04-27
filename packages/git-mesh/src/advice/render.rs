@@ -6,15 +6,12 @@
 //! inferred from the partner path's extension.
 //!
 //! The public entry point `render` consumes `Vec<Suggestion>`. Each
-//! suggestion encodes its type in the `label` field:
+//! suggestion encodes its type in the `meta` field:
 //!
-//! - Drift-detector suggestions (size 1–2 participants): `label` contains a
-//!   JSON-serialized `DriftMeta` (from `candidates::DriftMeta`).
-//! - N-ary suggester suggestions (size ≥ 2 participants, no DriftMeta):
-//!   `label` is a human-readable mesh label or empty string.
+//! - Drift-detector suggestions: `meta` is `Some(DriftMeta)`.
+//! - N-ary suggester suggestions: `meta` is `None`.
 
-use crate::advice::candidates::DriftMeta;
-use crate::advice::suggestion::Suggestion;
+use crate::advice::suggestion::{DriftMeta, Suggestion};
 
 const MAX_LINE: usize = 200;
 
@@ -99,20 +96,10 @@ pub fn render(suggestions: &[Suggestion], new_doc_topics: &[String], documentati
     out
 }
 
-/// Extract the reason-kind string from a suggestion's label, if it is a
-/// drift-detector suggestion (label parses as DriftMeta). Returns None for
-/// n-ary suggester suggestions.
+/// Extract the reason-kind string from a drift-detector suggestion.
+/// Returns None for n-ary suggester suggestions (where `s.meta` is None).
 fn drift_reason(s: &Suggestion) -> Option<String> {
-    parse_drift_meta(s).map(|m| m.reason_kind)
-}
-
-/// Parse the DriftMeta from a suggestion's label. Returns None if the label
-/// is not a JSON-encoded DriftMeta.
-fn parse_drift_meta(s: &Suggestion) -> Option<DriftMeta> {
-    if s.label.is_empty() {
-        return None;
-    }
-    serde_json::from_str::<DriftMeta>(&s.label).ok()
+    s.meta.as_ref().map(|m| m.reason_kind.clone())
 }
 
 fn render_mesh_block(
@@ -138,7 +125,8 @@ fn render_mesh_block(
         std::collections::BTreeSet::new();
 
     for s in suggs {
-        if let Some(meta) = parse_drift_meta(s) {
+        if let Some(meta) = s.meta.as_ref() {
+            let meta = meta.clone();
             // Drift suggestion: participants[0] = partner, participants[1] = trigger (optional).
             let partner = s.participants.first();
             let trigger = s.participants.get(1);
@@ -265,7 +253,7 @@ fn participant_range(s: &Suggestion, idx: usize) -> (Option<i64>, Option<i64>) {
 }
 
 fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
-    let Some(meta) = parse_drift_meta(s) else {
+    let Some(meta) = s.meta.as_ref() else {
         // N-ary cross-cutting — simple list.
         let mut out = String::new();
         out.push_str("# mesh recommendation:\n");
