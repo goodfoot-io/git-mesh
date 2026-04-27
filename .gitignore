@@ -71,6 +71,7 @@ yarn-error.log*
 .worktrees
 *.lock
 !Cargo.lock
+!yarn.lock
 .devcontainer/home/
 
 # devcontainer ssh paste-in scripts

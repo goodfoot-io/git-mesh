@@ -30,15 +30,3 @@ NEW_VERSION=$(node -e "
 echo "Bumped packages/git-mesh to $NEW_VERSION"
 echo ""
 bash "$REPO_ROOT/scripts/sync-versions.sh"
-
-# Refresh yarn.lock from the rewritten manifests. `--mode=update-lockfile`
-# rewrites the lockfile without performing the link step, so it succeeds even
-# when the freshly-bumped @goodfoot/git-mesh-* platform packages have not been
-# published to the registry yet. Without this, CI's immutable `yarn install`
-# fails with YN0028 the next time the lockfile is consulted.
-echo ""
-echo "Refreshing yarn.lock..."
-( cd "$REPO_ROOT" && yarn install --mode=update-lockfile )
-
-echo ""
-echo "Done. Remember to commit yarn.lock along with the bumped manifests."
