@@ -2,11 +2,25 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use fs4::fs_std::FileExt;
+
+/// Apply a Unix file mode to `OpenOptions`. No-op on non-Unix targets.
+fn with_mode(opts: &mut OpenOptions, mode: u32) -> &mut OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(mode);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+    }
+    opts
+}
 
 /// Controls how `acquire_lock` behaves when the lock is already held.
 #[derive(Debug, Clone)]
@@ -29,7 +43,7 @@ pub fn advice_base_dir() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    PathBuf::from("/tmp/git-mesh/advice")
+    std::env::temp_dir().join("git-mesh").join("advice")
 }
 
 /// FNV-64 hash, lower-hex.
@@ -65,31 +79,32 @@ pub fn session_dir(repo_root: &Path, git_dir: &Path, session_id: &str) -> PathBu
 /// Acquire the advisory lock for `dir/lock`, blocking or timing out per `timeout`.
 pub fn acquire_lock(dir: &Path, timeout: LockTimeout) -> Result<LockGuard> {
     let lock_path = dir.join("lock");
-    let f = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(&lock_path)
-        .with_context(|| format!("open lock file `{}`", lock_path.display()))?;
-    use std::os::unix::io::AsRawFd;
-    let fd = f.as_raw_fd();
+    let f = with_mode(
+        OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false),
+        0o600,
+    )
+    .open(&lock_path)
+    .with_context(|| format!("open lock file `{}`", lock_path.display()))?;
     match timeout {
         LockTimeout::Blocking => {
-            // Blocking flock — release on drop via guard.
-            let r = unsafe { libc::flock(fd, libc::LOCK_EX) };
-            if r != 0 {
-                let err = std::io::Error::last_os_error();
-                bail!("flock(LOCK_EX) failed on `{}`: {err}", lock_path.display());
-            }
+            FileExt::lock_exclusive(&f)
+                .with_context(|| format!("lock_exclusive on `{}`", lock_path.display()))?;
         }
         LockTimeout::Bounded(dur) => {
             let deadline = Instant::now() + dur;
             loop {
-                let r = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-                if r == 0 {
-                    break;
+                match FileExt::try_lock_exclusive(&f) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!("try_lock_exclusive on `{}`", lock_path.display())
+                        });
+                    }
                 }
                 if Instant::now() >= deadline {
                     bail!(
@@ -117,13 +132,12 @@ pub fn atomic_write(dest: &Path, contents: &[u8]) -> Result<()> {
     tmp_name.push(".tmp");
     let tmp = parent.join(&tmp_name);
     {
-        let mut f = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .with_context(|| format!("open tmp `{}`", tmp.display()))?;
+        let mut f = with_mode(
+            OpenOptions::new().create(true).write(true).truncate(true),
+            0o600,
+        )
+        .open(&tmp)
+        .with_context(|| format!("open tmp `{}`", tmp.display()))?;
         f.write_all(contents)
             .with_context(|| format!("write tmp `{}`", tmp.display()))?;
         f.sync_all().ok();
@@ -135,10 +149,7 @@ pub fn atomic_write(dest: &Path, contents: &[u8]) -> Result<()> {
 
 /// Append a single JSONL line under an already-held lock guard.
 pub fn append_jsonl_line(path: &Path, _guard: &LockGuard, line: &str) -> Result<()> {
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
+    let mut f = with_mode(OpenOptions::new().create(true).append(true), 0o600)
         .open(path)
         .with_context(|| format!("open jsonl `{}`", path.display()))?;
     f.write_all(line.as_bytes())

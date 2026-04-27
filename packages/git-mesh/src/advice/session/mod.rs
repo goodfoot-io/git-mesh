@@ -3,12 +3,39 @@
 pub mod state;
 pub mod store;
 
-use std::fs::{File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+
+/// Apply a Unix mode to a `DirBuilder`. No-op on non-Unix targets.
+fn dir_with_mode(b: &mut DirBuilder, mode: u32) -> &mut DirBuilder {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(mode);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+    }
+    b
+}
+
+/// Apply a Unix mode to `OpenOptions`. No-op on non-Unix targets.
+fn open_with_mode(opts: &mut OpenOptions, mode: u32) -> &mut OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(mode);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+    }
+    opts
+}
 
 use state::{BaselineState, LastFlushState, ReadRecord, TouchInterval};
 use store::{LockGuard, LockTimeout};
@@ -35,15 +62,11 @@ impl SessionStore {
         let dir = store::session_dir(repo_root, git_dir, session_id);
         // Create parent (repo_key dir) and the session dir, both 0700.
         if let Some(parent) = dir.parent() {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
+            dir_with_mode(DirBuilder::new().recursive(true), 0o700)
                 .create(parent)
                 .with_context(|| format!("mkdir `{}`", parent.display()))?;
         }
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
+        dir_with_mode(DirBuilder::new().recursive(true), 0o700)
             .create(&dir)
             .with_context(|| format!("mkdir `{}`", dir.display()))?;
         // Ensure the existing directory is 0700 (recursive=true skips existing).
@@ -67,13 +90,12 @@ impl SessionStore {
         for name in JSONL_FILES {
             let path = self.dir.join(name);
             // Truncate (or create empty).
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&path)
-                .with_context(|| format!("truncate `{}`", path.display()))?;
+            open_with_mode(
+                OpenOptions::new().create(true).write(true).truncate(true),
+                0o600,
+            )
+            .open(&path)
+            .with_context(|| format!("truncate `{}`", path.display()))?;
         }
         // Remove existing *.objects directories AND any leftover
         // current.objects-<uuid>/ scratch dirs from sessions that crashed
