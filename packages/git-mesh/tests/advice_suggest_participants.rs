@@ -1,19 +1,27 @@
-//! Unit-test stubs for the participants stage.
-//!
-//! Participants is the per-file range-merge step that turns raw intervals
-//! from the op-stream into one canonical participant record per file,
-//! then computes pairwise IoU (intersection-over-union) for edge building.
-//!
-//! Tests are `#[ignore]`d until Step 3 implements the participants stage.
+//! Integration tests for the participants + range-merge stage.
 
-use git_mesh::advice::suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
+use git_mesh::advice::suggest::{
+    build_participants, merge_ranges_per_file, Op, OpKind, SuggestConfig,
+};
 
-fn zero_score() -> ScoreBreakdown {
-    ScoreBreakdown {
-        shared_id: 0.0,
-        co_edit: 0.0,
-        trigram: 0.0,
-        composite: 0.0,
+fn cfg() -> SuggestConfig {
+    SuggestConfig::default()
+}
+
+fn make_read_op(path: &str, start: u32, end: u32, idx: usize) -> Op {
+    Op {
+        path: path.to_string(),
+        start_line: Some(start),
+        end_line: Some(end),
+        ts_ms: idx as i64,
+        op_index: idx,
+        kind: OpKind::Read,
+        ranged: true,
+        count: 1,
+        inferred_start: None,
+        inferred_end: None,
+        locator_distance: None,
+        locator_forward: None,
     }
 }
 
@@ -22,110 +30,96 @@ fn zero_score() -> ScoreBreakdown {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — participants not yet implemented"]
 fn overlapping_intervals_merged_into_one_participant() {
-    // When implemented: two intervals [1,20] and [15,35] on the same file
-    // must be merged into a single [1,35] participant record.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // [1,20] and [15,35] → merged to [1,35].
+    let ops = vec![
+        make_read_op("foo.rs", 1, 20, 0),
+        make_read_op("foo.rs", 15, 35, 1),
+    ];
+    let parts = build_participants(&ops, "s1");
+    let merged = merge_ranges_per_file(&parts, &cfg());
+    assert!(merged.iter().all(|p| p.m_start == 1 && p.m_end == 35));
 }
 
 #[test]
-#[ignore = "phase 3 — participants not yet implemented"]
 fn intervals_within_tolerance_merged_into_one_participant() {
-    // When implemented: two intervals [1,10] and [15,25] on the same file,
-    // with a gap of 4 lines and `range_merge_tolerance` = 5, must be merged.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // [1,10] and [15,25]: gap = 15-10-1 = 4 ≤ tolerance 5 → merged to [1,25].
+    let ops = vec![
+        make_read_op("foo.rs", 1, 10, 0),
+        make_read_op("foo.rs", 15, 25, 1),
+    ];
+    let parts = build_participants(&ops, "s1");
+    let merged = merge_ranges_per_file(&parts, &cfg());
+    assert!(merged.iter().all(|p| p.m_start == 1 && p.m_end == 25));
 }
 
 #[test]
-#[ignore = "phase 3 — participants not yet implemented"]
 fn intervals_beyond_tolerance_remain_separate_participants() {
-    // When implemented: two intervals with a gap > range_merge_tolerance stay
-    // as separate participant records for the same file.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // [1,10] and [20,30]: gap = 20-10-1 = 9 > tolerance 5 → stays separate.
+    let ops = vec![
+        make_read_op("foo.rs", 1, 10, 0),
+        make_read_op("foo.rs", 20, 30, 1),
+    ];
+    let parts = build_participants(&ops, "s1");
+    let merged = merge_ranges_per_file(&parts, &cfg());
+    let p0 = merged.iter().find(|p| p.start == 1).unwrap();
+    let p1 = merged.iter().find(|p| p.start == 20).unwrap();
+    assert_eq!(p0.m_start, 1);
+    assert_eq!(p0.m_end, 10);
+    assert_eq!(p1.m_start, 20);
+    assert_eq!(p1.m_end, 30);
 }
 
 // ---------------------------------------------------------------------------
-// IoU edge cases
+// IoU edge cases (via range_iou in canonical, but exercised through participants)
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — participants not yet implemented"]
 fn iou_of_identical_intervals_is_one() {
-    // When implemented: two sessions both touching [10, 30] on a file yield
-    // IoU = 1.0 for that file pair.
-    let s = Suggestion::new(
-        ConfidenceBand::High,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    use git_mesh::advice::suggest::range_iou;
+    use git_mesh::advice::suggest::build_participants;
+    let ops = vec![make_read_op("a.rs", 10, 30, 0)];
+    let p1 = &build_participants(&ops, "s1")[0];
+    let p2 = &build_participants(&ops, "s2")[0];
+    let iou = range_iou(p1, p2);
+    assert!((iou - 1.0).abs() < 1e-9, "identical intervals → iou=1.0, got {iou}");
 }
 
 #[test]
-#[ignore = "phase 3 — participants not yet implemented"]
 fn iou_of_non_overlapping_intervals_is_zero() {
-    // When implemented: sessions touching [1,10] and [20,30] on a file yield
-    // IoU = 0.0.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Suppressed,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    use git_mesh::advice::suggest::range_iou;
+    let ops1 = vec![make_read_op("a.rs", 1, 10, 0)];
+    let ops2 = vec![make_read_op("a.rs", 20, 30, 0)];
+    let p1 = &build_participants(&ops1, "s1")[0];
+    let p2 = &build_participants(&ops2, "s2")[0];
+    let iou = range_iou(p1, p2);
+    assert_eq!(iou, 0.0, "non-overlapping intervals → iou=0.0, got {iou}");
 }
 
 #[test]
-#[ignore = "phase 3 — participants not yet implemented"]
 fn iou_partial_overlap_is_computed_correctly() {
-    // When implemented: sessions touching [1,20] and [10,30] on a file yield
-    // IoU = 10/30 ≈ 0.333.
-    let s = Suggestion::new(
-        ConfidenceBand::Medium,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    use git_mesh::advice::suggest::range_iou;
+    // [1,20] and [10,30]: inter=10..20=11, a_len=20, b_len=21, union=30 → 11/30
+    let ops1 = vec![make_read_op("a.rs", 1, 20, 0)];
+    let ops2 = vec![make_read_op("a.rs", 10, 30, 0)];
+    let p1 = &build_participants(&ops1, "s1")[0];
+    let p2 = &build_participants(&ops2, "s2")[0];
+    let iou = range_iou(p1, p2);
+    let expected = 11.0_f64 / 30.0;
+    assert!((iou - expected).abs() < 1e-9, "expected {expected}, got {iou}");
 }
 
 #[test]
-#[ignore = "phase 3 — participants not yet implemented"]
 fn iou_below_threshold_does_not_create_edge() {
-    // When implemented: an IoU below `range_overlap_iou` (0.30) must not
-    // produce an edge between the two file-participant nodes.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Suppressed,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    use git_mesh::advice::suggest::{build_canonical_ranges, range_iou};
+    // [1,10] and [20,30]: iou=0.0 < 0.30 → separate canonical ids.
+    let ops1 = vec![make_read_op("a.rs", 1, 10, 0)];
+    let ops2 = vec![make_read_op("a.rs", 20, 30, 0)];
+    let mut all_parts = build_participants(&ops1, "s1");
+    all_parts.extend(build_participants(&ops2, "s2"));
+    let all_merged = merge_ranges_per_file(&all_parts, &cfg());
+    let iou = range_iou(&all_merged[0], &all_merged[1]);
+    assert!(iou < cfg().range_overlap_iou, "iou {iou} must be below threshold");
+    let idx = build_canonical_ranges(&all_merged, &cfg());
+    assert_eq!(idx.ranges.len(), 2, "non-overlapping ranges must produce two canonical ids");
 }

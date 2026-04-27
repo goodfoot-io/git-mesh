@@ -5,6 +5,16 @@
 //! clique enumeration). In this initial phase it returns an empty vec so
 //! the surrounding infrastructure can be validated independently.
 
+pub mod canonical;
+pub mod locator;
+pub mod op_stream;
+pub mod participants;
+
+pub use canonical::{build_canonical_ranges, range_iou, CanonicalIndex, CanonicalRange};
+pub use locator::{attach_locators, prior_context_atoms, Atom};
+pub use op_stream::{build_op_stream, Op, OpKind, SessionRecord};
+pub use participants::{merge_ranges_per_file, participants as build_participants, Participant, ParticipantKind};
+
 use crate::advice::candidates::CandidateInput;
 use crate::advice::detector::Detector;
 use crate::advice::suggestion::Suggestion;

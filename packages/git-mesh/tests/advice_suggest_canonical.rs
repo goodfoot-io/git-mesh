@@ -1,22 +1,34 @@
-//! Unit-test stubs for the canonical-id stage.
-//!
-//! The canonical stage uses IoU-based connected-components to assign a stable
-//! canonical identifier to each participant cluster. Stability means that
-//! running the algorithm twice on the same input yields the same ids, and
-//! that adding a non-overlapping file does not change ids of the existing
-//! cluster.
-//!
-//! Tests are `#[ignore]`d until Step 3 implements the canonical stage.
+//! Integration tests for the canonical-id stage.
 
-use git_mesh::advice::suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
+use git_mesh::advice::suggest::{
+    build_canonical_ranges, build_participants, merge_ranges_per_file, range_iou, Op, OpKind,
+    SuggestConfig,
+};
 
-fn zero_score() -> ScoreBreakdown {
-    ScoreBreakdown {
-        shared_id: 0.0,
-        co_edit: 0.0,
-        trigram: 0.0,
-        composite: 0.0,
+fn cfg() -> SuggestConfig {
+    SuggestConfig::default()
+}
+
+fn make_read_op(path: &str, start: u32, end: u32, idx: usize) -> Op {
+    Op {
+        path: path.to_string(),
+        start_line: Some(start),
+        end_line: Some(end),
+        ts_ms: idx as i64,
+        op_index: idx,
+        kind: OpKind::Read,
+        ranged: true,
+        count: 1,
+        inferred_start: None,
+        inferred_end: None,
+        locator_distance: None,
+        locator_forward: None,
     }
+}
+
+fn parts_for(path: &str, start: u32, end: u32, sid: &str) -> git_mesh::advice::suggest::Participant {
+    let ops = vec![make_read_op(path, start, end, 0)];
+    build_participants(&ops, sid).into_iter().next().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -24,76 +36,82 @@ fn zero_score() -> ScoreBreakdown {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — canonical not yet implemented"]
 fn same_input_produces_same_canonical_ids() {
-    // When implemented: run the canonical-id algorithm twice on identical
-    // input graphs and assert all ids are equal.
-    let s = Suggestion::new(
-        ConfidenceBand::High,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    let parts = vec![
+        parts_for("a.rs", 1, 20, "s1"),
+        parts_for("a.rs", 10, 30, "s2"),
+        parts_for("b.rs", 1, 10, "s3"),
+    ];
+    let idx1 = build_canonical_ranges(&parts, &cfg());
+    let idx2 = build_canonical_ranges(&parts, &cfg());
+    assert_eq!(idx1.ranges, idx2.ranges, "ranges must be identical across runs");
+    assert_eq!(idx1.canonical_id_of, idx2.canonical_id_of, "ids must be identical across runs");
 }
 
 #[test]
-#[ignore = "phase 3 — canonical not yet implemented"]
 fn disjoint_files_get_distinct_canonical_ids() {
-    // When implemented: two files with no IoU edge between them must belong
-    // to different canonical components.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Suppressed,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // [1,10] and [20,30] on the same path have no IoU edge → different canonical ids.
+    let p0 = parts_for("a.rs", 1, 10, "s1");
+    let p1 = parts_for("a.rs", 20, 30, "s2");
+    let all = vec![p0.clone(), p1.clone()];
+    let all_merged = merge_ranges_per_file(&all, &cfg());
+
+    let iou = range_iou(&all_merged[0], &all_merged[1]);
+    assert!(iou < cfg().range_overlap_iou);
+
+    let idx = build_canonical_ranges(&all_merged, &cfg());
+    let id0 = idx.canonical_id_of[&git_mesh::advice::suggest::canonical::part_key(&all_merged[0])];
+    let id1 = idx.canonical_id_of[&git_mesh::advice::suggest::canonical::part_key(&all_merged[1])];
+    assert_ne!(id0, id1, "disjoint ranges must get distinct canonical ids");
 }
 
 #[test]
-#[ignore = "phase 3 — canonical not yet implemented"]
 fn connected_files_get_same_canonical_id() {
-    // When implemented: two files with IoU >= range_overlap_iou must share
-    // one canonical component id.
-    let s = Suggestion::new(
-        ConfidenceBand::Medium,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // [1,20] and [10,30]: iou=11/30≈0.37 ≥ 0.30 → same component.
+    let p0 = parts_for("a.rs", 1, 20, "s1");
+    let p1 = parts_for("a.rs", 10, 30, "s2");
+    let all = vec![p0.clone(), p1.clone()];
+    let idx = build_canonical_ranges(&all, &cfg());
+    let id0 = idx.canonical_id_of[&git_mesh::advice::suggest::canonical::part_key(&all[0])];
+    let id1 = idx.canonical_id_of[&git_mesh::advice::suggest::canonical::part_key(&all[1])];
+    assert_eq!(id0, id1, "overlapping ranges must share a canonical id");
 }
 
 #[test]
-#[ignore = "phase 3 — canonical not yet implemented"]
 fn adding_unrelated_file_does_not_change_existing_ids() {
-    // When implemented: inserting a file with no edges to an existing cluster
-    // must leave the existing cluster's canonical id unchanged.
-    let s = Suggestion::new(
-        ConfidenceBand::High,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    let p0 = parts_for("a.rs", 1, 20, "s1");
+    let p1 = parts_for("a.rs", 10, 30, "s2");
+    let base = vec![p0.clone(), p1.clone()];
+    let idx_base = build_canonical_ranges(&base, &cfg());
+
+    let mut extended = base.clone();
+    extended.push(parts_for("b.rs", 100, 200, "s3"));
+    let idx_ext = build_canonical_ranges(&extended, &cfg());
+
+    for p in &base {
+        let k = git_mesh::advice::suggest::canonical::part_key(p);
+        assert_eq!(
+            idx_base.canonical_id_of[&k],
+            idx_ext.canonical_id_of[&k],
+            "adding unrelated file must not change existing ids"
+        );
+    }
 }
 
 #[test]
-#[ignore = "phase 3 — canonical not yet implemented"]
 fn transitive_edges_expand_component() {
-    // When implemented: if A-B and B-C both have IoU edges, all three belong
-    // to the same canonical component even if A-C does not.
-    let s = Suggestion::new(
-        ConfidenceBand::High,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // A=[1,20], B=[10,30], C=[20,40]:
+    //   iou(A,B) ≈ 0.37 ≥ 0.30, iou(B,C) ≈ 0.35 ≥ 0.30, iou(A,C) ≈ 0.025 < 0.30.
+    // All three must end up in the same component via B.
+    let p0 = parts_for("a.rs", 1, 20, "s1");
+    let p1 = parts_for("a.rs", 10, 30, "s2");
+    let p2 = parts_for("a.rs", 20, 40, "s3");
+    let all = vec![p0.clone(), p1.clone(), p2.clone()];
+    let idx = build_canonical_ranges(&all, &cfg());
+    let ids: Vec<usize> = all
+        .iter()
+        .map(|p| idx.canonical_id_of[&git_mesh::advice::suggest::canonical::part_key(p)])
+        .collect();
+    assert_eq!(ids[0], ids[1], "A and B must share canonical id");
+    assert_eq!(ids[1], ids[2], "B and C must share canonical id");
 }

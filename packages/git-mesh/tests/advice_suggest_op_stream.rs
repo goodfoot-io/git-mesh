@@ -1,106 +1,96 @@
-//! Unit-test stubs for the op-stream stage (dump-drop and edit-coalesce).
+//! Integration tests for the op-stream stage.
 //!
-//! These tests are `#[ignore]`d until Step 3 implements the op-stream pipeline.
-//! Bodies use only types from Step 1 to keep the file compile-clean.
+//! Tests the public `build_op_stream` API using hand-built `SessionRecord`s.
 
-use git_mesh::advice::suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
+use git_mesh::advice::session::state::{ReadRecord, TouchInterval};
+use git_mesh::advice::suggest::{build_op_stream, OpKind, SessionRecord, SuggestConfig};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+fn cfg() -> SuggestConfig {
+    SuggestConfig::default()
+}
 
-/// Construct a minimal `ScoreBreakdown` with all zeros for compile-only stubs.
-fn zero_score() -> ScoreBreakdown {
-    ScoreBreakdown {
-        shared_id: 0.0,
-        co_edit: 0.0,
-        trigram: 0.0,
-        composite: 0.0,
-    }
+fn read(path: &str, start: Option<u32>, end: Option<u32>, ts: &str) -> ReadRecord {
+    ReadRecord { path: path.to_string(), start_line: start, end_line: end, ts: ts.to_string() }
+}
+
+fn touch(path: &str, start: u32, end: u32, ts: &str) -> TouchInterval {
+    TouchInterval { path: path.to_string(), start_line: start, end_line: end, ts: ts.to_string() }
+}
+
+fn session(reads: Vec<ReadRecord>, touches: Vec<TouchInterval>) -> SessionRecord {
+    SessionRecord { sid: "test".to_string(), reads, touches }
 }
 
 // ---------------------------------------------------------------------------
-// dump-drop: ops that are pure navigation (cursor movement without edit intent)
-// must be dropped from the op-stream before scoring.
+// dump-drop: tree-diff dumps are removed from the stream
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — op-stream not yet implemented"]
 fn dump_op_is_dropped_from_stream() {
-    // When implemented: push a dump-class op into the stream builder and assert
-    // it does not appear in the emitted op sequence.
-    //
-    // For now, exercise the Step 1 contract to keep the file compile-green.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Suppressed,
-        zero_score(),
+    // Three whole-file reads at the same timestamp → TREE_DIFF_BURST (3) → all dropped.
+    let ts = "2024-01-01T00:00:00Z";
+    let s = session(
+        vec![
+            read("a.rs", None, None, ts),
+            read("b.rs", None, None, ts),
+            read("c.rs", None, None, ts),
+        ],
         vec![],
-        String::new(),
     );
-    assert_eq!(s.version, 1);
+    let ops = build_op_stream(&s, &cfg());
+    assert!(ops.is_empty(), "dump reads (size >= TREE_DIFF_BURST) must be dropped; got {}", ops.len());
 }
 
 #[test]
-#[ignore = "phase 3 — op-stream not yet implemented"]
 fn drop_op_is_dropped_from_stream() {
-    // When implemented: push a drop-class op and assert it is excluded.
-    let s = Suggestion::new(
-        ConfidenceBand::Low,
-        Viability::Suppressed,
-        zero_score(),
+    // Three whole-file edits at the same timestamp → dropped.
+    let ts = "2024-01-01T00:00:00Z";
+    let s = session(
         vec![],
-        String::new(),
+        vec![touch("a.rs", 0, 0, ts), touch("b.rs", 0, 0, ts), touch("c.rs", 0, 0, ts)],
     );
-    assert_eq!(s.version, 1);
+    let ops = build_op_stream(&s, &cfg());
+    assert!(ops.is_empty(), "dump edits (size >= TREE_DIFF_BURST) must be dropped; got {}", ops.len());
 }
 
 // ---------------------------------------------------------------------------
-// edit-coalesce: consecutive edit ops on the same file within the merge
-// tolerance must be merged into a single representative interval.
+// edit-coalesce: consecutive edit ops on the same file are merged
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — op-stream not yet implemented"]
 fn adjacent_edits_within_tolerance_are_coalesced() {
-    // When implemented: push two edit ops on the same file separated by
-    // fewer than `range_merge_tolerance` lines; assert one interval emerges.
-    let s = Suggestion::new(
-        ConfidenceBand::Medium,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // Two consecutive whole-file edits on the same path → coalesced into one op.
+    let ts1 = "2024-01-01T00:00:01Z";
+    let ts2 = "2024-01-01T00:00:02Z";
+    let s = session(vec![], vec![touch("foo.rs", 0, 0, ts1), touch("foo.rs", 0, 0, ts2)]);
+    let ops = build_op_stream(&s, &cfg());
+    assert_eq!(ops.len(), 1, "two consecutive same-path edits must coalesce");
+    assert_eq!(ops[0].count, 2, "coalesced op must carry count=2");
+    assert_eq!(ops[0].kind, OpKind::Edit);
 }
 
 #[test]
-#[ignore = "phase 3 — op-stream not yet implemented"]
 fn edits_beyond_tolerance_remain_separate() {
-    // When implemented: push two edit ops separated by > range_merge_tolerance;
-    // assert two distinct intervals emerge.
-    let s = Suggestion::new(
-        ConfidenceBand::Medium,
-        Viability::Ready,
-        zero_score(),
-        vec![],
-        String::new(),
-    );
-    assert_eq!(s.version, 1);
+    // Two whole-file edits on different paths → not coalesced.
+    let ts1 = "2024-01-01T00:00:01Z";
+    let ts2 = "2024-01-01T00:00:02Z";
+    let s = session(vec![], vec![touch("a.rs", 0, 0, ts1), touch("b.rs", 0, 0, ts2)]);
+    let ops = build_op_stream(&s, &cfg());
+    assert_eq!(ops.len(), 2, "different-path edits must remain separate");
 }
 
 #[test]
-#[ignore = "phase 3 — op-stream not yet implemented"]
 fn edit_weight_bump_applied_to_coalesced_interval() {
-    // When implemented: assert coalesced edit intervals carry the
-    // `edit_weight_bump` factor used downstream in scoring.
-    let s = Suggestion::new(
-        ConfidenceBand::High,
-        Viability::Ready,
-        zero_score(),
+    // Coalesced Edit ops carry a count > 1 which the downstream scoring uses
+    // with `edit_weight_bump`.  Verify the count is preserved.
+    let ts1 = "2024-01-01T00:00:01Z";
+    let ts2 = "2024-01-01T00:00:02Z";
+    let ts3 = "2024-01-01T00:00:03Z";
+    let s = session(
         vec![],
-        String::new(),
+        vec![touch("foo.rs", 0, 0, ts1), touch("foo.rs", 0, 0, ts2), touch("foo.rs", 0, 0, ts3)],
     );
-    assert_eq!(s.version, 1);
+    let ops = build_op_stream(&s, &cfg());
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].count, 3, "count must reflect all coalesced edit events");
 }
