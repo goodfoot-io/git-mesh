@@ -9,11 +9,12 @@ jobs:
   build-cli:
     name: Build CLI (Rust)
     runs-on: ubuntu-latest
-    env:
-      GIT_MESH_CARGO_TARGET_ROOT: ${{ runner.temp }}/git-mesh-target
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set cargo target root
+        run: echo "GIT_MESH_CARGO_TARGET_ROOT=${RUNNER_TEMP}/git-mesh-target" >> "$GITHUB_ENV"
 
       - name: Install mold and clang
         run: sudo apt-get update && sudo apt-get install -y mold clang

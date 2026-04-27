@@ -50,7 +50,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           working-directory: packages/git-mesh
-          args: --release
+          args: --release --locked
 
       - name: Copy binary to npm package
         shell: bash
