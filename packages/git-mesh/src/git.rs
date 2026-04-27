@@ -240,6 +240,9 @@ pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitC
 
     let walk = repo
         .rev_walk([head_id])
+        .sorting(gix::revision::walk::Sorting::ByCommitTime(
+            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+        ))
         .all()
         .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
 
