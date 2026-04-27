@@ -70,6 +70,7 @@ yarn-error.log*
 
 .worktrees
 *.lock
+!Cargo.lock
 .devcontainer/home/
 
 # devcontainer ssh paste-in scripts
