@@ -3,9 +3,13 @@
 //! Public re-exports for the advice subsystem.
 
 pub mod candidates;
+pub mod detector;
 pub mod fingerprint;
+pub mod path_filter;
 pub mod render;
 pub mod session;
+pub mod suggest;
+pub mod suggestion;
 pub mod workspace_tree;
 
 pub use session::SessionStore;
@@ -21,6 +25,10 @@ pub use candidates::{
     detect_staging_cross_cut,
 };
 pub use fingerprint::fingerprint;
+pub use path_filter::is_acceptable_path;
+pub use detector::Detector;
+pub use suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
+pub use suggest::{SuggestConfig, SuggestDetector};
 
 /// Re-exported submodules for test access.
 pub mod state {

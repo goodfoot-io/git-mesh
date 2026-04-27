@@ -63,6 +63,10 @@ pub enum AdviceCommand {
         /// Paths (optionally range-qualified) to record as reads.
         paths: Vec<String>,
     },
+    /// Run the n-ary mesh suggestion detector and emit each suggestion as
+    /// one JSON line to stdout. Currently produces no output (detector stub).
+    #[command(hide = true)]
+    Suggest,
 }
 
 /// Top-level entry: dispatches to `snapshot`, `read`, or, when no
@@ -74,6 +78,7 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
         Some(AdviceCommand::Read { paths }) => {
             run_advice_read(repo, args.session_id, paths, args.snapshot_if_missing)
         }
+        Some(AdviceCommand::Suggest) => run_advice_suggest(),
         None => run_advice_render(
             repo,
             &args.session_id,
@@ -643,6 +648,41 @@ fn snapshot_into(
     store.write_baseline(&state)?;
 
     Ok(())
+}
+
+/// Run the n-ary mesh suggestion detector and emit each suggestion as one
+/// JSON line to stdout. Currently produces no output (detector returns
+/// `vec![]` until pipeline stages are implemented).
+fn run_advice_suggest() -> Result<i32> {
+    use crate::advice::suggest::{SuggestConfig, SuggestDetector};
+    use crate::advice::detector::Detector;
+    use crate::advice::candidates::{CandidateInput, StagingState};
+
+    let detector = SuggestDetector::new(SuggestConfig::default());
+
+    // Construct a minimal no-op CandidateInput — the detector stub ignores
+    // all fields and returns vec![], so there is no need for a live repo or
+    // advice store at this stage.
+    let input = CandidateInput {
+        session_delta: &[],
+        incr_delta: &[],
+        new_reads: &[],
+        touch_intervals: &[],
+        mesh_ranges: &[],
+        internal_path_prefixes: &[],
+        staging: StagingState {
+            adds: &[],
+            removes: &[],
+        },
+    };
+
+    let suggestions = detector.detect(&input);
+    for s in &suggestions {
+        let line = serde_json::to_string(s)
+            .map_err(|e| anyhow::anyhow!("serialize suggestion: {e}"))?;
+        println!("{line}");
+    }
+    Ok(0)
 }
 
 /// Capture the current workspace tree into the file-backed session store.
