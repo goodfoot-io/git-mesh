@@ -17,7 +17,7 @@ const MAX_LINE: usize = 200;
 
 // ── Reason-kind strings (mirrored from candidates::ReasonKind::as_str) ───────
 
-const REASON_NEW_GROUP: &str = "new_group";
+const REASON_NEW_MESH: &str = "new_mesh";
 const REASON_STAGING_CROSS_CUT: &str = "staging_cross_cut";
 const REASON_EMPTY_MESH: &str = "empty_mesh";
 
@@ -32,14 +32,14 @@ pub fn render(suggestions: &[Suggestion], new_doc_topics: &[String], documentati
 
     let mut blocks: Vec<String> = Vec::new();
 
-    // Partition into cross-cutting (NewGroup, StagingCrossCut, EmptyMesh) and
+    // Partition into cross-cutting (NewMesh, StagingCrossCut, EmptyMesh) and
     // per-mesh suggestions, mirroring the previous Candidate-based split.
     let (per_mesh_suggs, cross_cutting_suggs): (Vec<&Suggestion>, Vec<&Suggestion>) =
         suggestions.iter().partition(|s| {
             let reason = drift_reason(s);
             !matches!(
                 reason.as_deref(),
-                Some(REASON_NEW_GROUP) | Some(REASON_STAGING_CROSS_CUT) | Some(REASON_EMPTY_MESH)
+                Some(REASON_NEW_MESH) | Some(REASON_STAGING_CROSS_CUT) | Some(REASON_EMPTY_MESH)
             )
         });
 
@@ -271,7 +271,7 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
 
     let mut out = String::new();
     match meta.reason_kind.as_str() {
-        REASON_NEW_GROUP => {
+        REASON_NEW_MESH => {
             out.push_str("# Possible new mesh over:\n");
             out.push_str(&format!("# - {}\n", trigger_path));
             out.push_str(&format!("# - {}\n", partner_path));
@@ -613,9 +613,9 @@ pub(crate) fn topic_body(topic: &str) -> Option<&'static str> {
         "shrinking-ranges" => TOPIC_T4,
         "narrow-or-retire" => TOPIC_T5,
         "exported-symbols" => TOPIC_T6,
-        "recording-a-group" => TOPIC_T7,
+        "recording-a-mesh" => TOPIC_T7,
         "cross-mesh-overlap" => TOPIC_T8,
-        "empty-groups" => TOPIC_T9,
+        "empty-meshes" => TOPIC_T9,
         "terminal-states" => TOPIC_T11,
         _ => return None,
     })
@@ -664,7 +664,7 @@ fn render_hint_for_reason(reason: &str) -> Option<String> {
         "symbol_rename" => {
             "to re-record after a symbol rename, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
         }
-        "new_group" => {
+        "new_mesh" => {
             "to record a candidate mesh, run `git mesh add <mesh-name> <path-1> <path-2>`, set `git mesh why <mesh-name> -m \"...\"`, then `git mesh commit <mesh-name>`."
         }
         "staging_cross_cut" => {
@@ -1040,7 +1040,7 @@ mod tests {
     /// (L0, L1, L2), with or without --documentation. This covers the L1 excerpt
     /// branch (density >= 1) and the L2 command-lead-in branch (density == 2) in
     /// addition to the base L0 path.
-    /// Internal symbol names (REASON_NEW_GROUP, new_group, etc.) are not rendered to output.
+    /// Internal symbol names (REASON_NEW_MESH, new_mesh, etc.) are not rendered to output.
     #[test]
     fn no_group_word_in_rendered_output() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
@@ -1051,7 +1051,7 @@ mod tests {
             CRK::RangeCollapse,
             CRK::LosingCoherence,
             CRK::SymbolRename,
-            CRK::NewGroup,
+            CRK::NewMesh,
             CRK::StagingCrossCut,
             CRK::EmptyMesh,
             CRK::PendingCommit,

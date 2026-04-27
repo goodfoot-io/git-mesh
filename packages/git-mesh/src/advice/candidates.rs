@@ -43,8 +43,8 @@ pub enum ReasonKind {
     LosingCoherence,
     /// T6 symbol rename hits in partner.
     SymbolRename,
-    /// T7 new-group candidate.
-    NewGroup,
+    /// T7 new-mesh candidate.
+    NewMesh,
     /// T8 staging cross-cut.
     StagingCrossCut,
     /// T9 empty-mesh risk.
@@ -64,7 +64,7 @@ impl ReasonKind {
             ReasonKind::RangeCollapse => "range_collapse",
             ReasonKind::LosingCoherence => "losing_coherence",
             ReasonKind::SymbolRename => "symbol_rename",
-            ReasonKind::NewGroup => "new_group",
+            ReasonKind::NewMesh => "new_mesh",
             ReasonKind::StagingCrossCut => "staging_cross_cut",
             ReasonKind::EmptyMesh => "empty_mesh",
             ReasonKind::PendingCommit => "pending_commit",
@@ -80,9 +80,9 @@ impl ReasonKind {
             ReasonKind::RangeCollapse => Some("shrinking-ranges"),
             ReasonKind::LosingCoherence => Some("narrow-or-retire"),
             ReasonKind::SymbolRename => Some("exported-symbols"),
-            ReasonKind::NewGroup => Some("recording-a-group"),
+            ReasonKind::NewMesh => Some("recording-a-mesh"),
             ReasonKind::StagingCrossCut => Some("cross-mesh-overlap"),
-            ReasonKind::EmptyMesh => Some("empty-groups"),
+            ReasonKind::EmptyMesh => Some("empty-meshes"),
             ReasonKind::PendingCommit => None, // L0 — no topic
             ReasonKind::Terminal => Some("terminal-states"),
         }
@@ -602,8 +602,8 @@ pub fn detect_range_shrink(_input: &CandidateInput<'_>) -> Vec<Candidate> {
 // was removed in card main-13 slice 2. New-mesh recommendations are now produced
 // n-ary and line-bounded by the `advice::suggest::run_suggest_pipeline` and
 // folded into the user-facing render in `cli::advice::run_advice_render`.
-// `ReasonKind::NewGroup` is intentionally retained for now — slice 3 will rename
-// it to `NewMesh` as part of the mesh-terminology audit (card outcome 5).
+// `ReasonKind::NewMesh` carries the n-ary mesh recommendations (card main-13
+// outcomes 3/5).
 
 /// Emit `StagingCrossCut`/`EmptyMesh` for `staging.adds`/`staging.removes`
 /// vs `mesh_ranges`.
@@ -852,15 +852,6 @@ mod tests {
             path: path.to_string(),
             start_line: Some(start),
             end_line: Some(end),
-            ts: "2026-01-01T00:00:00Z".to_string(),
-        }
-    }
-
-    fn make_touch(path: &str, start: u32, end: u32) -> TouchInterval {
-        TouchInterval {
-            path: path.to_string(),
-            start_line: start,
-            end_line: end,
             ts: "2026-01-01T00:00:00Z".to_string(),
         }
     }

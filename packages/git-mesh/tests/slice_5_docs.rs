@@ -159,7 +159,7 @@ fn t6_topic_block_renders_verbatim() {
 
 #[test]
 fn t7_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_suggestion()], &["recording-a-group".into()], true);
+    let out = render::render(&[l1_suggestion()], &["recording-a-mesh".into()], true);
     assert!(out.contains("# These files move together: the session has touched them together and"));
     assert!(out.contains("# Record:"));
     assert!(out.contains("#   git mesh add <mesh-name> <path-1> <path-2> [...]"));
@@ -176,7 +176,7 @@ fn t8_topic_block_renders_verbatim() {
 
 #[test]
 fn t9_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_suggestion()], &["empty-groups".into()], true);
+    let out = render::render(&[l1_suggestion()], &["empty-meshes".into()], true);
     assert!(out.contains("# The staged removal would leave this mesh with no ranges."));
     assert!(out.contains("#   git mesh add    <name> <path>[#L<s>-L<e>]"));
     assert!(out.contains("#   git mesh delete <name>"));
