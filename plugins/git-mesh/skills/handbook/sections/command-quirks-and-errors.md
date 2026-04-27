@@ -15,7 +15,7 @@ git mesh commit <name>
 
 This only applies to the *first* commit of a mesh. Later commits inherit the previous why automatically.
 
-## A staged range drifted from the worktree
+## A staged anchor drifted from the worktree
 
 Not an error — it's feedback. `git mesh stale` reports the staged `add` with a `drift` note when the sidecar bytes no longer match current content. Re-stage to refresh the sidecar:
 
@@ -27,7 +27,7 @@ The later `add` supersedes the earlier one (last-write-wins). No `restore` or `r
 
 ## Re-anchoring — same extent vs new span
 
-Same `(path, extent)` with new bytes: just `git mesh add` again. Different line span: `git mesh rm` old, `git mesh add` new. Overlapping but non-identical ranges (e.g. `#L1-L10` and `#L5-L15`) are allowed and coexist.
+Same `(path, extent)` with new bytes: just `git mesh add` again. Different line span: `git mesh rm` old, `git mesh add` new. Overlapping but non-identical anchors (e.g. `#L1-L10` and `#L5-L15`) are allowed and coexist.
 
 ## `SidecarTampered` in `doctor` or `stale`
 
@@ -50,7 +50,7 @@ To keep `--all` and only quiet decoration on mesh commits (they still appear in 
 git config log.excludeDecoration refs/meshes/*
 ```
 
-Range refs point at blobs, so log traversal does not walk them as commit history regardless.
+Anchor refs point at blobs, so log traversal does not walk them as commit history regardless.
 
 ## Missing remote mesh data
 
@@ -62,4 +62,4 @@ If the remote lacks refspecs, `git mesh fetch` or `git mesh push` bootstraps the
 
 ## `git mesh doctor`
 
-Repository-health check, not a semantic-drift check. Verifies hooks, staging files, refspecs, range references, dangling range refs, and the file index. Regenerates `.git/mesh/file-index` if missing or corrupt. Run it when local behavior looks wrong or in a developer setup step.
+Repository-health check, not a semantic-drift check. Verifies hooks, staging files, refspecs, anchor references, dangling anchor refs, and the file index. Regenerates `.git/mesh/file-index` if missing or corrupt. Run it when local behavior looks wrong or in a developer setup step.

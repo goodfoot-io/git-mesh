@@ -111,8 +111,8 @@ fn whole_file_read_routes_to_other_ranges_in_each_mesh() -> Result<()> {
         "got:\n{stdout}"
     );
     assert!(
-        stdout.contains("# triggered by file1.txt"),
-        "got:\n{stdout}"
+        !stdout.contains("# triggered by"),
+        "triggered-by line must not be emitted; got:\n{stdout}"
     );
     assert!(stdout.contains("# - file1.txt#L5-L6"), "got:\n{stdout}");
     assert!(stdout.contains("# - file2.txt#L1-L2"), "got:\n{stdout}");
@@ -141,8 +141,8 @@ fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
         "got:\n{stdout}"
     );
     assert!(
-        stdout.contains("# triggered by file1.txt"),
-        "got:\n{stdout}"
+        !stdout.contains("# triggered by"),
+        "triggered-by line must not be emitted; got:\n{stdout}"
     );
     assert!(stdout.contains("# - file2.txt#L1-L5"), "got:\n{stdout}");
     assert!(
@@ -284,8 +284,8 @@ fn dedup_new_trigger() -> Result<()> {
     ok(&run_advice(&repo, &s, &["read", "file2.txt"])?);
     let third = render(&repo, &s, &[])?;
     assert!(
-        !third.is_empty(),
-        "new trigger must re-surface partners; got empty"
+        third.is_empty(),
+        "mesh already surfaced this session must not re-surface on a new trigger; got:\n{third}"
     );
     Ok(())
 }

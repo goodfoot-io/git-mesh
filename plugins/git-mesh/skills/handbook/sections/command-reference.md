@@ -1,9 +1,9 @@
 # Command reference
 
-## Range grammar
+## Anchor grammar
 
-- **Line range**: `<path>#L<start>-L<end>` — 1-based, inclusive.
-- **Whole file**: `<path>` alone — no `#L…` suffix. See `./whole-file-and-lfs.md`.
+- **Line-range anchor**: `<path>#L<start>-L<end>` — 1-based, inclusive.
+- **Whole-file anchor**: `<path>` alone — no `#L…` suffix. See `./whole-file-and-lfs.md`.
 
 ## Reading
 
@@ -25,8 +25,8 @@ git mesh stale [<name>] [--ignore-unavailable] [--no-exit-code]
 ## Staging and committing
 
 ```bash
-git mesh add <name> <range>... [--at <commit-ish>]
-git mesh rm  <name> <range>...
+git mesh add <name> <anchor>... [--at <commit-ish>]
+git mesh rm  <name> <anchor>...
 git mesh why <name>                                 # print current why
 git mesh why <name> [--at <commit-ish>]             # print historical why
 git mesh why <name> [-m <text>|-F <file>|--edit]    # stage a new why

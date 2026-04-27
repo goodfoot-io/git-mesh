@@ -8,7 +8,7 @@ git mesh fetch
 
 ## List all meshes
 
-One line per mesh: name, tip commit, range count.
+One line per mesh: name, tip commit, anchor count.
 
 ```bash
 git mesh
@@ -57,9 +57,9 @@ git mesh <name> --format='%(ranges:count)'
 git mesh <name> --format='%(config:copy-detection)'
 ```
 
-## Find meshes touching a file or range
+## Find meshes touching a file or anchor
 
-Overlap semantics — a mesh range appears if it touches any queried line.
+Overlap semantics — a mesh anchor appears if it touches any queried line.
 
 ```bash
 git mesh ls
@@ -74,4 +74,4 @@ A mesh ref does not exist until `git mesh commit <name>` succeeds once. Before t
 - **`git mesh stale`** (no name) — workspace scan; shows staged ops for the not-yet-committed mesh in the trailing "staged mesh ops" section.
 - **`git mesh stale <new-name>`** — errors: mesh ref not found.
 - **`git mesh <new-name>`** — errors: mesh ref not found.
-- **`git mesh ls`** — use to confirm which ranges are staged so far.
+- **`git mesh ls`** — use to confirm which anchors are staged so far.

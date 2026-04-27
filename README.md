@@ -1,7 +1,7 @@
 # git-mesh
 
 `git-mesh` is a Rust CLI for recording durable relationships between exact
-line ranges in a Git repository. It stores mesh metadata in Git refs so teams
+anchors in a Git repository. It stores mesh metadata in Git refs so teams
 can review, fetch, push, and audit those relationships alongside the code they
 describe.
 
@@ -64,15 +64,15 @@ exit 1 when drift is found, exit 0 with `--no-exit-code`. The
 | `%ad` | Author date (RFC 2822) | per commit |
 | `%ar` | Author date, relative | per commit |
 | `%s` | Subject (first line of message) | per commit |
-| `%p` | Range path | per range |
-| `%r` | Range extent (`#L<s>-L<e>`, empty for whole-file) | per range |
-| `%P` | Path + extent (`path#L<s>-L<e>`, or just path for whole-file) | per range |
-| `%a` | Anchor SHA (full 40 chars) | per range |
-| `%A` | Anchor SHA (8-char abbrev; full with `--no-abbrev`) | per range |
+| `%p` | Anchor path | per anchor |
+| `%r` | Anchor extent (`#L<s>-L<e>`, empty for whole-file) | per anchor |
+| `%P` | Path + extent (`path#L<s>-L<e>`, or just path for whole-file) | per anchor |
+| `%a` | Anchor SHA (full 40 chars) | per anchor |
+| `%A` | Anchor SHA (8-char abbrev; full with `--no-abbrev`) | per anchor |
 | `%%` | Literal `%` | — |
 | `%n` | Newline | — |
 
-When any per-range placeholder is present in the format string, one output line is emitted per range. Otherwise, one line is emitted per mesh commit. Unknown placeholders are rejected with exit code 2.
+When any per-anchor placeholder is present in the format string, one output line is emitted per anchor. Otherwise, one line is emitted per mesh commit. Unknown placeholders are rejected with exit code 2.
 
 ## VS Code Extension
 

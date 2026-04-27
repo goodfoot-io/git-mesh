@@ -32,7 +32,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-mesh",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A mesh anchors the line ranges (or whole files) — in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that names the relationship between them in one sentence: what they form, what one promises, what one governs, what one cites.\n\nBare invocations:\n  git mesh                 list every mesh in the repo\n  git mesh <name>          show one mesh (ranges, why, config)"
+    after_help = "A mesh holds the anchors — line-range or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that names the relationship between them in one sentence: what they form, what one promises, what one governs, what one cites.\n\nBare invocations:\n  git mesh                 list every mesh in the repo\n  git mesh <name>          show one mesh (anchors, why, config)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -48,27 +48,27 @@ pub enum Commands {
     #[command(name = "show", hide = true)]
     Show(ShowArgs),
 
-    /// List files and ranges currently tracked by a mesh.
+    /// List files and anchors currently tracked by a mesh.
     Ls(LsArgs),
 
-    /// Report ranges whose content has drifted from their anchored state.
+    /// Report anchors whose content has drifted from their anchored state.
     Stale(StaleArgs),
 
-    /// Stage ranges to add on the next mesh commit.
+    /// Stage anchors to add on the next mesh commit.
     Add(AddArgs),
 
-    /// Stage ranges to remove on the next mesh commit.
+    /// Stage anchors to remove on the next mesh commit.
     Rm(RmArgs),
 
     /// Read or stage the mesh's why — the durable one-sentence
-    /// definition of the relationship the anchored ranges hold.
+    /// definition of the relationship the anchors hold.
     ///
-    /// Name the relationship: what the ranges form together, what
+    /// Name the relationship: what the anchors form together, what
     /// one promises, what one governs, what one cites. Write it so
     /// it survives a rewrite of either side. The why is prose: the
     /// mesh name carries the label, so don't restate the name as a
     /// prefix or use a git-style leading keyword (`contract:`,
-    /// `spec:`, `gov:`). The ranges carry the paths; describe the
+    /// `spec:`, `gov:`). The anchors carry the paths; describe the
     /// relationship in role-words ("the doc," "the parser," "the
     /// runbook," "the migration") rather than repeating filenames.
     /// Name a path only when the path itself is part of the
@@ -97,19 +97,19 @@ pub enum Commands {
     /// Fast-forward a mesh to a past state.
     Revert(RevertArgs),
 
-    /// Delete a mesh ref.
+    /// Delete a mesh.
     Delete(DeleteArgs),
 
-    /// Rename a mesh ref.
+    /// Rename a mesh.
     Mv(MvArgs),
 
     /// Read or stage mesh-level resolver options.
     Config(ConfigArgs),
 
-    /// Fetch mesh and range refs from a remote.
+    /// Fetch mesh and anchor refs from a remote.
     Fetch(FetchArgs),
 
-    /// Push mesh and range refs to a remote.
+    /// Push mesh and anchor refs to a remote.
     Push(PushArgs),
 
     /// Audit the local mesh setup.
@@ -131,7 +131,7 @@ pub struct ShowArgs {
     /// every mesh).
     pub name: String,
 
-    /// One line per Range, no commit header.
+    /// One line per anchor, no commit header.
     #[arg(long)]
     pub oneline: bool,
 
@@ -146,9 +146,9 @@ pub struct ShowArgs {
     ///   %ar  author date, relative
     ///   %s   subject (first line of message)
     ///
-    /// Per-range (one line per range when any of these is present):
-    ///   %p   range path
-    ///   %r   range extent (#L<start>-L<end>, or empty for whole-file)
+    /// Per-anchor (one line per anchor when any of these is present):
+    ///   %p   anchor path
+    ///   %r   anchor extent (#L<start>-L<end>, or empty for whole-file)
     ///   %P   path + extent (path#L<start>-L<end>, or just path for whole-file)
     ///   %a   anchor SHA (full 40 chars)
     ///
@@ -222,7 +222,7 @@ pub struct StaleArgs {
     #[arg(long, conflicts_with_all = ["stat", "patch"])]
     pub oneline: bool,
 
-    /// Per-range summary with line counts added/removed relative to the anchor.
+    /// Per-anchor summary with line counts added/removed relative to the anchor.
     #[arg(long, conflicts_with_all = ["oneline", "patch"])]
     pub stat: bool,
 
@@ -230,7 +230,7 @@ pub struct StaleArgs {
     #[arg(long, conflicts_with_all = ["oneline", "stat"])]
     pub patch: bool,
 
-    /// Only ranges anchored at or after this commit.
+    /// Only anchors recorded at or after this commit.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub since: Option<String>,
 }
@@ -254,12 +254,12 @@ pub struct AddArgs {
         required = true,
         trailing_var_arg = false,
         allow_hyphen_values = false,
-        help = "One or more targets to stage (<path> for whole-file, or <path>#L<start>-L<end> for line range)",
-        long_help = "One or more targets to stage. Each is either:\n  <path>                       whole-file pin\n  <path>#L<start>-L<end>       line range (1-indexed, inclusive)\n\nExample: git mesh add api-contract src/api.ts#L1-L3 tests/api.test.ts"
+        help = "One or more anchors to stage (<path> for whole-file, or <path>#L<start>-L<end> for line-range)",
+        long_help = "One or more anchors to stage. Each is either:\n  <path>                       whole-file anchor\n  <path>#L<start>-L<end>       line-range anchor (1-indexed, inclusive)\n\nExample: git mesh add api-contract src/api.ts#L1-L3 tests/api.test.ts"
     )]
     pub ranges: Vec<String>,
 
-    /// Anchor every staged range in this invocation at `<commit-ish>`.
+    /// Anchor every staged anchor in this invocation at `<commit-ish>`.
     /// Default is HEAD resolved at commit time.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
@@ -270,8 +270,8 @@ pub struct RmArgs {
     /// Mesh to stage the removal into.
     pub name: String,
 
-    /// Range(s) to remove, as `<path>` or `<path>#L<start>-L<end>`
-    /// (must match an existing range on the mesh).
+    /// Anchor(s) to remove, as `<path>` or `<path>#L<start>-L<end>`
+    /// (must match an existing anchor on the mesh).
     #[arg(required = true)]
     pub ranges: Vec<String>,
 }
@@ -286,11 +286,11 @@ pub struct RmArgs {
 pub struct WhyArgs {
     /// Mesh whose why text to read (no writer flag) or stage
     /// (`-m` / `-F` / `--edit`). The why names the relationship the
-    /// anchored ranges hold.
+    /// anchors hold.
     pub name: String,
 
     /// Inline why text (`-m "..."`). Writer flag. One sentence
-    /// naming the relationship the ranges hold; stable across
+    /// naming the relationship the anchors hold; stable across
     /// implementation churn at either anchor.
     #[arg(short = 'm', value_name = "MSG")]
     pub m: Option<String>,
@@ -390,23 +390,23 @@ pub struct DoctorArgs {
     pub strict: bool,
 }
 
-/// Parse a `<path>#L<start>-L<end>` range address.
+/// Parse a `<path>#L<start>-L<end>` anchor address.
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
 /// concern — the library side takes already-split `(path, start, end)`
 /// arguments.
 pub fn parse_range_address(text: &str) -> anyhow::Result<(String, u32, u32)> {
     let (path, fragment) = text.split_once("#L").ok_or_else(|| {
-        anyhow::anyhow!("invalid range `{text}`; expected <path>#L<start>-L<end>")
+        anyhow::anyhow!("invalid anchor `{text}`; expected <path>#L<start>-L<end>")
     })?;
     let (start, end) = fragment.split_once("-L").ok_or_else(|| {
-        anyhow::anyhow!("invalid range `{text}`; expected <path>#L<start>-L<end>")
+        anyhow::anyhow!("invalid anchor `{text}`; expected <path>#L<start>-L<end>")
     })?;
-    anyhow::ensure!(!path.is_empty(), "range path cannot be empty");
+    anyhow::ensure!(!path.is_empty(), "anchor path cannot be empty");
     let start: u32 = start.parse()?;
     let end: u32 = end.parse()?;
-    anyhow::ensure!(start >= 1, "range start must be at least 1");
-    anyhow::ensure!(end >= start, "range end must be at least start");
+    anyhow::ensure!(start >= 1, "anchor start must be at least 1");
+    anyhow::ensure!(end >= start, "anchor end must be at least start");
     Ok((path.to_string(), start, end))
 }
 

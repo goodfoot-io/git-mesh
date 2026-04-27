@@ -357,7 +357,7 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
                 out.push(DoctorFinding {
                     code: DoctorCode::OrphanRangeRef,
                     severity: Severity::Error,
-                    message: format!("mesh `{name}` references missing range `{id}`"),
+                    message: format!("mesh `{name}` references missing anchor `{id}`"),
                     remediation: Some(remediation),
                 });
             }
@@ -383,7 +383,7 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
             out.push(DoctorFinding {
                 code: DoctorCode::DanglingRangeRef,
                 severity: Severity::Info,
-                message: format!("dangling range ref at {descriptor} is not referenced by any mesh"),
+                message: format!("dangling anchor ref at {descriptor} is not referenced by any mesh"),
                 remediation: Some(
                     "harmless pending `git gc`; delete with `git update-ref -d` if intended".into(),
                 ),

@@ -13,12 +13,12 @@ the underlying signal is.
 existing mesh reads — `stale`, `ls`, `why`, `git mesh <name>` — into
 routing for a developer mid-edit. Where `stale` answers "do anchored
 bytes still match reality?", `advice` answers "given what just moved,
-which mesh ranges deserve my attention right now, and what does each
+which mesh anchors deserve my attention right now, and what does each
 mesh's why say about why I should care?" Every line of advice output
 is something the developer could have reconstructed by hand from those
 reads; the value is timing, ordering, and suppression, not new data.
 
-## 1. The news is the partner, never the developer's own action
+## 1. The news is the other anchors in the mesh, never the developer's own action
 
 The developer already knows what they just edited. Advice exists to
 point them at the *related* anchor — code or prose — on the other
@@ -30,18 +30,18 @@ never as the headline.
 
 A reader who has never heard of `git mesh` should still understand the
 default output. The mesh name, the one-sentence why describing the
-relationship the ranges hold, and the ranges themselves should carry
+relationship the anchors hold, and the anchors themselves should carry
 the signal on their own. Anything beyond that appears only when the
 basics cannot speak for themselves.
 
 ## 3. Surface consequences, not prescriptions
 
-Advice describes what is now true across the repo: a range is
+Advice describes what is now true across the repo: an anchor is
 `CHANGED`, two files keep moving together, a reference still points at
 an old name. It does not scold or guess intent. A concrete next step
 is offered only when the action is unambiguous. The canonical example
 is suggesting a mesh definition be extended — a `git mesh add ...`
-range pair, optionally a `git mesh why ...` — once a co-change
+anchor pair, optionally a `git mesh why ...` — once a co-change
 pattern crosses the confidence threshold. Other allowed steps:
 mechanical rewrites with a uniquely determined target, a specific
 `git mesh` read command with concrete arguments, a read operation
@@ -102,9 +102,9 @@ zero. Silence is the answer. Explanatory prose for a concept appears
 only when a finding escalates toward a recommendation, and only on
 the first such appearance within a session; subsequent surfacings of
 the same concept rely on the mesh name and the mesh's own why. A
-mesh's why is one prose sentence naming the relationship the ranges
+mesh's why is one prose sentence naming the relationship the anchors
 hold in role-words ("the doc," "the parser," "the runbook") — no
-filenames the ranges already carry, no leading keywords like
+filenames the anchors already carry, no leading keywords like
 `contract:` or `spec:`, no scolding — short, stable across
 implementation churn at either anchor, and load-bearing; advice
 prints it verbatim with every appearance of that mesh and is not

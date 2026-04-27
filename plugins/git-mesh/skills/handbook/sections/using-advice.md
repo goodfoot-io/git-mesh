@@ -1,6 +1,6 @@
 # Using `git mesh advice`
 
-Advice is a session-scoped stream that surfaces the implicit semantic dependencies a developer crosses while working. Each render emits one candidate per coupling crossed since the last flush — a mesh range read, a partner that drifted under an edit, a rename that broke an anchored path, sibling ranges co-touched in the session, staging that cuts across the mesh — and carries the mesh's why so the developer reads what relationship the anchored ranges hold at the moment they're stepping on it. The partner the candidate routes to may be code or prose: an ADR section, a contract clause, a runbook step, an API doc are normal advice partners.
+Advice is a session-scoped stream that surfaces the implicit semantic dependencies a developer crosses while working. Each render emits one candidate per coupling crossed since the last flush — a mesh anchor read, a related anchor that drifted under an edit, a rename that broke an anchored path, sibling anchors co-touched in the session, staging that cuts across the mesh — and carries the mesh's why so the developer reads what relationship the anchors hold at the moment they're stepping on it. The related anchor the candidate routes to may be code or prose: an ADR section, a contract clause, a runbook step, an API doc are normal advice targets.
 
 Advice is observation, not enforcement. It doesn't gate commits and doesn't run in CI. Drift gating belongs to `git mesh stale` and the `pre-commit` subcommand; advice is the *during-work* surface that shows the developer which dependencies they've touched.
 
@@ -21,7 +21,7 @@ git mesh advice my-session read web/checkout.tsx#L88-L120 api/charge.ts
 git mesh advice my-session
 ```
 
-Each bare render advances the last-flush state, so the next render only surfaces couplings crossed *since* this one. Candidates already shown in the session are suppressed by their fingerprint; whole-file pins reflect blob ids so successive edits to the same meshed file resurface partner routing instead of being suppressed by content-blind fingerprints.
+Each bare render advances the last-flush state, so the next render only surfaces couplings crossed *since* this one. Candidates already shown in the session are suppressed by their fingerprint; whole-file pins reflect blob ids so successive edits to the same meshed file resurface routing to the other anchors in the mesh instead of being suppressed by content-blind fingerprints.
 
 ## Required baseline
 
@@ -45,13 +45,13 @@ Use this when a developer or agent is new to advice output and needs the per-rea
 
 ## Reading candidates
 
-Candidates surface five kinds of crossing — read-intersects-mesh, delta-intersects-mesh, partner drift, rename consequence, range shrink, session co-touch, and staging cross-cut. Markers and routing are documented in `./reading-stale-output.md`; the dependency-level question advice answers is "which coupling did I just touch?" — and the answer is the mesh's why, rendered alongside the affected ranges.
+Candidates surface five kinds of crossing — read-intersects-mesh, delta-intersects-mesh, related-anchor drift, rename consequence, anchor shrink, session co-touch, and staging cross-cut. Markers and routing are documented in `./reading-stale-output.md`; the dependency-level question advice answers is "which coupling did I just touch?" — and the answer is the mesh's why, rendered alongside the affected anchors.
 
 When a candidate fires:
 
-- **Read or open the partner range** the candidate routes to. The path+range plus the relationship description is usually enough; the partner file (code or prose) shows the rest. If the partner is a doc section, the why says what the doc promises or governs and the section spells out the contract.
-- **If the why doesn't match what the partner currently does**, the dependency has drifted out of the why. Update the why (`git mesh why <name> -m …`) as part of the same change.
-- **If the why is fine but the ranges drifted**, see `./responding-to-drift.md`.
+- **Read or open the related anchor** the candidate routes to. The anchor address plus the relationship description is usually enough; the related file (code or prose) shows the rest. If the related anchor is a doc section, the why says what the doc promises or governs and the section spells out the contract.
+- **If the why doesn't match what the related anchor currently does**, the dependency has drifted out of the why. Update the why (`git mesh why <name> -m …`) as part of the same change.
+- **If the why is fine but the anchors drifted**, see `./responding-to-drift.md`.
 
 ## Common quirks
 
@@ -65,5 +65,5 @@ Advice is the right surface when the question is "which dependencies have I touc
 
 Advice is the wrong surface for:
 - **Drift gating.** Use `git mesh stale` and `git mesh pre-commit`.
-- **Authoring decisions** (re-anchor, fix partner, update why). Advice points at the coupling; `./responding-to-drift.md` covers what to do.
+- **Authoring decisions** (re-anchor, fix the related anchor, update why). Advice points at the coupling; `./responding-to-drift.md` covers what to do.
 - **Cross-developer signal**. Sessions are local; advice does not aggregate across machines.

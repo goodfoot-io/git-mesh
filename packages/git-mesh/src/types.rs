@@ -171,7 +171,7 @@ pub struct MeshResolved {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A range ref `refs/ranges/v1/<id>` does not exist (§3.1).
-    #[error("range not found: {0}")]
+    #[error("anchor not found: {0}")]
     RangeNotFound(String),
 
     /// A mesh ref `refs/meshes/v1/<name>` does not exist (§3.1).
@@ -189,7 +189,7 @@ pub enum Error {
     // the dedup-pass implementation slice.
     /// `start` is not >= 1, or `end` < `start`, or the line range is
     /// outside the file's line count at the anchor commit (§6.1).
-    #[error("invalid range: start={start} end={end}")]
+    #[error("invalid anchor: start={start} end={end}")]
     InvalidRange { start: u32, end: u32 },
 
     /// On-disk record could not be parsed (range blob, ranges file,
@@ -244,7 +244,7 @@ pub enum Error {
     ConfigNoOp { key: String, value: String },
 
     /// Range address `<path>#L<start>-L<end>` could not be parsed (§10.3).
-    #[error("invalid range address: {0}")]
+    #[error("invalid anchor address: {0}")]
     InvalidRangeAddress(String),
 
     /// Path lookup in a tree failed (§6.1 step 2).
@@ -253,7 +253,7 @@ pub enum Error {
 
     /// Mesh staged operation references a `(path, start, end)` not
     /// present in the current mesh (§6.2 step 3).
-    #[error("range not in mesh: {path}#L{start}-L{end}")]
+    #[error("anchor not in mesh: {path}#L{start}-L{end}")]
     RangeNotInMesh { path: String, start: u32, end: u32 },
 
     /// A path's `.gitattributes` resolves to a `filter=<name>` driver

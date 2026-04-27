@@ -42,7 +42,7 @@ git mesh stale --since "$base" \
   --format=github-actions
 ```
 
-`--since` limits findings to ranges anchored on the current branch. `--format=github-actions` emits annotations for GitHub Actions; `junit` and `json` are also available.
+`--since` limits findings to anchors recorded on the current branch. `--format=github-actions` emits annotations for GitHub Actions; `junit` and `json` are also available.
 
 ## Full repository audit (scheduled)
 

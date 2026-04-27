@@ -20,7 +20,7 @@ use crate::types::{
 use anyhow::Result;
 use std::collections::HashSet;
 
-const RESOLUTION_HINT: &str = "hint: re-anchor with `git mesh rm <name> <range>` and `git mesh add <name> <new-range>`,\n      or `git mesh mv <name> <new-name>` if the path moved, or revert the change.";
+const RESOLUTION_HINT: &str = "hint: re-anchor with `git mesh rm <name> <anchor>` and `git mesh add <name> <new-anchor>`,\n      or `git mesh mv <name> <new-name>` if the path moved, or revert the change.";
 
 pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32> {
     let options = EngineOptions {

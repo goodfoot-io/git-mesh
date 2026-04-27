@@ -101,7 +101,7 @@ fn second_render_suppresses_same_partner() -> Result<()> {
 }
 
 #[test]
-fn new_trigger_resurfaces_partner() -> Result<()> {
+fn new_trigger_does_not_resurface_already_seen_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "dd2", "file1.txt", 1, 5, None)?;
@@ -118,11 +118,12 @@ fn new_trigger_resurfaces_partner() -> Result<()> {
     let out = run_advice(&repo, &s, &[])?;
     ok(&out);
     let stdout = String::from_utf8(out.stdout)?;
-    // A new read of the partner side must produce a new candidate
-    // (different trigger path → distinct fingerprint).
+    // A mesh surfaces at most once per advice session: even though the new
+    // read of the partner side would otherwise produce a fresh candidate,
+    // the mesh has already been announced so the render must stay silent.
     assert!(
-        !stdout.is_empty(),
-        "new trigger must re-surface partners; got empty"
+        stdout.is_empty(),
+        "mesh already seen this session must not re-surface; got:\n{stdout}"
     );
     Ok(())
 }

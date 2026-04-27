@@ -2,9 +2,7 @@
 
 ## Should this be a mesh?
 
-A mesh names an **implicit semantic dependency**: a coupling between line ranges (or whole files), in code or prose, that is real, that the developer at one anchor needs to know about when touching the other, and that no schema, type, or test already enforces. The standing question at commit time: *did this change create or rely on a coupling that isn't visible from the lines themselves?*
-
-The sharpest test: **if you can't name the wrong decision a reader of one anchor would make under deadline when the other changes silently, it's a link, not a mesh.** ("Read this when changing X" isn't a wrong decision; "ship a broken integration," "mishandle an incident," "violate the contract" are.)
+A mesh names an **implicit semantic dependency**: a coupling between anchors (line-range anchors or whole-file anchors), in code or prose, that is real, that the developer at one anchor needs to know about when touching the other, and that no schema, type, or test already enforces. The standing question at commit time: *did this change create or rely on a coupling that isn't visible from the lines themselves?*
 
 Good candidates (a deliberate mix of code↔code, code↔prose, and prose↔prose):
 - Request construction in a client and request parsing in a server
@@ -23,29 +21,29 @@ Skip when:
 - A build step regenerates one side from the other perfectly and the regen is not itself the dependency.
 - **The prose is purely descriptive of code that is itself the source of truth** — a tutorial paragraph, a README walkthrough, a code-comment paraphrased into a doc. Reach for a mesh only when the prose is *load-bearing*: someone reads it and acts on it (a contract, a normative spec, a published API promise, a runbook a responder follows under pressure).
 - The dependency isn't path-addressable (production data shape, external service config, runtime db state). Document those somewhere with a different shape.
-- The ranges would just be a note to self better written as a commit message or PR comment.
+- The anchors would just be a note to self better written as a commit message or PR comment.
 
 ## Naming
 
 Kebab-case slug that names the *relationship*, not either side, optionally prefixed by a category: `<category>/<slug>`. The slug should still fit if either anchor is rewritten.
 
-- For ranges that form a thing together, name what they form: `checkout-request-flow`, `tier-rollout`, `auth-token`, `rate-limits`.
+- For anchors that form a thing together, name what they form: `checkout-request-flow`, `tier-rollout`, `auth-token`, `rate-limits`.
 - For one side that promises or governs the other, name the contract or rule: `charge-request-contract`, `uuidv4-lex-order`, `p1-payment-runbook`.
 - For prose-to-prose citations or summaries, name what's being kept in sync: `architecture-summary-sync`, `threat-model-controls-link`.
 - Avoid naming after one anchor (`charge-ts-deps`, `adr-0017-impl`); the slug should survive a rename or rewrite of either side.
 - **Load the label into the name, not the why.** A descriptive slug (`charge-request-contract`, `uuidv4-lex-order`, `p1-payment-runbook`) lets the why be plain prose about the relationship instead of having to label itself.
 - Add a category prefix (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`) when the repo spans multiple domains or teams.
 - Avoid `misc`, `john-work`, `temp`, `frontend`.
-- One relationship per mesh. If ranges split into two reasons to change together, create two meshes.
+- One relationship per mesh. If anchors split into two reasons to change together, create two meshes.
 
 ## Writing the why
 
-**One rule:** name the relationship the ranges hold in one prose sentence, written so it survives a rewrite of either side.
+**One rule:** name the relationship the anchors hold in one prose sentence, written so it survives a rewrite of either side.
 
 The reader opens the files to see the mechanism for themselves; the why's job is to orient them, not to pre-chew the answer. Three style rules follow:
 
 - **The mesh name carries the label.** The why is prose; don't restate the name as a prefix or use a git-style leading keyword (`contract:`, `spec:`, `gov:`, `note:`). If the why's first words restate the name, drop them.
-- **The ranges carry the paths.** Describe the relationship in role-words — "the doc," "the parser," "the client," "the runbook," "the responder," "the migration" — rather than repeating filenames. A why without filenames survives a rename. Name a path only when the path itself is part of the dependency (a hard-coded script reference, a generated file invoked by name). External proper nouns the ranges don't carry (vendor names like `Stripe`, system names like `Kafka`) are fine.
+- **The anchors carry the paths.** Describe the relationship in role-words — "the doc," "the parser," "the client," "the runbook," "the responder," "the migration" — rather than repeating filenames. A why without filenames survives a rename. Name a path only when the path itself is part of the dependency (a hard-coded script reference, a generated file invoked by name). External proper nouns the anchors don't carry (vendor names like `Stripe`, system names like `Kafka`) are fine.
 - **Sharpen the role-words when one side isn't enough.** The point of role-words is disambiguation, not minimalism. When both anchors are prose ("the doc" applies to both) or both are code ("the handler" applies to both), reach for sharper role-words — "the threat entry" and "the paired control," "the request doc" and "the parser," "the runbook step" and "the alert handler" — before falling back to filenames. If one role-word genuinely covers both sides, the why isn't yet specific enough.
 - **For asymmetric relationships, name which side is normative in prose.** "The doc is the source of truth when they disagree." "X promises the shape Y honors." "X governs the assumption Y relies on." Don't smuggle this in as a category prefix.
 
@@ -62,7 +60,7 @@ git mesh why billing/charge-request-contract \
 git mesh why platform/uuidv4-lex-order \
   -m "An ADR governs the v4 lex-order assumption the joiner relies on for cross-service joins."
 
-# BAD — restates the name as a prefix, repeats filenames already in the ranges, embeds incidental implementation, scolds, or bundles metadata
+# BAD — restates the name as a prefix, repeats filenames already in the anchors, embeds incidental implementation, scolds, or bundles metadata
 git mesh why billing/charge-request-contract -m "Contract: docs/api/charge.md states the body shape api/charge.ts parses."
 git mesh why billing/charge-request-contract -m "docs/api/charge.md states the body shape api/charge.ts parses."
 git mesh why billing/checkout-request-flow -m "Browser POST body — strict parser, field names load-bearing."
@@ -74,7 +72,7 @@ git mesh why billing/checkout-request-flow -m "Charge flow. Owner: team-billing.
 
 The "name the relationship" rule is enough most of the time. If you're stuck, try one of these framings — they are scaffolding, not categories the writer has to pick before starting:
 
-- **Subsystem** — symmetric co-implementation: the ranges *together* form a thing. *Checkout request flow across client and server.*
+- **Subsystem** — symmetric co-implementation: the anchors *together* form a thing. *Checkout request flow across client and server.*
 - **Specification** — asymmetric: one side is the source of truth, the other must conform. Covers promises, governance, normative references, ADRs that govern code. *`docs/adr/0017-uuidv4.md` governs the lex-order assumption in `services/joiner/sort.ts`.*
 - **Mechanism** — the dependency *is* a non-obvious mechanism the lines don't show: a load-bearing flush, an import-time side effect, a sleep masking a race, dynamic name construction (`f"{prefix}_KEY"`).
 - **Consumer role** — a downstream depends on these lines in a specific way: a binding regen target, a CDC tail, a literal client on a slow release cycle.
@@ -82,12 +80,12 @@ The "name the relationship" rule is enough most of the time. If you're stuck, tr
 
 Don't bundle several of these into one why ("strict parser, field names load-bearing, owner: billing") — that usually means the mesh is trying to carry more than one relationship and should be split.
 
-## Line range vs whole file
+## Line-range anchor vs whole-file anchor
 
-- **Line range (`path#Lstart-Lend`)** — Default for source code. Points a reviewer at the exact bytes. 1-based, inclusive. A Markdown section, an ADR clause, a contract paragraph, a runbook step are all valid line-range targets.
-- **Whole file (`path` alone)** — The file is consumed as a unit by name or identity. Use for: binaries, images, symlinks, submodule roots, generated/minified assets, **and prose documents whose identity is the contract** — a license, a one-page ADR, a published RFC.
+- **Line-range anchor (`path#Lstart-Lend`)** — Default for source code. Points a reviewer at the exact bytes. 1-based, inclusive. A Markdown section, an ADR clause, a contract paragraph, a runbook step are all valid line-range anchor targets.
+- **Whole-file anchor (`path` alone)** — The file is consumed as a unit by name or identity. Use for: binaries, images, symlinks, submodule roots, generated/minified assets, **and prose documents whose identity is the contract** — a license, a one-page ADR, a published RFC.
 
-**Recommended default for prose meshes is whole-file.** Line-ranged prose works mechanically but drifts noisily under editorial churn (heading renumbers, prettier reflow, sentence rewrites that preserve meaning). Use line-ranged prose only when the document has stable structural anchors (numbered ADRs, contract clauses, threat-model items with stable IDs) *and* the team is willing to re-anchor on editorial passes. See `./responding-to-drift.md` for the chattier prose-drift workflow. See also `./whole-file-and-lfs.md`.
+**Recommended default for prose meshes is a whole-file anchor.** Line-range anchors on prose work mechanically but drift noisily under editorial churn (heading renumbers, prettier reflow, sentence rewrites that preserve meaning). Use line-range anchors on prose only when the document has stable structural landmarks (numbered ADRs, contract clauses, threat-model items with stable IDs) *and* the team is willing to re-anchor on editorial passes. See `./responding-to-drift.md` for the chattier prose-drift workflow. See also `./whole-file-and-lfs.md`.
 
 ## Commit sequence alongside a code change
 

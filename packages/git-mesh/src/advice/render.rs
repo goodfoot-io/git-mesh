@@ -119,8 +119,6 @@ fn render_mesh_block(
 
     // For each suggestion in this block, render its content.
     // Drift suggestions carry DriftMeta in label; n-ary suggestions do not.
-    let mut seen_trigger: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
-        std::collections::BTreeSet::new();
     let mut seen_bullet: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
         std::collections::BTreeSet::new();
 
@@ -129,18 +127,6 @@ fn render_mesh_block(
             let meta = meta.clone();
             // Drift suggestion: participants[0] = partner, participants[1] = trigger (optional).
             let partner = s.participants.first();
-            let trigger = s.participants.get(1);
-
-            // Trigger locator line.
-            if let Some(t) = trigger {
-                let t_path = t.path.to_string_lossy().to_string();
-                let (ts, te) = participant_range(s, 1);
-                let key = (t_path.clone(), ts, te);
-                if seen_trigger.insert(key) {
-                    let addr = format_addr(&t_path, ts, te);
-                    out.push_str(&format!("# triggered by {addr}\n"));
-                }
-            }
 
             // Partner bullet.
             if let Some(p) = partner {
@@ -216,13 +202,7 @@ fn render_mesh_block(
                     (Some(p.start as i64), Some(p.end as i64))
                 };
                 let key = (p_path.clone(), ps, pe);
-                if i == 0 {
-                    // First participant is the "trigger" conceptually for n-ary.
-                    if seen_trigger.insert(key) {
-                        let addr = format_addr(&p_path, ps, pe);
-                        out.push_str(&format!("# triggered by {addr}\n"));
-                    }
-                } else if seen_bullet.insert(key) {
+                if i > 0 && seen_bullet.insert(key) {
                     let addr = format_addr(&p_path, ps, pe);
                     let line = format!("# - {addr}");
                     out.push_str(&truncate_line(&line));

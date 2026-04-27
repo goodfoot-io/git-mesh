@@ -60,7 +60,7 @@ fn human_output_has_summary_line() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("stale of"), "summary 'N stale of M ranges'");
+    assert!(stdout.contains("stale of"), "summary 'N stale of M anchors'");
     Ok(())
 }
 
@@ -136,10 +136,10 @@ fn human_output_groups_worst_first_orphaned_changed_moved() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Summary line `N stale of M ranges:`
+    // Summary line `N stale of M anchors:`
     assert!(stdout.contains(" stale of "));
-    // "Changed ranges:" labelled section
-    assert!(stdout.contains("Changed ranges:"));
+    // "Changed anchors:" labelled section
+    assert!(stdout.contains("Changed anchors:"));
     // Culprit line should include "caused by <short> <subject>"
     assert!(
         stdout.contains("caused by "),

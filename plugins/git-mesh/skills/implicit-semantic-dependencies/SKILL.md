@@ -132,11 +132,11 @@ node .claude/skills/implicit-semantic-dependencies/scripts/explain.mjs \
 Read the commit subjects. Ask:
 
 - Does one file rely on a contract the other defines but does not enforce?
-- If the partner changed silently, what concrete wrong decision would I make?
+- If the related anchor changed silently, what concrete wrong decision would I make?
 - Are these the same bug recurring under different names? (SZZ signal)
 
 If yes, the pair is a real mesh candidate. Document the contract — a comment
-referencing the partner, a type that captures the shared shape, a test that
+referencing the related anchor, a type that captures the shared shape, a test that
 fails when one side changes without the other, or an explicit `mesh` entry
 if the project uses one.
 

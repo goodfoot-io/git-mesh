@@ -316,6 +316,7 @@ fn run_advice_render(
     // Step 10–12: load seen sets and historical touch intervals.
     let advice_seen = store.advice_seen_set()?;
     let docs_seen = store.docs_seen_set()?;
+    let meshes_seen = store.meshes_seen_set()?;
     let touch_intervals = store.all_touch_intervals()?;
 
     // Step 13: produce candidates.
@@ -346,20 +347,42 @@ fn run_advice_render(
     // replaced by the n-ary, line-bounded suggester; its output is folded into
     // `kept_suggestions` below after fingerprint-dedup.
 
-    // Step 14: filter out fingerprints in advice_seen_set.
+    // Step 14: filter out fingerprints in advice_seen_set, and drop any
+    // candidate whose mesh has already surfaced in a prior render of this
+    // session (every mesh is announced at most once per advice session).
+    // Within a single render, all partners for a freshly-surfaced mesh are
+    // emitted together; we record the mesh name afterward so subsequent
+    // renders suppress it.
     let mut emitted_fps: Vec<String> = Vec::new();
     let kept: Vec<crate::advice::candidates::Candidate> = candidates
         .into_iter()
         .filter_map(|c| {
             let fp = crate::advice::fingerprint::fingerprint(&c);
             if advice_seen.contains(&fp) {
-                None
-            } else {
-                emitted_fps.push(fp);
-                Some(c)
+                return None;
             }
+            if !c.mesh.is_empty() && meshes_seen.contains(&c.mesh) {
+                return None;
+            }
+            emitted_fps.push(fp);
+            Some(c)
         })
         .collect();
+    let new_meshes_seen: Vec<String> = {
+        let mut seen_in_render: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        kept.iter()
+            .filter_map(|c| {
+                if c.mesh.is_empty() {
+                    None
+                } else if seen_in_render.insert(c.mesh.clone()) {
+                    Some(c.mesh.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
 
     // Step 15: render. Compute new_doc_topics = topic_keys(emitted_reason_kinds) - docs_seen.
     // Only populated when --documentation is requested; bare renders must not
@@ -494,6 +517,9 @@ fn run_advice_render(
 
     if !emitted_fps.is_empty() {
         store.append_advice_seen(&emitted_fps)?;
+    }
+    if !new_meshes_seen.is_empty() {
+        store.append_meshes_seen(&new_meshes_seen)?;
     }
     if !new_doc_topics.is_empty() {
         store.append_docs_seen(&new_doc_topics)?;
@@ -1149,19 +1175,19 @@ fn validate_read_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
     let (path_str, range) = match spec.split_once("#L") {
         Some((p, frag)) => {
             let (s, e) = frag.split_once("-L").ok_or_else(|| {
-                anyhow::anyhow!("invalid range `{spec}`; expected <path>#L<start>-L<end>")
+                anyhow::anyhow!("invalid anchor `{spec}`; expected <path>#L<start>-L<end>")
             })?;
             let start: u32 = s
                 .parse()
-                .map_err(|_| anyhow::anyhow!("invalid range start in `{spec}`"))?;
+                .map_err(|_| anyhow::anyhow!("invalid anchor start in `{spec}`"))?;
             let end: u32 = e
                 .parse()
-                .map_err(|_| anyhow::anyhow!("invalid range end in `{spec}`"))?;
+                .map_err(|_| anyhow::anyhow!("invalid anchor end in `{spec}`"))?;
             if start < 1 {
-                bail!("invalid range `{spec}`: start must be at least 1");
+                bail!("invalid anchor `{spec}`: start must be at least 1");
             }
             if end < start {
-                bail!("invalid range `{spec}`: end ({end}) is before start ({start})");
+                bail!("invalid anchor `{spec}`: end ({end}) is before start ({start})");
             }
             (p, Some((start, end)))
         }
@@ -1180,7 +1206,7 @@ fn validate_read_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
         let line_count = String::from_utf8_lossy(&bytes).lines().count() as u32;
         if end > line_count {
             bail!(
-                "invalid range `{spec}`: end ({end}) is past EOF (extent has {line_count} lines)"
+                "invalid anchor `{spec}`: end ({end}) is past EOF (extent has {line_count} lines)"
             );
         }
         let _ = start;

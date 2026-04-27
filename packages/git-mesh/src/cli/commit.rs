@@ -13,7 +13,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
     for addr in &args.ranges {
         let p = parse_address(addr)
-            .ok_or_else(|| anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]"))?;
+            .ok_or_else(|| anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]"))?;
         parsed.push(p);
     }
 
@@ -110,7 +110,7 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
     let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
     for addr in &args.ranges {
         let p = parse_address(addr)
-            .ok_or_else(|| anyhow!("invalid range `{addr}`; expected <path>[#L<start>-L<end>]"))?;
+            .ok_or_else(|| anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]"))?;
         parsed.push(p);
     }
 
@@ -152,7 +152,7 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
                     }
                     RangeExtent::Whole => path.clone(),
                 };
-                return Err(anyhow!("range not in mesh {}: {addr}", args.name));
+                return Err(anyhow!("anchor not in mesh {}: {addr}", args.name));
             }
         }
     }

@@ -35,7 +35,7 @@ fn show_by_name_has_required_lines() -> Result<()> {
     assert!(out.contains("commit "));
     assert!(out.contains("Author:"));
     assert!(out.contains("Date:"));
-    assert!(out.contains("Ranges ("));
+    assert!(out.contains("Anchors ("));
     assert!(out.contains("file1.txt#L1-L5"));
     Ok(())
 }

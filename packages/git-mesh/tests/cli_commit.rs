@@ -463,7 +463,7 @@ fn cli_rm_of_range_not_in_mesh_errors() -> Result<()> {
     let out = repo.run_mesh(["rm", "m", "file1.txt#L7-L9"])?;
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("range not in mesh"), "stderr={stderr}");
+    assert!(stderr.contains("anchor not in mesh"), "stderr={stderr}");
     Ok(())
 }
 

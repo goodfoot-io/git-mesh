@@ -20,9 +20,10 @@ could run by hand — and routes the resulting plain text into two
 surfaces:
 
 - **`additionalContext`** — material the assistant sees on its next
-  turn. This is where routing belongs: the partner the assistant
-  should also consider, the why that names the relationship the
-  ranges hold, the mesh name that labels the coupling.
+  turn. This is where routing belongs: the other anchors in the mesh
+  the assistant should also consider, the why that names the
+  relationship the anchors hold, the mesh name that labels the
+  coupling.
 - **`systemMessage`** — the same text mirrored into the transcript,
   so the developer reading the conversation later sees exactly what
   the assistant saw. The two surfaces always carry identical bytes;
@@ -53,9 +54,9 @@ When the developer submits a prompt, path-shaped tokens lifted from
 the prompt are recorded as reads. Then a render runs and, if it has
 something to say, lands in `additionalContext` and `systemMessage`
 before the assistant's turn begins. The framing matches Goal #1 of
-the advice DX: the news is the partner, never the developer's own
-typing. A path the developer mentioned appears only as the locator
-that makes the related side legible.
+the advice DX: the news is the other anchors in the mesh, never the
+developer's own typing. A path the developer mentioned appears only
+as the locator that makes the related side legible.
 
 ### 3. Post tool use — read what the assistant just touched
 
@@ -88,16 +89,16 @@ in any terminal, log, or diff view (Goal #10 of advice DX). It
 follows the same shape regardless of which hook produced it:
 
 - A header naming the mesh and the one-sentence why describing the
-  relationship the ranges hold, so a reader who has never heard of
+  relationship the anchors hold, so a reader who has never heard of
   the underlying tooling still understands the coupling (Goal #2).
 - A trigger locator pointing at what routed attention — the path
-  the developer named, or the range the assistant just touched —
+  the developer named, or the anchor the assistant just touched —
   rendered as the minimum context that makes the related side
   legible (Goal #1).
-- The partner addresses on the other side of the relationship,
-  carrying the headline. State is conveyed factually — `CHANGED`,
-  `MOVED`, address-only when the partner is not excerptible — with
-  no severity, no red text, no "warning:" prefix (Goal #4).
+- The addresses of the other anchors in the mesh, carrying the
+  headline. State is conveyed factually — `CHANGED`, `MOVED`,
+  address-only when the related anchor is not excerptible — with no
+  severity, no red text, no "warning:" prefix (Goal #4).
 - Optionally, a concrete next step when the action is unambiguous
   and a one-time explanation block when a finding escalates toward a
   recommendation for the first time in the session (Goals #3, #5,

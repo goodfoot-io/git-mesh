@@ -273,7 +273,7 @@ pub fn run_list(repo: &gix::Repository) -> Result<i32> {
     for name in names {
         let m = read_mesh(repo, &name)?;
         let summary = m.message.lines().next().unwrap_or_default();
-        println!("{name}\t{} ranges\t{summary}", m.ranges.len());
+        println!("{name}\t{} anchors\t{summary}", m.ranges.len());
     }
     Ok(0)
 }
@@ -344,7 +344,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         println!("    {line}");
     }
     println!();
-    println!("Ranges ({}):", mesh.ranges.len());
+    println!("Anchors ({}):", mesh.ranges.len());
     for id in &mesh.ranges {
         let r = read_range(repo, id)?;
         println!("    {}", render_range_address(&r.path, r.extent));

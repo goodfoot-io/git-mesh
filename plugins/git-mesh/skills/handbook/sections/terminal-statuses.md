@@ -4,14 +4,14 @@ Terminal statuses short-circuit the resolver — no slice math, no diff. Each on
 
 ## `ORPHANED`
 
-**Cause.** The anchor commit or range data is unreachable from current refs. Usually a force-push that rewrote history, a `git gc` that pruned an unreferenced commit, or a partial clone that never fetched the anchor.
+**Cause.** The anchor commit or anchor data is unreachable from current refs. Usually a force-push that rewrote history, a `git gc` that pruned an unreferenced commit, or a partial clone that never fetched the anchor.
 
 **Fix.**
 ```bash
 git fetch --all
 git mesh fetch
 ```
-If the anchor commit is truly gone, re-anchor the range on a reachable commit:
+If the anchor commit is truly gone, re-anchor on a reachable commit:
 ```bash
 git mesh add <name> <path>#L<start>-L<end>
 git mesh commit <name>
@@ -25,9 +25,9 @@ git mesh commit <name>
 
 ## `SUBMODULE`
 
-**Cause.** A legacy range points *inside* a submodule. git-mesh does not open submodules to compare line ranges.
+**Cause.** A legacy anchor points *inside* a submodule. git-mesh does not open submodules to compare line ranges.
 
-**Fix.** Remove the range and re-pin at the appropriate level:
+**Fix.** Remove the anchor and re-pin at the appropriate level:
 ```bash
 git mesh rm <name> <submodule-path>/inner/file.ts#L10-L20
 # Either: whole-file pin on the submodule root
@@ -36,7 +36,7 @@ git mesh add <name> <submodule-path>
 git mesh commit <name>
 ```
 
-Whole-file pins on a submodule *root* (the gitlink path) are supported — the resolver compares gitlink SHAs without opening the submodule.
+Whole-file anchors on a submodule *root* (the gitlink path) are supported — the resolver compares gitlink SHAs without opening the submodule.
 
 ## `SidecarTampered`
 
@@ -45,7 +45,7 @@ Whole-file pins on a submodule *root* (the gitlink path) are supported — the r
 **Fix.** Fail-closed — `git mesh commit`, `git mesh stale`, and `git mesh doctor` all surface this. Clear and re-stage:
 ```bash
 git mesh restore <name>
-git mesh add <name> <range>
+git mesh add <name> <anchor>
 git mesh commit <name>
 ```
 

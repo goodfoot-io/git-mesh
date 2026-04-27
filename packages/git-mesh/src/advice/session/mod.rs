@@ -48,6 +48,7 @@ const JSONL_FILES: &[&str] = &[
     "touches.jsonl",
     "advice-seen.jsonl",
     "docs-seen.jsonl",
+    "meshes-seen.jsonl",
 ];
 
 /// Facade over the per-session directory.
@@ -267,6 +268,45 @@ impl SessionStore {
             store::append_jsonl_line(&self.dir.join("docs-seen.jsonl"), &self.lock, &line)?;
         }
         Ok(())
+    }
+
+    /// Append mesh names to `meshes-seen.jsonl` (one per line, JSON string).
+    /// Used to surface each mesh at most once per advice session.
+    pub fn append_meshes_seen(&self, names: &[String]) -> Result<()> {
+        for n in names {
+            let line = serde_json::to_string(n)
+                .with_context(|| "serialize mesh name")?;
+            store::append_jsonl_line(&self.dir.join("meshes-seen.jsonl"), &self.lock, &line)?;
+        }
+        Ok(())
+    }
+
+    /// Load all mesh names previously appended to `meshes-seen.jsonl`.
+    pub fn meshes_seen_set(&self) -> Result<std::collections::HashSet<String>> {
+        let path = self.dir.join("meshes-seen.jsonl");
+        let f = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(std::collections::HashSet::new());
+            }
+            Err(e) => return Err(e).with_context(|| format!("open `{}`", path.display())),
+        };
+        let mut out = std::collections::HashSet::new();
+        for (idx, line) in BufReader::new(f).lines().enumerate() {
+            let line = line.with_context(|| format!("read `{}`", path.display()))?;
+            if line.is_empty() {
+                continue;
+            }
+            let s: String = serde_json::from_str(&line).map_err(|e| {
+                anyhow::anyhow!(
+                    "parse `meshes-seen.jsonl` at `{}` line {}: {e}",
+                    path.display(),
+                    idx + 1
+                )
+            })?;
+            out.insert(s);
+        }
+        Ok(out)
     }
 
     /// Load all topics previously appended to `docs-seen.jsonl`.

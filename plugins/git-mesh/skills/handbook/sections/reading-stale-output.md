@@ -1,12 +1,12 @@
 # Reading `git mesh stale` output
 
-`git mesh stale` asks: *do the anchored bytes still match reality?* It prints one finding per range per drifting layer, plus pending entries for any staged mesh ops.
+`git mesh stale` asks: *do the anchored bytes still match reality?* It prints one finding per anchor per drifting layer, plus pending entries for any staged mesh ops.
 
 ## Status values
 
 - **`FRESH`** — Current bytes equal anchored bytes at the same location. No action.
 - **`MOVED`** — Bytes are equal, but path or line numbers changed. Usually keep; re-anchor only if the new location is the one the mesh should point at.
-- **`CHANGED`** — Current bytes differ, or the range was deleted. Review the relationship, then update code or mesh.
+- **`CHANGED`** — Current bytes differ, or the anchor was deleted. Review the relationship, then update code or mesh.
 - **`ORPHANED`** / **`MERGE_CONFLICT`** / **`SUBMODULE`** / **`CONTENT_UNAVAILABLE(...)`** — Terminal. Read `./terminal-statuses.md` or `./content-unavailable.md`.
 
 ## Layers and the `src` column
@@ -18,7 +18,7 @@ The resolver checks up to four layers, shallowing order: HEAD → Index → Work
 - **`src=W`** — Drift is in the worktree (unstaged edit on disk).
 - **Staged mesh ops** render in a trailing section, not in the main finding list.
 
-The same range can appear twice when two layers both differ — e.g. a file with one edit `git add`-ed (src=I) and another edit left unstaged (src=W). That's the layering doing its job, not a duplicate.
+The same anchor can appear twice when two layers both differ — e.g. a file with one edit `git add`-ed (src=I) and another edit left unstaged (src=W). That's the layering doing its job, not a duplicate.
 
 Peel layers with subtractive flags:
 - `--no-worktree` drops W findings.
@@ -62,4 +62,4 @@ request-schema mesh: Charge request schema is shared by client and server.
 - server/routes.ts#L8-L21
 ```
 
-The first line is the mesh name + current why. Each bullet is a range; the marker in brackets is its status. Absence of a marker means `FRESH`. Use the why line to decide whether the change is intentional before touching either side.
+The first line is the mesh name + current why. Each bullet is an anchor; the marker in brackets is its status. Absence of a marker means `FRESH`. Use the why line to decide whether the change is intentional before touching either side.

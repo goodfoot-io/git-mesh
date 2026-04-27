@@ -1,6 +1,6 @@
 <git-mesh>
 
-**A lightweight contract for agreements that no schema, type, or test already enforces.** A mesh anchors line ranges (or whole files) across the repo and carries a durable "why" defining the subsystem they collectively form.
+**A lightweight contract for agreements that no schema, type, or test already enforces.** A mesh holds anchors (line-range or whole-file) across the repo and carries a durable "why" defining the subsystem they collectively form.
 
 ```bash
 # Create the mesh while making the code change
@@ -9,7 +9,7 @@ git mesh why billing/checkout-request-flow -m "Checkout request flow that carrie
 git commit -m "Wire checkout to charge API"   # post-commit hook anchors the mesh
 ```
 
-Write the **why** as a definition: name the subsystem, flow, or concern the ranges collectively form, and say plainly what it does across them. Leave invariants, caveats, ownership, and review triggers to source comments, commit messages, CODEOWNERS, and PR descriptions. The why is inherited across routine re-anchors; only stage a new one when the subsystem itself changes.
+Write the **why** as a definition: name the subsystem, flow, or concern the anchors collectively form, and say plainly what it does across them. Leave invariants, caveats, ownership, and review triggers to source comments, commit messages, CODEOWNERS, and PR descriptions. The why is inherited across routine re-anchors; only stage a new one when the subsystem itself changes.
 
 ```bash
 # GOOD: names the subsystem — evergreen, readable out of context
@@ -22,7 +22,7 @@ git mesh why billing/checkout-request-flow -m "Don't change amount without updat
 git mesh why billing/checkout-request-flow -m "Charge flow. Owner: team-billing. Review on body changes."   # metadata — belongs in CODEOWNERS / PR
 ```
 
-Name a mesh with a kebab-case slug that titles the subsystem, optionally prefixed by a category: `<category>/<slug>`. Pick the noun phrase a person would naturally use to refer to the thing the ranges form (`checkout-request-flow`, `tier-rollout`, `rate-limits`, `auth-token`). Add a category prefix (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`) when the repo spans multiple domains or teams; skip it when the area is obvious.
+Name a mesh with a kebab-case slug that titles the subsystem, optionally prefixed by a category: `<category>/<slug>`. Pick the noun phrase a person would naturally use to refer to the thing the anchors form (`checkout-request-flow`, `tier-rollout`, `rate-limits`, `auth-token`). Add a category prefix (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`) when the repo spans multiple domains or teams; skip it when the area is obvious.
 
 Re-anchor after drift; do not rewrite the why:
 
@@ -35,5 +35,5 @@ git mesh rm  billing/checkout-request-flow api/charge.ts#L30-L76
 git mesh add billing/checkout-request-flow api/charge.ts#L34-L82
 ```
 
-Lean toward creating meshes — they surface drift and cross-file context that nothing else in the repo makes visible. The only agreements to skip are those a compiler, schema, type, or test already enforces: a shared TypeScript type, a Protobuf message, a Zod validator imported by both sides, a contract test. Those mechanisms are strictly better than a mesh over the same surface because they reject violations automatically. Mesh everywhere those tools cannot reach: cross-language reimplementations of the same invariant, docs that promise specific code behavior, assets pinned next to the copy that describes them, client/server boundaries where neither side types the other, config values interpreted by multiple consumers. Prefer line ranges — they point a reviewer at the exact bytes. Use whole-file pins (omit `#L...`) only when the file has no meaningful line structure: binaries, images, submodule roots, generated assets. 
+Lean toward creating meshes — they surface drift and cross-file context that nothing else in the repo makes visible. The only agreements to skip are those a compiler, schema, type, or test already enforces: a shared TypeScript type, a Protobuf message, a Zod validator imported by both sides, a contract test. Those mechanisms are strictly better than a mesh over the same surface because they reject violations automatically. Mesh everywhere those tools cannot reach: cross-language reimplementations of the same invariant, docs that promise specific code behavior, assets pinned next to the copy that describes them, client/server boundaries where neither side types the other, config values interpreted by multiple consumers. Prefer line-range anchors — they point a reviewer at the exact bytes. Use whole-file anchors (omit `#L...`) only when the file has no meaningful line structure: binaries, images, submodule roots, generated assets. 
 </git-mesh>

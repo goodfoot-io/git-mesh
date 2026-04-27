@@ -343,7 +343,7 @@ fn render_human(
             .count();
         println!("mesh {}", m.name);
         println!();
-        println!("{mesh_stale} stale of {mesh_total} ranges:");
+        println!("{mesh_stale} stale of {mesh_total} anchors:");
         println!();
         if options.stat {
             for f in &mesh_findings {
