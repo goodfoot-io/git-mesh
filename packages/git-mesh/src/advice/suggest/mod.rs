@@ -6,8 +6,13 @@
 //! the surrounding infrastructure can be validated independently.
 
 pub mod apriori;
+pub mod band;
 pub mod canonical;
+pub mod cliques;
+pub mod cohesion;
+pub mod composite;
 pub mod edges;
+pub mod emit;
 pub mod evidence;
 pub mod history;
 pub mod locator;
@@ -15,8 +20,16 @@ pub mod op_stream;
 pub mod participants;
 
 pub use apriori::{atom_marginals_resolved, apriori_stats, AtomSessionIndex, AprioriStats};
+pub use band::{confidence_band, viability_label};
 pub use canonical::{build_canonical_ranges, range_iou, CanonicalIndex, CanonicalRange};
+pub use cliques::{build_edge_adjacency, bron_kerbosch, connected_components, edges_within, Adjacency};
+pub use cohesion::{
+    build_idf, cache_range, jaccard, per_edge_cohesion, range_tokens_of, read_range,
+    tokens_of, trigram_cohesion, trigrams_of, CanonicalId, Idf, RangeTokens, SourceCache,
+};
+pub use composite::{passes_cohesion_gate, score_candidate, CandidateScore, ComponentBreakdown};
 pub use edges::{score_edges, ComponentScores, Edge};
+pub use emit::emit;
 pub use evidence::{build_pair_evidence, EvidenceRecord, PairEvidenceMap, PairKey, PairState, SessionParticipants, Technique};
 pub use history::{load_git_history, pair_history_score, CommitChanges, HistoryIndex};
 pub use locator::{attach_locators, prior_context_atoms, Atom};
