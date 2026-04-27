@@ -15,7 +15,7 @@ pub mod workspace_tree;
 pub use session::SessionStore;
 pub use session::state::{BaselineState, LastFlushState, ReadRecord, TouchInterval};
 pub use session::store::{LockGuard, LockTimeout};
-pub use workspace_tree::{DiffEntry, WorkspaceTree, capture, diff_trees};
+pub use workspace_tree::{DiffEntry, LineRange, WorkspaceTree, capture, diff_trees};
 
 pub use candidates::{
     Candidate, CandidateInput, Density, MeshRange, MeshRangeStatus, ReasonKind,

@@ -420,30 +420,30 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
     let mut out = Vec::new();
     for entry in input.incr_delta {
         match entry {
-            DiffEntry::Modified { path, old_oid, new_oid }
-            | DiffEntry::ModeChange { path, old_oid, new_oid } => {
-                let mut cands = delta_path_partners(input, path);
+            DiffEntry::Modified { path, old_oid, new_oid, hunks }
+            | DiffEntry::ModeChange { path, old_oid, new_oid, hunks } => {
+                let mut cands = delta_path_partners(input, path, hunks.as_deref());
                 for c in &mut cands {
                     c.old_blob = old_oid.clone();
                     c.new_blob = new_oid.clone();
                 }
                 out.extend(cands);
             }
-            DiffEntry::Added { path, new_oid } => {
-                let mut cands = delta_path_partners(input, path);
+            DiffEntry::Added { path, new_oid, hunks } => {
+                let mut cands = delta_path_partners(input, path, hunks.as_deref());
                 for c in &mut cands {
                     c.new_blob = new_oid.clone();
                 }
                 out.extend(cands);
             }
             DiffEntry::Deleted { path, old_oid } => {
-                let mut cands = delta_path_partners(input, path);
+                let mut cands = delta_path_partners(input, path, None);
                 for c in &mut cands {
                     c.old_blob = old_oid.clone();
                 }
                 out.extend(cands);
             }
-            DiffEntry::Renamed { from, to, new_oid, .. } => {
+            DiffEntry::Renamed { from, to, new_oid, hunks, .. } => {
                 // When `from` is a meshed path, detect_rename_consequence
                 // will emit an L2 candidate covering the re-record; skip
                 // producing partner candidates here to avoid duplicating
@@ -457,7 +457,7 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
                     .iter()
                     .any(|r| r.path.to_string_lossy() == from.as_str());
                 if !from_is_meshed {
-                    let mut cands_to = delta_path_partners(input, to);
+                    let mut cands_to = delta_path_partners(input, to, hunks.as_deref());
                     for c in &mut cands_to {
                         c.new_blob = new_oid.clone();
                     }
@@ -480,13 +480,34 @@ fn session_rename_map(input: &CandidateInput<'_>) -> std::collections::HashMap<S
     m
 }
 
-fn delta_path_partners(input: &CandidateInput<'_>, path: &str) -> Vec<Candidate> {
-    delta_path_partners_inner(input, path, &session_rename_map(input))
+fn delta_path_partners(
+    input: &CandidateInput<'_>,
+    path: &str,
+    hunks: Option<&[crate::advice::workspace_tree::LineRange]>,
+) -> Vec<Candidate> {
+    delta_path_partners_inner(input, path, hunks, &session_rename_map(input))
+}
+
+/// Returns true if any hunk's `[start, end]` overlaps the line-bounded mesh
+/// range `[range.start, range.end]` (inclusive on both ends). When `hunks` is
+/// `None` or empty the function returns `true` — the no-false-negative
+/// invariant means "unknown hunks" must always fire.
+fn hunks_overlap_range(
+    range: &MeshRange,
+    hunks: Option<&[crate::advice::workspace_tree::LineRange]>,
+) -> bool {
+    match hunks {
+        None | Some([]) => true,
+        Some(hs) => hs
+            .iter()
+            .any(|h| ranges_overlap(h.start, h.end, range.start, range.end)),
+    }
 }
 
 fn delta_path_partners_inner(
     input: &CandidateInput<'_>,
     path: &str,
+    hunks: Option<&[crate::advice::workspace_tree::LineRange]>,
     rename_map: &std::collections::HashMap<String, String>,
 ) -> Vec<Candidate> {
     if path_is_internal(path, input.internal_path_prefixes) {
@@ -496,6 +517,12 @@ fn delta_path_partners_inner(
     for range in input.mesh_ranges {
         let range_path = range.path.to_string_lossy();
         if path != range_path.as_ref() {
+            continue;
+        }
+        // Line-range filter: a line-bounded mesh range only fires when at
+        // least one known hunk overlaps it. Whole-file ranges always fire,
+        // and unknown hunks (`None` / empty) always fire (no false negatives).
+        if !range.whole && !hunks_overlap_range(range, hunks) {
             continue;
         }
         // Emit one candidate per partner range in this mesh.
@@ -1107,6 +1134,8 @@ mod tests {
             path: "src/net.rs".to_string(),
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1137,6 +1166,8 @@ mod tests {
             path: "src/other.rs".to_string(),
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1246,6 +1277,8 @@ mod tests {
             path: "src/drift.rs".to_string(),
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         }];
         let input = CandidateInput {
             session_delta: &delta,
@@ -1279,6 +1312,8 @@ mod tests {
             score: 95,
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         }];
         let input = CandidateInput {
             session_delta: &delta,
@@ -1343,11 +1378,15 @@ mod tests {
             score: 95,
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         };
         let modified = DiffEntry::Modified {
             path: "src/uses.ts".to_string(),
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         };
         let delta = [renamed, modified];
         let input = CandidateInput {
@@ -1401,6 +1440,8 @@ mod tests {
             path: "src/big.rs".to_string(),
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         }];
         // Phase C will attach old_lines/new_lines to DiffEntry; for now the
         // detector must detect "range end exceeds new blob size" to emit RangeCollapse.
@@ -1724,6 +1765,8 @@ mod tests {
             path: "web/checkout.tsx".to_string(),
             old_oid: None,
             new_oid: None,
+            hunks: None,
+        
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1761,6 +1804,8 @@ mod tests {
             path: "web/checkout.tsx".to_string(),
             old_oid: Some("aaa0000000000000000000000000000000000001".to_string()),
             new_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
+            hunks: None,
+        
         }];
         let input_first = CandidateInput {
             session_delta: &[],
@@ -1778,6 +1823,8 @@ mod tests {
             path: "web/checkout.tsx".to_string(),
             old_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
             new_oid: Some("ccc0000000000000000000000000000000000003".to_string()),
+            hunks: None,
+        
         }];
         let input_second = CandidateInput {
             session_delta: &[],
@@ -1812,6 +1859,8 @@ mod tests {
             path: "web/checkout.tsx".to_string(),
             old_oid: Some("aaa0000000000000000000000000000000000001".to_string()),
             new_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
+            hunks: None,
+        
         }];
         let input = CandidateInput {
             session_delta: &[],

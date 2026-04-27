@@ -5,7 +5,24 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+/// A 1-based, inclusive `[start, end]` line interval. Matches the convention
+/// used by [`crate::advice::candidates::MeshRange`] (`start..=end`) and by
+/// [`crate::advice::session::state::TouchInterval`] so write-side hunks and
+/// read-side intervals can be compared directly without any rebasing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineRange {
+    pub start: u32,
+    pub end: u32,
+}
+
 /// A single change between two tree objects.
+///
+/// The `hunks` field on content-bearing variants carries the line ranges
+/// touched on the *new* side. `None` means the producer did not compute hunks
+/// and the caller must treat the entry as whole-file (no false negatives).
+/// `Some(vec![])` is reserved for "computed, no content hunks" (e.g. a
+/// mode-only change) — for the line-range filter callers treat it the same as
+/// `None` (i.e. fall back to firing).
 #[derive(Debug, Clone)]
 pub enum DiffEntry {
     /// File content changed.
@@ -13,11 +30,13 @@ pub enum DiffEntry {
         path: String,
         old_oid: Option<String>,
         new_oid: Option<String>,
+        hunks: Option<Vec<LineRange>>,
     },
     /// File was added.
     Added {
         path: String,
         new_oid: Option<String>,
+        hunks: Option<Vec<LineRange>>,
     },
     /// File was deleted.
     Deleted {
@@ -31,12 +50,14 @@ pub enum DiffEntry {
         score: u8,
         old_oid: Option<String>,
         new_oid: Option<String>,
+        hunks: Option<Vec<LineRange>>,
     },
     /// File mode changed (e.g. exec bit toggled).
     ModeChange {
         path: String,
         old_oid: Option<String>,
         new_oid: Option<String>,
+        hunks: Option<Vec<LineRange>>,
     },
 }
 
@@ -347,14 +368,14 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
         let entry = match status_byte {
             'M' => {
                 if src_mode != dst_mode {
-                    DiffEntry::ModeChange { path: path1, old_oid, new_oid }
+                    DiffEntry::ModeChange { path: path1, old_oid, new_oid, hunks: None }
                 } else {
-                    DiffEntry::Modified { path: path1, old_oid, new_oid }
+                    DiffEntry::Modified { path: path1, old_oid, new_oid, hunks: None }
                 }
             }
-            'A' => DiffEntry::Added { path: path1, new_oid },
+            'A' => DiffEntry::Added { path: path1, new_oid, hunks: None },
             'D' => DiffEntry::Deleted { path: path1, old_oid },
-            'T' => DiffEntry::Modified { path: path1, old_oid, new_oid },
+            'T' => DiffEntry::Modified { path: path1, old_oid, new_oid, hunks: None },
             'R' => {
                 // Rename has a second path.
                 let nul = bytes[i..].iter().position(|&b| b == 0).ok_or_else(|| {
@@ -371,6 +392,7 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
                     score,
                     old_oid,
                     new_oid,
+                    hunks: None,
                 }
             }
             'C' => {
@@ -382,9 +404,9 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
                     .context("raw diff copy target utf8")?
                     .to_string();
                 i += nul + 1;
-                DiffEntry::Added { path: path2, new_oid }
+                DiffEntry::Added { path: path2, new_oid, hunks: None }
             }
-            _ => DiffEntry::Modified { path: path1, old_oid, new_oid },
+            _ => DiffEntry::Modified { path: path1, old_oid, new_oid, hunks: None },
         };
         entries.push(entry);
     }
