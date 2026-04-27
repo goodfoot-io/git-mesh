@@ -17,9 +17,8 @@ use serde_json::Value;
 /// Manifest directory, resolved at compile time.
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
-/// Run `git mesh advice <session_id> suggest` with `GIT_MESH_ADVICE_DIR` set
-/// to the given path and return stdout as a String. The binary is expected to
-/// succeed (exit 0).
+/// Run `git mesh advice suggest` with `GIT_MESH_ADVICE_DIR` set to the given
+/// path and return stdout as a String. The binary must exit 0.
 ///
 /// `repo_root` is passed as `GIT_MESH_SUGGEST_REPO_ROOT` so the cohesion
 /// stage can find source files in the fixture directory.
@@ -29,32 +28,34 @@ const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 fn run_suggest(
     advice_dir: &Path,
     repo_root: &Path,
-    session_id: &str,
     extra_env: &[(&str, &str)],
 ) -> Result<String> {
     let bin = env!("CARGO_BIN_EXE_git-mesh");
     // `git mesh advice suggest` is a hidden subcommand that does not require a
-    // real git repository — it reads sessions from GIT_MESH_ADVICE_DIR
-    // (post–Step 3) and emits one JSON line per suggestion.
+    // real git repository — it reads sessions from GIT_MESH_ADVICE_DIR and
+    // emits one JSON line per suggestion.
     let mut cmd = Command::new(bin);
     cmd.env("GIT_MESH_ADVICE_DIR", advice_dir)
         .env("GIT_MESH_SUGGEST_REPO_ROOT", repo_root)
-        // The `advice` subcommand requires a git repo; use a temp dir. When
-        // the pipeline is implemented it will read sessions from the env var
-        // rather than walking the repo, so this will still be valid.
+        // Fixture runs must not pull in history from an unrelated repo.
+        .env("GIT_MESH_SUGGEST_FIXTURE", "1")
         .env("HOME", "/tmp");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
     let out = cmd
-        .args(["advice", session_id, "suggest"])
+        .args(["advice", "suggest"])
         .output()
         .map_err(|e| anyhow::anyhow!("spawn git-mesh: {e}"))?;
-    // NOTE: `git mesh advice <id>` currently requires a git repository in cwd.
-    // In Step 3 the `suggest` subcommand will be refactored to not need one.
-    // For now we just capture stdout regardless of exit status.
-    Ok(String::from_utf8(out.stdout)
-        .map_err(|e| anyhow::anyhow!("non-utf8 stdout: {e}"))?)
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!(
+            "git mesh advice suggest failed (exit {:?}):\n{stderr}",
+            out.status.code()
+        );
+    }
+    String::from_utf8(out.stdout)
+        .map_err(|e| anyhow::anyhow!("non-utf8 stdout: {e}"))
 }
 
 /// Parse every non-empty line of `text` as a `serde_json::Value`.
@@ -92,7 +93,6 @@ fn parity_pair_only() -> Result<()> {
     let actual_text = run_suggest(
         &sessions_dir,
         &fixture,
-        "s1",
         &[("GIT_MESH_SUGGEST_TRIGRAM", "0")],
     )?;
     let actual = parse_jsonl(&actual_text)?;
@@ -122,7 +122,7 @@ fn parity_triad_strong() -> Result<()> {
     let fixture = Path::new(MANIFEST_DIR).join("tests/fixtures/advice/triad_strong");
     let sessions_dir = fixture.join("sessions");
 
-    let actual_text = run_suggest(&sessions_dir, &fixture, "s1", &[])?;
+    let actual_text = run_suggest(&sessions_dir, &fixture, &[])?;
     let actual = parse_jsonl(&actual_text)?;
     let expected = load_expected("triad_strong")?;
 
@@ -150,7 +150,7 @@ fn parity_subsumed_pair() -> Result<()> {
     let fixture = Path::new(MANIFEST_DIR).join("tests/fixtures/advice/subsumed_pair");
     let sessions_dir = fixture.join("sessions");
 
-    let actual_text = run_suggest(&sessions_dir, &fixture, "s1", &[])?;
+    let actual_text = run_suggest(&sessions_dir, &fixture, &[])?;
     let actual = parse_jsonl(&actual_text)?;
     let expected = load_expected("subsumed_pair")?;
 

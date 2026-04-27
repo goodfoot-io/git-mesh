@@ -395,9 +395,15 @@ impl Default for SuggestDetector {
 }
 
 impl Detector for SuggestDetector {
-    fn detect(&self, _input: &CandidateInput<'_>) -> Vec<Suggestion> {
-        // `CandidateInput` does not carry pre-loaded sessions; the full pipeline
-        // is invoked via `run_suggest_pipeline` from the CLI suggest subcommand.
-        vec![]
+    fn detect(&self, _input: &CandidateInput<'_>) -> anyhow::Result<Vec<Suggestion>> {
+        // `CandidateInput` does not carry pre-loaded sessions or a repo reference.
+        // The full pipeline is invoked via `run_suggest_pipeline` from the CLI
+        // `git mesh advice suggest` subcommand. Wiring `SuggestDetector` into the
+        // candidate aggregator without that input would silently produce nothing —
+        // fail loudly so a future cutover discovers the missing seam instead.
+        anyhow::bail!(
+            "SuggestDetector requires sessions+repo input not carried by CandidateInput; \
+             invoke run_suggest_pipeline directly"
+        )
     }
 }

@@ -369,7 +369,7 @@ fn command_lead_in_for_reason(reason: &str) -> &'static str {
     match reason {
         "rename_literal" => "to re-record after the rename, run:",
         "range_collapse" => "To re-record with the new extent:",
-        "losing_coherence" => "To narrow or retire the group:",
+        "losing_coherence" => "To narrow or retire the mesh:",
         "symbol_rename" => "To re-record both sides:",
         _ => "To reconcile:",
     }
@@ -554,9 +554,9 @@ validator, or test — those reject violations automatically and are
 strictly better than a mesh over the same surface.
 
 Record:
-  git mesh add <group-name> <path-1> <path-2> [...]
-  git mesh why <group-name> -m \"What the ranges do together.\"
-  git mesh commit <group-name>
+  git mesh add <mesh-name> <path-1> <path-2> [...]
+  git mesh why <mesh-name> -m \"What the ranges do together.\"
+  git mesh commit <mesh-name>
 
 Name with a kebab-case slug that titles the subsystem, optionally
 prefixed by a category: billing/, platform/, experiments/, auth/.
@@ -1033,5 +1033,93 @@ mod tests {
             !out.contains("api/charge.ts#L"),
             "whole-file partner must not have #L suffix; got:\n{out}"
         );
+    }
+
+    /// Regression: rendered output must never contain the word "group" (case-insensitive,
+    /// whole word) in user-visible text, for any ReasonKind, with or without --documentation.
+    /// Internal symbol names (REASON_NEW_GROUP, new_group, etc.) are not rendered to output.
+    #[test]
+    fn no_group_word_in_rendered_output() {
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let all_kinds = [
+            CRK::Partner,
+            CRK::WriteAcross,
+            CRK::RenameLiteral,
+            CRK::RangeCollapse,
+            CRK::LosingCoherence,
+            CRK::SymbolRename,
+            CRK::NewGroup,
+            CRK::StagingCrossCut,
+            CRK::EmptyMesh,
+            CRK::PendingCommit,
+            CRK::Terminal,
+        ];
+        let re = regex_word_group();
+        for kind in &all_kinds {
+            let c = Candidate {
+                mesh: "test-mesh".into(),
+                mesh_why: "why text".into(),
+                reason_kind: *kind,
+                partner_path: "b.rs".into(),
+                partner_start: Some(1),
+                partner_end: Some(5),
+                trigger_path: "t.rs".into(),
+                trigger_start: None,
+                trigger_end: None,
+                touched_path: String::new(),
+                touched_start: None,
+                touched_end: None,
+                partner_marker: String::new(),
+                partner_clause: String::new(),
+                density: CDensity::L0,
+                command: String::new(),
+                excerpt_of_path: String::new(),
+                excerpt_start: None,
+                excerpt_end: None,
+                old_blob: None,
+                new_blob: None,
+                old_path: None,
+                new_path: None,
+            };
+            let s = candidate_to_suggestion(&c);
+            let topics: Vec<String> = kind.doc_topic().into_iter().map(str::to_string).collect();
+            // Without --documentation
+            let out_bare = render(&[s.clone()], &[], false);
+            assert!(
+                !re(&out_bare),
+                "bare render for {:?} contains the word 'group': {:?}",
+                kind, out_bare
+            );
+            // With --documentation
+            let out_doc = render(&[s], &topics, true);
+            assert!(
+                !re(&out_doc),
+                "--documentation render for {:?} contains the word 'group': {:?}",
+                kind, out_doc
+            );
+        }
+    }
+
+    /// Returns a simple pattern that matches the word "group" (case-insensitive,
+    /// whole-word boundaries using ASCII word-character assumptions).
+    fn regex_word_group() -> impl Fn(&str) -> bool {
+        |text: &str| {
+            let lower = text.to_lowercase();
+            let bytes = lower.as_bytes();
+            let needle = b"group";
+            let n = needle.len();
+            let mut i = 0;
+            while i + n <= bytes.len() {
+                if &bytes[i..i + n] == needle {
+                    let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+                    let after_ok = i + n >= bytes.len() || !bytes[i + n].is_ascii_alphanumeric();
+                    if before_ok && after_ok {
+                        return true;
+                    }
+                }
+                i += 1;
+            }
+            false
+        }
     }
 }

@@ -31,7 +31,10 @@ pub struct AdviceArgs {
     /// characters are rejected — the id becomes a directory component
     /// under the per-session state directory and silent rewrites would
     /// collide distinct ids onto the same store.
-    pub session_id: String,
+    ///
+    /// Not required when the subcommand is `suggest` — that subcommand
+    /// is corpus-wide and loads every session from `GIT_MESH_ADVICE_DIR`.
+    pub session_id: Option<String>,
 
     #[command(subcommand)]
     pub command: Option<AdviceCommand>,
@@ -63,25 +66,49 @@ pub enum AdviceCommand {
         /// Paths (optionally range-qualified) to record as reads.
         paths: Vec<String>,
     },
-    /// Run the n-ary mesh suggestion detector and emit each suggestion as
-    /// one JSON line to stdout. Currently produces no output (detector stub).
+    /// Run the n-ary mesh suggestion detector against every session under
+    /// `GIT_MESH_ADVICE_DIR` and emit each suggestion as one `{"v":1, …}`
+    /// JSON line on stdout. Hidden because this is the parity surface for
+    /// diffing against `node docs/analyze-v4.mjs` during development —
+    /// the user-facing advice flow is the default `git mesh advice <sid>`.
+    ///
+    /// Env vars:
+    ///   GIT_MESH_ADVICE_DIR            Required. Root directory of captured sessions.
+    ///   GIT_MESH_SUGGEST_TRIGRAM=0     Disable trigram cohesion (mirrors JS --no-trigram).
+    ///   GIT_MESH_SUGGEST_HISTORY=0     Disable historical-cochange channel (mirrors JS --no-history).
+    ///   GIT_MESH_SUGGEST_FIXTURE=1     Disable history channel for fixture/parity runs (prevents repo contamination).
+    ///   GIT_MESH_SUGGEST_REPO_ROOT     Override repo root for cohesion file reads (default: cwd).
     #[command(hide = true)]
     Suggest,
 }
 
-/// Top-level entry: dispatches to `snapshot`, `read`, or, when no
+/// Top-level entry: dispatches to `snapshot`, `read`, `suggest`, or, when no
 /// subcommand is given, runs the file-backed delta render pipeline.
+///
+/// `Suggest` does not require a `<SESSION_ID>` — it is corpus-wide and reads
+/// every session from `GIT_MESH_ADVICE_DIR`. All other variants require a
+/// session id and fail closed when one is not provided.
 pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
-    validate_session_id(&args.session_id)?;
+    // Suggest is corpus-wide — no session id required.
+    if matches!(args.command, Some(AdviceCommand::Suggest)) {
+        return run_advice_suggest();
+    }
+    // All other subcommands (and the bare render) are session-scoped.
+    let session_id = args.session_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "git mesh advice: a <SESSION_ID> is required (e.g. `git mesh advice <id>`)"
+        )
+    })?;
+    validate_session_id(&session_id)?;
     match args.command {
-        Some(AdviceCommand::Snapshot) => run_advice_snapshot(repo, args.session_id),
+        Some(AdviceCommand::Snapshot) => run_advice_snapshot(repo, session_id),
         Some(AdviceCommand::Read { paths }) => {
-            run_advice_read(repo, args.session_id, paths, args.snapshot_if_missing)
+            run_advice_read(repo, session_id, paths, args.snapshot_if_missing)
         }
-        Some(AdviceCommand::Suggest) => run_advice_suggest(&args.session_id),
+        Some(AdviceCommand::Suggest) => unreachable!("handled above"),
         None => run_advice_render(
             repo,
-            &args.session_id,
+            &session_id,
             args.documentation,
             args.snapshot_if_missing,
         ),
@@ -655,49 +682,65 @@ fn snapshot_into(
     Ok(())
 }
 
-/// Standalone entry point for `git mesh advice <id> suggest`, callable
-/// before repo discovery. Used by `main.rs` to bypass the require-repo
-/// gate for this hidden subcommand.
-pub fn run_advice_suggest_standalone(session_id: &str) -> Result<i32> {
-    run_advice_suggest(session_id)
+/// Standalone entry point for `git mesh advice suggest`, callable before repo
+/// discovery. Used by `main.rs` to bypass the require-repo gate for this
+/// hidden subcommand.
+pub fn run_advice_suggest_standalone() -> Result<i32> {
+    run_advice_suggest()
 }
 
-/// Run the n-ary mesh suggestion detector and emit each suggestion as one
-/// JSON line to stdout.
+/// Run the n-ary mesh suggestion detector against every session under
+/// `GIT_MESH_ADVICE_DIR` and emit each suggestion as one JSON line to stdout.
 ///
-/// Session data is loaded from `GIT_MESH_ADVICE_DIR/<session_id>/` (flat
-/// layout used by parity fixtures and the hidden CLI subcommand). A git
-/// repository is opened from the current directory for the history channel;
-/// if none is found, history is silently disabled.
-///
-/// The session directory is `<GIT_MESH_ADVICE_DIR>/<session_id>/` — no
-/// repo-key hashing — so the parity fixtures can sit in a flat directory
-/// without a real git repo.
-fn run_advice_suggest(_session_id: &str) -> Result<i32> {
+/// Sessions are discovered by scanning every subdirectory of
+/// `GIT_MESH_ADVICE_DIR` that contains `reads.jsonl` and/or `touches.jsonl`.
+/// A git repository is opened from the current directory for the history
+/// channel; if none is found, or if `GIT_MESH_SUGGEST_FIXTURE=1` is set,
+/// history is disabled.
+fn run_advice_suggest() -> Result<i32> {
     use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
+
+    // Fail closed: GIT_MESH_ADVICE_DIR must be set and non-empty.
+    let advice_dir_str = std::env::var("GIT_MESH_ADVICE_DIR").unwrap_or_default();
+    if advice_dir_str.is_empty() {
+        bail!(
+            "error: GIT_MESH_ADVICE_DIR is not set; the suggester is the parity surface \
+             and requires a captured session corpus"
+        );
+    }
+    let advice_dir = std::path::PathBuf::from(&advice_dir_str);
+
+    // Fail closed: the directory must exist.
+    if !advice_dir.exists() {
+        bail!(
+            "error: GIT_MESH_ADVICE_DIR points at a directory that does not exist: `{}`",
+            advice_dir.display()
+        );
+    }
 
     let cfg = SuggestConfig::from_env();
 
-    // The pipeline loads ALL sessions from GIT_MESH_ADVICE_DIR (the JS
-    // equivalent of the per-repo directory). Each subdirectory with both
-    // reads.jsonl and touches.jsonl is treated as one session.
-    //
-    // When GIT_MESH_ADVICE_DIR is the flat parity-fixture layout
-    // (`sessions/s1/`, `sessions/s2/`, …), every subdirectory is a session.
-    // When it is the normal advice-store layout, the caller should set
-    // GIT_MESH_ADVICE_DIR to the per-repo subdirectory
-    // (`<advice_base>/<repo_key>`).
-    let advice_dir = crate::advice::session::store::advice_base_dir();
+    // The pipeline loads ALL sessions from GIT_MESH_ADVICE_DIR. Each
+    // subdirectory with reads.jsonl and/or touches.jsonl is one session.
     let sessions = load_all_sessions(&advice_dir)?;
 
+    // Fail closed: at least one valid session must exist.
+    if sessions.is_empty() {
+        bail!(
+            "error: no sessions found under `{}`; a session directory must contain \
+             reads.jsonl or touches.jsonl",
+            advice_dir.display()
+        );
+    }
+
     // Attempt to open the git repo for the history channel.
-    // Only try repo discovery when history is not explicitly disabled
-    // (GIT_MESH_SUGGEST_HISTORY=0) — use the current directory as the
-    // candidate. If discovery fails, or if the advice base dir is an
-    // override (GIT_MESH_ADVICE_DIR is set), disable history so that
-    // fixture/test runs are not contaminated by an unrelated repo's log.
-    let advice_dir_override = std::env::var("GIT_MESH_ADVICE_DIR").is_ok_and(|v| !v.is_empty());
-    let (repo_opt, repo_root) = if cfg.history_enabled && !advice_dir_override {
+    // History is disabled when:
+    //   - GIT_MESH_SUGGEST_HISTORY=0 (explicit user knob), OR
+    //   - GIT_MESH_SUGGEST_FIXTURE=1 (parity/fixture run — prevents repo contamination)
+    // Using GIT_MESH_ADVICE_DIR to gate history has been removed: a custom advice
+    // directory is a valid user configuration and must not silently degrade quality.
+    let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
+    let (repo_opt, repo_root) = if cfg.history_enabled && !fixture_mode {
         match gix::discover(".") {
             Ok(repo) => {
                 let root = repo

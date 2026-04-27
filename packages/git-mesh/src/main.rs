@@ -82,17 +82,14 @@ fn run() -> Result<i32> {
     // touch the filesystem for repo discovery.
     let cli = Cli::parse();
 
-    // The hidden `git mesh advice <id> suggest` subcommand does not need a git
+    // The hidden `git mesh advice suggest` subcommand does not need a git
     // repository — it reads sessions from GIT_MESH_ADVICE_DIR and emits JSONL
     // to stdout. Intercept here before `discover_repo` so the binary works
     // outside a worktree (e.g. in the parity test fixtures).
     if let Some(cli::Commands::Advice(ref advice_args)) = cli.command
         && matches!(advice_args.command, Some(cli::advice::AdviceCommand::Suggest))
     {
-        let session_id = advice_args.session_id.clone();
-        // Reuse the run path — but we need a repo object for the trait.
-        // Instead call the suggest function directly without a repo.
-        return cli::advice::run_advice_suggest_standalone(&session_id);
+        return cli::advice::run_advice_suggest_standalone();
     }
 
     let repo = discover_repo()?;

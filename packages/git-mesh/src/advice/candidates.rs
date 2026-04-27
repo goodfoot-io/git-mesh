@@ -886,8 +886,8 @@ pub fn candidate_to_suggestion(c: &Candidate) -> crate::advice::suggestion::Sugg
 pub struct PartnerDriftDetector;
 
 impl crate::advice::detector::Detector for PartnerDriftDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
-        detect_partner_drift(input).iter().map(candidate_to_suggestion).collect()
+    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_partner_drift(input).iter().map(candidate_to_suggestion).collect())
     }
 }
 
@@ -895,8 +895,8 @@ impl crate::advice::detector::Detector for PartnerDriftDetector {
 pub struct ReadIntersectsMeshDetector;
 
 impl crate::advice::detector::Detector for ReadIntersectsMeshDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
-        detect_read_intersects_mesh(input).iter().map(candidate_to_suggestion).collect()
+    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_read_intersects_mesh(input).iter().map(candidate_to_suggestion).collect())
     }
 }
 
@@ -904,8 +904,8 @@ impl crate::advice::detector::Detector for ReadIntersectsMeshDetector {
 pub struct SessionCoTouchDetector;
 
 impl crate::advice::detector::Detector for SessionCoTouchDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
-        detect_session_co_touch(input).iter().map(candidate_to_suggestion).collect()
+    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_session_co_touch(input).iter().map(candidate_to_suggestion).collect())
     }
 }
 
@@ -913,8 +913,8 @@ impl crate::advice::detector::Detector for SessionCoTouchDetector {
 pub struct StagingCrossCutDetector;
 
 impl crate::advice::detector::Detector for StagingCrossCutDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
-        detect_staging_cross_cut(input).iter().map(candidate_to_suggestion).collect()
+    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_staging_cross_cut(input).iter().map(candidate_to_suggestion).collect())
     }
 }
 
@@ -922,8 +922,8 @@ impl crate::advice::detector::Detector for StagingCrossCutDetector {
 pub struct DeltaIntersectsMeshDetector;
 
 impl crate::advice::detector::Detector for DeltaIntersectsMeshDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
-        detect_delta_intersects_mesh(input).iter().map(candidate_to_suggestion).collect()
+    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_delta_intersects_mesh(input).iter().map(candidate_to_suggestion).collect())
     }
 }
 
@@ -931,8 +931,8 @@ impl crate::advice::detector::Detector for DeltaIntersectsMeshDetector {
 pub struct RangeShrinkDetector;
 
 impl crate::advice::detector::Detector for RangeShrinkDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
-        detect_range_shrink(input).iter().map(candidate_to_suggestion).collect()
+    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_range_shrink(input).iter().map(candidate_to_suggestion).collect())
     }
 }
 
@@ -940,8 +940,8 @@ impl crate::advice::detector::Detector for RangeShrinkDetector {
 pub struct RenameConsequenceDetector;
 
 impl crate::advice::detector::Detector for RenameConsequenceDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
-        detect_rename_consequence(input).iter().map(candidate_to_suggestion).collect()
+    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_rename_consequence(input).iter().map(candidate_to_suggestion).collect())
     }
 }
 

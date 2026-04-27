@@ -67,7 +67,7 @@ pub fn read_range(repo_root: &Path, p: &str, start: u32, end: u32) -> Option<Str
     let lines: Vec<&str> = text.split('\n').collect();
     let lo = (start as usize).saturating_sub(1);
     let hi = (end as usize).min(lines.len());
-    if lo >= hi && lo >= lines.len() {
+    if lo >= hi || lo >= lines.len() {
         return None;
     }
     Some(lines[lo..hi].join("\n"))
@@ -435,5 +435,30 @@ mod tests {
         map.insert(0, tg.clone());
         map.insert(1, tg);
         assert!((trigram_cohesion(&map) - 1.0).abs() < 1e-9);
+    }
+
+    /// Regression: an inverted range (start > end) against a file with enough
+    /// lines must return `None` rather than panicking with a slice index error.
+    #[test]
+    fn read_range_inverted_returns_none_not_panic() {
+        use std::io::Write;
+        // Write a 10-line file to a temp directory.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("test.txt");
+        let mut f = std::fs::File::create(&file_path).expect("create");
+        for i in 1..=10u32 {
+            writeln!(f, "line {i}").expect("write");
+        }
+        drop(f);
+        let repo_root = dir.path();
+        // Inverted range: start=10, end=5 — lo=9, hi=5 → lo >= hi must fire.
+        let result = read_range(repo_root, "test.txt", 10, 5);
+        assert!(
+            result.is_none(),
+            "inverted range must return None, got: {result:?}"
+        );
+        // Also verify a normal range still works.
+        let ok = read_range(repo_root, "test.txt", 1, 3);
+        assert!(ok.is_some(), "normal range must return Some");
     }
 }
