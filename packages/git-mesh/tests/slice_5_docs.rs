@@ -11,8 +11,9 @@
 mod support;
 
 use anyhow::Result;
-use git_mesh::advice::candidates::{Candidate, Density, ReasonKind};
+use git_mesh::advice::candidates::{Candidate, Density, ReasonKind, candidate_to_suggestion};
 use git_mesh::advice::render;
+use git_mesh::advice::suggestion::Suggestion;
 use git_mesh::{append_add, commit_mesh, set_why};
 use std::process::Output;
 use support::TestRepo;
@@ -88,6 +89,10 @@ fn l1_candidate() -> Candidate {
     }
 }
 
+fn l1_suggestion() -> Suggestion {
+    candidate_to_suggestion(&l1_candidate())
+}
+
 fn assert_all_lines_commented(out: &str) {
     for line in out.lines() {
         assert!(
@@ -99,7 +104,7 @@ fn assert_all_lines_commented(out: &str) {
 
 #[test]
 fn baseline_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["baseline".into()], true);
+    let out = render::render(&[l1_suggestion()], &["baseline".into()], true);
     assert_all_lines_commented(&out);
     assert!(out.contains("# A mesh is a lightweight contract for an agreement that no schema, type,"));
     assert!(out.contains("# The `why` is load-bearing identity, not commentary."));
@@ -112,7 +117,7 @@ fn baseline_topic_block_renders_verbatim() {
 
 #[test]
 fn t2_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["editing-across-files".into()], true);
+    let out = render::render(&[l1_suggestion()], &["editing-across-files".into()], true);
     assert_all_lines_commented(&out);
     assert!(out.contains("# When a range in a mesh changes, the other ranges in the same mesh may"));
     assert!(out.contains("# A second `git mesh add` over the identical (path, extent) is a"));
@@ -122,7 +127,7 @@ fn t2_topic_block_renders_verbatim() {
 
 #[test]
 fn t3_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["renames".into()], true);
+    let out = render::render(&[l1_suggestion()], &["renames".into()], true);
     assert!(out.contains("# A related range contains the old path as a literal string."));
     assert!(out.contains("#   git mesh rm  <name> <old-path>"));
     assert!(out.contains("#   git mesh add <name> <new-path>"));
@@ -130,7 +135,7 @@ fn t3_topic_block_renders_verbatim() {
 
 #[test]
 fn t4_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["shrinking-ranges".into()], true);
+    let out = render::render(&[l1_suggestion()], &["shrinking-ranges".into()], true);
     assert!(out.contains("# The edit reduced a range to far fewer lines than were recorded."));
     assert!(out.contains("#   git mesh rm  <name> <path>#L<old-s>-L<old-e>"));
     assert!(out.contains("#   git mesh add <name> <path>#L<new-s>-L<new-e>"));
@@ -138,7 +143,7 @@ fn t4_topic_block_renders_verbatim() {
 
 #[test]
 fn t5_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["narrow-or-retire".into()], true);
+    let out = render::render(&[l1_suggestion()], &["narrow-or-retire".into()], true);
     assert!(out.contains("# Most ranges in this mesh no longer match what was recorded."));
     assert!(out.contains("#   git mesh rm     <name> <path>"));
     assert!(out.contains("#   git mesh delete <name>"));
@@ -147,14 +152,14 @@ fn t5_topic_block_renders_verbatim() {
 
 #[test]
 fn t6_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["exported-symbols".into()], true);
+    let out = render::render(&[l1_suggestion()], &["exported-symbols".into()], true);
     assert!(out.contains("# An exported name changed inside one range."));
     assert!(out.contains("#   git mesh add <name> <path>#L<s>-L<e>"));
 }
 
 #[test]
 fn t7_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["recording-a-group".into()], true);
+    let out = render::render(&[l1_suggestion()], &["recording-a-group".into()], true);
     assert!(out.contains("# These files move together: the session has touched them together and"));
     assert!(out.contains("# Record:"));
     assert!(out.contains("#   git mesh add <group-name> <path-1> <path-2> [...]"));
@@ -163,7 +168,7 @@ fn t7_topic_block_renders_verbatim() {
 
 #[test]
 fn t8_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["cross-mesh-overlap".into()], true);
+    let out = render::render(&[l1_suggestion()], &["cross-mesh-overlap".into()], true);
     assert!(out.contains("# A range staged on one mesh overlaps a range already recorded on"));
     assert!(out.contains("#   git mesh restore <name>"));
     assert!(out.contains("#   git mesh delete  <name>"));
@@ -171,7 +176,7 @@ fn t8_topic_block_renders_verbatim() {
 
 #[test]
 fn t9_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["empty-groups".into()], true);
+    let out = render::render(&[l1_suggestion()], &["empty-groups".into()], true);
     assert!(out.contains("# The staged removal would leave this mesh with no ranges."));
     assert!(out.contains("#   git mesh add    <name> <path>[#L<s>-L<e>]"));
     assert!(out.contains("#   git mesh delete <name>"));
@@ -179,7 +184,7 @@ fn t9_topic_block_renders_verbatim() {
 
 #[test]
 fn t11_topic_block_renders_verbatim() {
-    let out = render::render(&[l1_candidate()], &["terminal-states".into()], true);
+    let out = render::render(&[l1_suggestion()], &["terminal-states".into()], true);
     assert!(out.contains("# A terminal marker means the resolver cannot evaluate this range at all."));
     assert!(out.contains("# [ORPHANED]  — the recorded commit is unreachable."));
     assert!(out.contains("# [CONFLICT]  — the file is mid-merge. Finish the merge first."));
@@ -198,12 +203,14 @@ fn documentation_empty_flush_prints_nothing() {
 
 #[test]
 fn documentation_appends_t1_and_t2_hints_after_output() {
-    let mut t1 = l1_candidate();
-    t1.reason_kind = ReasonKind::Partner;
-    t1.density = Density::L0;
-    t1.mesh = "m1".into();
-    let mut t2 = l1_candidate();
-    t2.mesh = "m1".into();
+    let mut t1_c = l1_candidate();
+    t1_c.reason_kind = ReasonKind::Partner;
+    t1_c.density = Density::L0;
+    t1_c.mesh = "m1".into();
+    let mut t2_c = l1_candidate();
+    t2_c.mesh = "m1".into();
+    let t1 = candidate_to_suggestion(&t1_c);
+    let t2 = candidate_to_suggestion(&t2_c);
 
     let out = render::render(&[t1, t2], &[], true);
     let t1_hint = "to re-record a range after edits";
@@ -219,13 +226,14 @@ fn documentation_appends_t1_and_t2_hints_after_output() {
 
 #[test]
 fn documentation_with_t8_does_not_duplicate_topic_block() {
-    let mut t8 = l1_candidate();
-    t8.reason_kind = ReasonKind::StagingCrossCut;
-    t8.density = Density::L2;
-    t8.partner_clause =
+    let mut t8_c = l1_candidate();
+    t8_c.reason_kind = ReasonKind::StagingCrossCut;
+    t8_c.density = Density::L2;
+    t8_c.partner_clause =
         "overlap|staged|other|p.rs|10|20|5|25|".into();
-    t8.trigger_start = Some(10);
-    t8.trigger_end = Some(20);
+    t8_c.trigger_start = Some(10);
+    t8_c.trigger_end = Some(20);
+    let t8 = candidate_to_suggestion(&t8_c);
 
     let out = render::render(&[t8], &[], true);
     let hint = "to resolve a cross-mesh overlap";

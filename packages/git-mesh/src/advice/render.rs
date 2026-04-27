@@ -4,48 +4,66 @@
 //! in any shell, log, or diff view. Excerpts are fenced with triple
 //! backticks (or four, when the excerpt itself contains ```), language
 //! inferred from the partner path's extension.
+//!
+//! The public entry point `render` consumes `Vec<Suggestion>`. Each
+//! suggestion encodes its type in the `label` field:
+//!
+//! - Drift-detector suggestions (size 1–2 participants): `label` contains a
+//!   JSON-serialized `DriftMeta` (from `candidates::DriftMeta`).
+//! - N-ary suggester suggestions (size ≥ 2 participants, no DriftMeta):
+//!   `label` is a human-readable mesh label or empty string.
 
-use crate::advice::candidates::{Candidate, Density, ReasonKind};
+use crate::advice::candidates::DriftMeta;
+use crate::advice::suggestion::Suggestion;
 
 const MAX_LINE: usize = 200;
 
-/// Render a flush given deduped candidates and the list of doc topics
+// ── Reason-kind strings (mirrored from candidates::ReasonKind::as_str) ───────
+
+const REASON_NEW_GROUP: &str = "new_group";
+const REASON_STAGING_CROSS_CUT: &str = "staging_cross_cut";
+const REASON_EMPTY_MESH: &str = "empty_mesh";
+
+/// Render a flush given deduped suggestions and the list of doc topics
 /// that fired for the first time this flush.
 ///
 /// `documentation` gates the per-reason appendix (§12.11).
-pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation: bool) -> String {
-    if candidates.is_empty() {
+pub fn render(suggestions: &[Suggestion], new_doc_topics: &[String], documentation: bool) -> String {
+    if suggestions.is_empty() {
         return String::new();
     }
 
     let mut blocks: Vec<String> = Vec::new();
 
-    // Group candidates by mesh, keep cross-cutting types last.
-    let (per_mesh, cross_cutting): (Vec<&Candidate>, Vec<&Candidate>) =
-        candidates.iter().partition(|c| {
+    // Partition into cross-cutting (NewGroup, StagingCrossCut, EmptyMesh) and
+    // per-mesh suggestions, mirroring the previous Candidate-based split.
+    let (per_mesh_suggs, cross_cutting_suggs): (Vec<&Suggestion>, Vec<&Suggestion>) =
+        suggestions.iter().partition(|s| {
+            let reason = drift_reason(s);
             !matches!(
-                c.reason_kind,
-                ReasonKind::NewGroup | ReasonKind::StagingCrossCut | ReasonKind::EmptyMesh
+                reason.as_deref(),
+                Some(REASON_NEW_GROUP) | Some(REASON_STAGING_CROSS_CUT) | Some(REASON_EMPTY_MESH)
             )
         });
 
-    let mut by_mesh: std::collections::BTreeMap<String, Vec<&Candidate>> =
+    // Group per-mesh suggestions by mesh name (from participants[0].name).
+    let mut by_mesh: std::collections::BTreeMap<String, Vec<&Suggestion>> =
         std::collections::BTreeMap::new();
-    for c in &per_mesh {
-        by_mesh.entry(c.mesh.clone()).or_default().push(c);
-    }
-    // Slice 3 (4.3): excerpt dedup is *flush-scoped* — emit each
-    // (path,start,end) excerpt at most once per flush. Subsequent meshes
-    // that pin the same partner range still list the address in their
-    // partner block but skip the fenced body. Documented in §12.5.
-    let mut seen_excerpts: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
-        std::collections::BTreeSet::new();
-    for (mesh, cands) in &by_mesh {
-        blocks.push(render_mesh_block(mesh, cands, &mut seen_excerpts));
+    for s in &per_mesh_suggs {
+        let mesh_name = s.participants.first().map(|p| p.name.as_str()).unwrap_or("").to_string();
+        by_mesh.entry(mesh_name).or_default().push(s);
     }
 
-    for cc in &cross_cutting {
-        blocks.push(render_cross_cutting(cc));
+    // Flush-scoped excerpt dedup (path, start, end).
+    let mut seen_excerpts: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
+        std::collections::BTreeSet::new();
+
+    for (mesh, suggs) in &by_mesh {
+        blocks.push(render_mesh_block(mesh, suggs, &mut seen_excerpts));
+    }
+
+    for s in &cross_cutting_suggs {
+        blocks.push(render_cross_cutting_suggestion(s));
     }
 
     if documentation {
@@ -54,21 +72,15 @@ pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation
             blocks.push(render_doc_topic(topic));
         }
 
-        // §12.11 — per-reason hint appendix. One short sentence per
-        // distinct reason-kind that appeared in this flush, pointing at
-        // the reconciling `git mesh` command. Hints are deduped per flush
-        // by reason-kind. They re-appear on every flush that carries the
-        // corresponding reason — they ARE the documentation.
-        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // §12.11 — per-reason hint appendix. Deduped per flush by reason-kind.
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut appendix = String::new();
-        for c in candidates {
-            let key = c.reason_kind.as_str();
-            if !seen.insert(key) {
+        for s in suggestions {
+            let Some(reason) = drift_reason(s) else { continue };
+            if !seen.insert(reason.clone()) {
                 continue;
             }
-            let Some(hint) = render_hint(c.reason_kind) else {
-                continue;
-            };
+            let Some(hint) = render_hint_for_reason(&reason) else { continue };
             appendix.push_str(&hint);
         }
         if !appendix.is_empty() {
@@ -87,160 +99,209 @@ pub fn render(candidates: &[Candidate], new_doc_topics: &[String], documentation
     out
 }
 
+/// Extract the reason-kind string from a suggestion's label, if it is a
+/// drift-detector suggestion (label parses as DriftMeta). Returns None for
+/// n-ary suggester suggestions.
+fn drift_reason(s: &Suggestion) -> Option<String> {
+    parse_drift_meta(s).map(|m| m.reason_kind)
+}
+
+/// Parse the DriftMeta from a suggestion's label. Returns None if the label
+/// is not a JSON-encoded DriftMeta.
+fn parse_drift_meta(s: &Suggestion) -> Option<DriftMeta> {
+    if s.label.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<DriftMeta>(&s.label).ok()
+}
+
 fn render_mesh_block(
     mesh: &str,
-    cands: &[&Candidate],
+    suggs: &[&Suggestion],
     seen_excerpts: &mut std::collections::BTreeSet<(String, Option<i64>, Option<i64>)>,
 ) -> String {
-    // Order: T1 partners → T2 excerpts → T3-6 clauses/excerpts/commands.
-    let why = cands.first().map(|c| c.mesh_why.as_str()).unwrap_or("");
+    // Determine the mesh why from the first participant of the first suggestion.
+    let why = suggs
+        .first()
+        .and_then(|s| s.participants.first())
+        .map(|p| p.why.as_str())
+        .unwrap_or("");
+
     let mut out = String::new();
     out.push_str(&format!("# {mesh} mesh: {why}\n"));
 
-    // Trigger locator(s): one `# triggered by <path>[#L<s>-L<e>]` line per
-    // distinct trigger that produced a candidate in this mesh block. Lets
-    // the developer see which of their own edits routed attention here
-    // without violating Goal 1 — partners stay the headline below.
+    // For each suggestion in this block, render its content.
+    // Drift suggestions carry DriftMeta in label; n-ary suggestions do not.
     let mut seen_trigger: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
         std::collections::BTreeSet::new();
-    for c in cands {
-        if c.trigger_path.is_empty() {
-            continue;
-        }
-        let key = (c.trigger_path.clone(), c.trigger_start, c.trigger_end);
-        if !seen_trigger.insert(key) {
-            continue;
-        }
-        let addr = format_addr(&c.trigger_path, c.trigger_start, c.trigger_end);
-        out.push_str(&format!("# triggered by {addr}\n"));
-    }
-
-    // Partner addresses (deduped by (path,start,end)). The trigger range
-    // is included in the same bullet list so the mesh's complete range
-    // set is visible — partners first per Goal #1, then the trigger.
     let mut seen_bullet: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
         std::collections::BTreeSet::new();
-    for c in cands {
-        let key = (
-            c.partner_path.clone(),
-            c.partner_start,
-            c.partner_end,
-        );
-        if !seen_bullet.insert(key) {
-            continue;
-        }
-        let addr = format_addr(&c.partner_path, c.partner_start, c.partner_end);
-        let mut line = format!("# - {addr}");
-        if !c.partner_marker.is_empty() {
-            line.push(' ');
-            line.push_str(&c.partner_marker);
-        }
-        if !c.partner_clause.is_empty() {
-            line.push_str(" — ");
-            line.push_str(&c.partner_clause);
-        }
-        out.push_str(&truncate_line(&line));
-        out.push('\n');
-    }
-    for c in cands {
-        if c.touched_path.is_empty() {
-            continue;
-        }
-        let key = (c.touched_path.clone(), c.touched_start, c.touched_end);
-        if !seen_bullet.insert(key) {
-            continue;
-        }
-        let addr = format_addr(&c.touched_path, c.touched_start, c.touched_end);
-        let line = format!("# - {addr}");
-        out.push_str(&truncate_line(&line));
-        out.push('\n');
-    }
 
-    // Excerpts.
-    for c in cands {
-        if !matches!(c.density, Density::L1 | Density::L2) {
-            continue;
-        }
-        if c.excerpt_of_path.is_empty() {
-            continue;
-        }
-        // Slice 3 (4.4): whole-file / binary / submodule / deleted /
-        // LFS partners are address-only per §12.5. Detected here as
-        // either a whole-file pin (no line range) or a non-empty
-        // partner_marker that maps to a non-excerpt state.
-        let is_whole_file = c.excerpt_start.is_none() || c.excerpt_end.is_none();
-        let is_non_excerpt_marker = matches!(
-            c.partner_marker.as_str(),
-            "[ORPHANED]" | "[CONFLICT]" | "[SUBMODULE]" | "[DELETED]"
-        );
-        if is_whole_file || is_non_excerpt_marker {
-            continue;
-        }
-        // Slice 3 (4.3): per-flush dedup of identical excerpts.
-        let key = (
-            c.excerpt_of_path.clone(),
-            c.excerpt_start,
-            c.excerpt_end,
-        );
-        if !seen_excerpts.insert(key) {
-            continue;
-        }
-        let body = render_excerpt(c);
-        if body.is_empty() {
-            // Empty body (e.g. file unreadable, range past EOF). Skip the
-            // address line too — an address with no excerpt would render
-            // as a stray paragraph.
-            continue;
-        }
-        out.push_str("#\n");
-        let addr = format_addr(&c.excerpt_of_path, c.excerpt_start, c.excerpt_end);
-        out.push_str(&format!("# {addr}\n"));
-        out.push_str(&body);
-    }
+    for s in suggs {
+        if let Some(meta) = parse_drift_meta(s) {
+            // Drift suggestion: participants[0] = partner, participants[1] = trigger (optional).
+            let partner = s.participants.first();
+            let trigger = s.participants.get(1);
 
-    // Commands (L2).
-    for c in cands {
-        if c.density != Density::L2 || c.command.is_empty() {
-            continue;
-        }
-        out.push_str("#\n");
-        let lead = command_lead_in(c.reason_kind);
-        out.push_str(&format!("# {lead}\n"));
-        for line in c.command.lines() {
-            out.push_str("#   ");
-            out.push_str(line);
-            out.push('\n');
+            // Trigger locator line.
+            if let Some(t) = trigger {
+                let t_path = t.path.to_string_lossy().to_string();
+                let (ts, te) = participant_range(s, 1);
+                let key = (t_path.clone(), ts, te);
+                if seen_trigger.insert(key) {
+                    let addr = format_addr(&t_path, ts, te);
+                    out.push_str(&format!("# triggered by {addr}\n"));
+                }
+            }
+
+            // Partner bullet.
+            if let Some(p) = partner {
+                let p_path = p.path.to_string_lossy().to_string();
+                let (ps, pe) = partner_range_from_meta(s, &meta);
+                let key = (p_path.clone(), ps, pe);
+                if seen_bullet.insert(key) {
+                    let addr = format_addr(&p_path, ps, pe);
+                    let mut line = format!("# - {addr}");
+                    if !meta.partner_marker.is_empty() {
+                        line.push(' ');
+                        line.push_str(&meta.partner_marker);
+                    }
+                    if !meta.partner_clause.is_empty() {
+                        line.push_str(" — ");
+                        line.push_str(&meta.partner_clause);
+                    }
+                    out.push_str(&truncate_line(&line));
+                    out.push('\n');
+                }
+            }
+
+            // Touched bullet.
+            if !meta.touched_path.is_empty() {
+                let key = (meta.touched_path.clone(), meta.touched_start, meta.touched_end);
+                if seen_bullet.insert(key) {
+                    let addr = format_addr(&meta.touched_path, meta.touched_start, meta.touched_end);
+                    let line = format!("# - {addr}");
+                    out.push_str(&truncate_line(&line));
+                    out.push('\n');
+                }
+            }
+
+            // Excerpts (L1/L2).
+            if meta.density >= 1 && !meta.excerpt_of_path.is_empty() {
+                let is_whole_file = meta.excerpt_start.is_none() || meta.excerpt_end.is_none();
+                let is_non_excerpt_marker = matches!(
+                    meta.partner_marker.as_str(),
+                    "[ORPHANED]" | "[CONFLICT]" | "[SUBMODULE]" | "[DELETED]"
+                );
+                if !is_whole_file && !is_non_excerpt_marker {
+                    let key = (meta.excerpt_of_path.clone(), meta.excerpt_start, meta.excerpt_end);
+                    if seen_excerpts.insert(key) {
+                        let body = read_excerpt_from_meta(&meta);
+                        if !body.is_empty() {
+                            out.push_str("#\n");
+                            let addr = format_addr(&meta.excerpt_of_path, meta.excerpt_start, meta.excerpt_end);
+                            out.push_str(&format!("# {addr}\n"));
+                            out.push_str(&body);
+                        }
+                    }
+                }
+            }
+
+            // Commands (L2).
+            if meta.density == 2 && !meta.command.is_empty() {
+                out.push_str("#\n");
+                let lead = command_lead_in_for_reason(&meta.reason_kind);
+                out.push_str(&format!("# {lead}\n"));
+                for line in meta.command.lines() {
+                    out.push_str("#   ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        } else {
+            // N-ary suggestion: render each participant as a bullet.
+            for (i, p) in s.participants.iter().enumerate() {
+                let p_path = p.path.to_string_lossy().to_string();
+                let (ps, pe) = if p.whole {
+                    (None, None)
+                } else {
+                    (Some(p.start as i64), Some(p.end as i64))
+                };
+                let key = (p_path.clone(), ps, pe);
+                if i == 0 {
+                    // First participant is the "trigger" conceptually for n-ary.
+                    if seen_trigger.insert(key) {
+                        let addr = format_addr(&p_path, ps, pe);
+                        out.push_str(&format!("# triggered by {addr}\n"));
+                    }
+                } else if seen_bullet.insert(key) {
+                    let addr = format_addr(&p_path, ps, pe);
+                    let line = format!("# - {addr}");
+                    out.push_str(&truncate_line(&line));
+                    out.push('\n');
+                }
+            }
         }
     }
 
     out
 }
 
-fn render_cross_cutting(c: &Candidate) -> String {
+/// For drift suggestions, get the partner (participants[0]) start/end,
+/// preferring the DriftMeta-aware whole-file flag from the candidate.
+fn partner_range_from_meta(s: &Suggestion, _meta: &DriftMeta) -> (Option<i64>, Option<i64>) {
+    participant_range(s, 0)
+}
+
+/// Get (start, end) for participant at index `idx` in a suggestion,
+/// returning (None, None) for whole-file pins.
+fn participant_range(s: &Suggestion, idx: usize) -> (Option<i64>, Option<i64>) {
+    let Some(p) = s.participants.get(idx) else { return (None, None) };
+    if p.whole {
+        (None, None)
+    } else {
+        (Some(p.start as i64), Some(p.end as i64))
+    }
+}
+
+fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
+    let Some(meta) = parse_drift_meta(s) else {
+        // N-ary cross-cutting — simple list.
+        let mut out = String::new();
+        out.push_str("# mesh recommendation:\n");
+        for p in &s.participants {
+            out.push_str(&format!("# - {}\n", p.path.display()));
+        }
+        return out;
+    };
+
+    // Reconstruct from DriftMeta — mirrors the previous render_cross_cutting(Candidate).
+    let partner_path = s.participants.first().map(|p| p.path.to_string_lossy().to_string()).unwrap_or_default();
+    let trigger_path = s.participants.get(1).map(|p| p.path.to_string_lossy().to_string()).unwrap_or_default();
+    let (trigger_start, trigger_end) = participant_range(s, 1);
+    let mesh = s.participants.first().map(|p| p.name.as_str()).unwrap_or("");
+
     let mut out = String::new();
-    match c.reason_kind {
-        ReasonKind::NewGroup => {
-            out.push_str("# Possible new group over:\n");
-            out.push_str(&format!("# - {}\n", c.trigger_path));
-            out.push_str(&format!("# - {}\n", c.partner_path));
-            if !c.partner_clause.is_empty() {
-                out.push_str(&format!("# {}.\n", c.partner_clause));
+    match meta.reason_kind.as_str() {
+        REASON_NEW_GROUP => {
+            out.push_str("# Possible new mesh over:\n");
+            out.push_str(&format!("# - {}\n", trigger_path));
+            out.push_str(&format!("# - {}\n", partner_path));
+            if !meta.partner_clause.is_empty() {
+                out.push_str(&format!("# {}.\n", meta.partner_clause));
             }
-            if !c.command.is_empty() {
+            if !meta.command.is_empty() {
                 out.push_str("#\n");
-                out.push_str("# To record a new group:\n");
-                for line in c.command.lines() {
+                out.push_str("# To record a new mesh:\n");
+                for line in meta.command.lines() {
                     out.push_str("#   ");
                     out.push_str(line);
                     out.push('\n');
                 }
             }
         }
-        ReasonKind::StagingCrossCut => {
-            // partner_clause is a structured packing produced by
-            // detect_t8: either "overlap|<staged_mesh>|<other_mesh>|<path>|<is>|<ie>|<os>|<oe>|"
-            // or "content_differs|<staged_mesh>|<other_mesh>|<path>|<os>|<oe>".
-            let parts: Vec<&str> = c.partner_clause.split('|').collect();
+        REASON_STAGING_CROSS_CUT => {
+            let parts: Vec<&str> = meta.partner_clause.split('|').collect();
             match parts.first().copied() {
                 Some("overlap") if parts.len() >= 8 => {
                     let staged_mesh = parts[1];
@@ -250,8 +311,8 @@ fn render_cross_cutting(c: &Candidate) -> String {
                     let ie = parts[5];
                     let os = parts[6];
                     let oe = parts[7];
-                    let s_start = c.trigger_start.unwrap_or(0);
-                    let s_end = c.trigger_end.unwrap_or(0);
+                    let s_start = trigger_start.unwrap_or(0);
+                    let s_end = trigger_end.unwrap_or(0);
                     out.push_str(&format!(
                         "# {staged_mesh} [STAGED] overlaps {other_mesh} at {path}#L{is_}-L{ie}.\n"
                     ));
@@ -275,43 +336,36 @@ fn render_cross_cutting(c: &Candidate) -> String {
                     ));
                 }
                 _ => {
-                    out.push_str(&format!("# {} [STAGED]\n", c.mesh));
-                    if !c.partner_clause.is_empty() {
-                        out.push_str(&format!("# {}.\n", c.partner_clause));
+                    out.push_str(&format!("# {} [STAGED]\n", mesh));
+                    if !meta.partner_clause.is_empty() {
+                        out.push_str(&format!("# {}.\n", meta.partner_clause));
                     }
                 }
             }
-            if !c.command.is_empty() {
+            if !meta.command.is_empty() {
                 out.push_str("#\n");
                 out.push_str("# To resolve:\n");
-                for line in c.command.lines() {
+                for line in meta.command.lines() {
                     out.push_str("#   ");
                     out.push_str(line);
                     out.push('\n');
                 }
             }
         }
-        ReasonKind::EmptyMesh => {
-            // partner_clause is "removed:<addr1>,<addr2>,..." packed by
-            // detect_t9. Render the §12.10 / §12.12 T9 template verbatim.
-            let removed = c
-                .partner_clause
-                .strip_prefix("removed:")
-                .unwrap_or("");
+        REASON_EMPTY_MESH => {
+            let removed = meta.partner_clause.strip_prefix("removed:").unwrap_or("");
             let addrs: Vec<&str> = removed.split(',').filter(|s| !s.is_empty()).collect();
             out.push_str(&format!(
                 "# The staged removal would leave {} with no ranges.\n",
-                c.mesh
+                mesh
             ));
             for addr in &addrs {
-                out.push_str(&format!("# - {}: removing {addr}\n", c.mesh));
+                out.push_str(&format!("# - {}: removing {addr}\n", mesh));
             }
-            if !c.command.is_empty() {
+            if !meta.command.is_empty() {
                 out.push_str("#\n");
-                out.push_str(
-                    "# To either add a replacement range or retire the mesh:\n",
-                );
-                for line in c.command.lines() {
+                out.push_str("# To either add a replacement range or retire the mesh:\n");
+                for line in meta.command.lines() {
                     out.push_str("#   ");
                     out.push_str(line);
                     out.push('\n');
@@ -323,34 +377,51 @@ fn render_cross_cutting(c: &Candidate) -> String {
     out
 }
 
-fn command_lead_in(kind: ReasonKind) -> &'static str {
-    match kind {
-        ReasonKind::RenameLiteral => "to re-record after the rename, run:",
-        ReasonKind::RangeCollapse => "To re-record with the new extent:",
-        ReasonKind::LosingCoherence => "To narrow or retire the group:",
-        ReasonKind::SymbolRename => "To re-record both sides:",
+fn command_lead_in_for_reason(reason: &str) -> &'static str {
+    match reason {
+        "rename_literal" => "to re-record after the rename, run:",
+        "range_collapse" => "To re-record with the new extent:",
+        "losing_coherence" => "To narrow or retire the group:",
+        "symbol_rename" => "To re-record both sides:",
         _ => "To reconcile:",
     }
 }
 
-fn render_excerpt(c: &Candidate) -> String {
-    // Binary / deleted / LFS / submodule / orphaned → address-only, no
-    // excerpt. Marker on the partner line already conveys the state.
+fn read_excerpt_from_meta(meta: &DriftMeta) -> String {
     if matches!(
-        c.partner_marker.as_str(),
+        meta.partner_marker.as_str(),
         "[ORPHANED]" | "[CONFLICT]" | "[SUBMODULE]" | "[DELETED]"
     ) {
         return String::new();
     }
-    // Caller must have loaded the excerpt content via `excerpt_body`.
-    // We don't re-fetch from disk here — the flush layer may populate
-    // `partner_clause`-driven excerpts in future; for now we inline the
-    // raw read via the `excerpt_of_path` fields lazily.
-    let body = read_excerpt(c).unwrap_or_default();
+    let path = std::path::Path::new(&meta.excerpt_of_path);
+    if !path.exists() {
+        return String::new();
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return String::new(),
+    };
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(t) => t.to_string(),
+        Err(_) => return String::new(),
+    };
+    let body = match (meta.excerpt_start, meta.excerpt_end) {
+        (Some(s), Some(e)) => {
+            let lines: Vec<&str> = text.lines().collect();
+            let lo = (s.max(1) as usize).saturating_sub(1);
+            let hi = (e as usize).min(lines.len());
+            if lo >= hi {
+                return String::new();
+            }
+            lines[lo..hi].join("\n")
+        }
+        _ => text,
+    };
     if body.trim().is_empty() {
         return String::new();
     }
-    let lang = lang_for(&c.excerpt_of_path);
+    let lang = lang_for(&meta.excerpt_of_path);
     let fence = if body.contains("```") { "````" } else { "```" };
     let mut out = String::new();
     out.push_str(&format!("# {fence}{lang}\n"));
@@ -362,27 +433,6 @@ fn render_excerpt(c: &Candidate) -> String {
     }
     out.push_str(&format!("# {fence}\n"));
     out
-}
-
-fn read_excerpt(c: &Candidate) -> Option<String> {
-    let path = std::path::Path::new(&c.excerpt_of_path);
-    if !path.exists() {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    let text = std::str::from_utf8(&bytes).ok()?.to_string();
-    match (c.excerpt_start, c.excerpt_end) {
-        (Some(s), Some(e)) => {
-            let lines: Vec<&str> = text.lines().collect();
-            let lo = (s.max(1) as usize).saturating_sub(1);
-            let hi = (e as usize).min(lines.len());
-            if lo >= hi {
-                return Some(String::new());
-            }
-            Some(lines[lo..hi].join("\n"))
-        }
-        _ => Some(text),
-    }
 }
 
 fn lang_for(path: &str) -> &'static str {
@@ -605,42 +655,41 @@ fn render_doc_topic(topic: &str) -> String {
 }
 
 /// Per-reason `--documentation` hint sentence (§12.11). One short
-/// sentence per reason-kind, pointing at the reconciling `git mesh`
-/// command. Returns `None` for reason-kinds that intentionally have no
-/// hint (T10 — the post-commit hook handles re-anchoring on its own).
-fn render_hint(kind: ReasonKind) -> Option<String> {
-    let body: &str = match kind {
-        ReasonKind::Partner => {
+/// sentence per reason-kind string.
+fn render_hint_for_reason(reason: &str) -> Option<String> {
+    let body: &str = match reason {
+        "partner" => {
             "to re-record a range after edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
         }
-        ReasonKind::WriteAcross => {
+        "write_across" => {
             "to re-record a partner that needed matching edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
         }
-        ReasonKind::RenameLiteral => {
+        "rename_literal" => {
             "to follow a rename, run `git mesh add <name> <new-path>` and then `git mesh commit <name>`."
         }
-        ReasonKind::RangeCollapse => {
+        "range_collapse" => {
             "to re-record a shrunk extent, run `git mesh rm <name> <path>#L<old-s>-L<old-e>` and then `git mesh add <name> <path>#L<new-s>-L<new-e>`."
         }
-        ReasonKind::LosingCoherence => {
+        "losing_coherence" => {
             "to narrow or retire a mesh, run `git mesh rm <name> <path>` or `git mesh delete <name>`."
         }
-        ReasonKind::SymbolRename => {
+        "symbol_rename" => {
             "to re-record after a symbol rename, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
         }
-        ReasonKind::NewGroup => {
-            "to record a candidate group, run `git mesh add <group-name> <path-1> <path-2>`, set `git mesh why <group-name> -m \"...\"`, then `git mesh commit <group-name>`."
+        "new_group" => {
+            "to record a candidate mesh, run `git mesh add <mesh-name> <path-1> <path-2>`, set `git mesh why <mesh-name> -m \"...\"`, then `git mesh commit <mesh-name>`."
         }
-        ReasonKind::StagingCrossCut => {
+        "staging_cross_cut" => {
             "to resolve a cross-mesh overlap, run `git mesh restore <name>` or `git mesh delete <name>`."
         }
-        ReasonKind::EmptyMesh => {
+        "empty_mesh" => {
             "to unblock an empty mesh, run `git mesh add <name> <path>` or `git mesh delete <name>`."
         }
-        ReasonKind::PendingCommit => return None,
-        ReasonKind::Terminal => {
+        "pending_commit" => return None,
+        "terminal" => {
             "to recover from a terminal state, see `git mesh fetch`, finish the merge, or pin the submodule root."
         }
+        _ => return None,
     };
     Some(format!("# {body}\n"))
 }
@@ -648,13 +697,18 @@ fn render_hint(kind: ReasonKind) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::advice::candidates::{Candidate, Density, ReasonKind};
+    use crate::advice::candidates::{Density, MeshRange, MeshRangeStatus, ReasonKind, candidate_to_suggestion};
+    use crate::advice::suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
+    use std::path::PathBuf;
 
-    fn cand(mesh: &str, partner: &str) -> Candidate {
-        Candidate {
+    /// Build a minimal drift Suggestion via candidate_to_suggestion, mirroring
+    /// the old `cand()` helper that built a Candidate.
+    fn sugg(mesh: &str, partner: &str) -> Suggestion {
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let c = Candidate {
             mesh: mesh.into(),
             mesh_why: "why text".into(),
-            reason_kind: ReasonKind::Partner,
+            reason_kind: CRK::Partner,
             partner_path: partner.into(),
             partner_start: Some(1),
             partner_end: Some(10),
@@ -666,7 +720,7 @@ mod tests {
             touched_end: None,
             partner_marker: String::new(),
             partner_clause: String::new(),
-            density: Density::L0,
+            density: CDensity::L0,
             command: String::new(),
             excerpt_of_path: String::new(),
             excerpt_start: None,
@@ -675,7 +729,8 @@ mod tests {
             new_blob: None,
             old_path: None,
             new_path: None,
-        }
+        };
+        candidate_to_suggestion(&c)
     }
 
     #[test]
@@ -685,8 +740,8 @@ mod tests {
 
     #[test]
     fn every_line_prefixed_with_hash() {
-        let c = cand("m1", "b.rs");
-        let out = render(&[c], &[], false);
+        let s = sugg("m1", "b.rs");
+        let out = render(&[s], &[], false);
         for line in out.lines() {
             assert!(line.starts_with('#'), "line does not start with #: {line:?}");
         }
@@ -694,27 +749,50 @@ mod tests {
 
     #[test]
     fn mesh_header_and_partner_address() {
-        let c = cand("m1", "b.rs");
-        let out = render(&[c], &[], false);
+        let s = sugg("m1", "b.rs");
+        let out = render(&[s], &[], false);
         assert!(out.contains("# m1 mesh: why text"));
         assert!(out.contains("# - b.rs#L1-L10"));
     }
 
     #[test]
     fn blank_comment_lines_between_blocks() {
-        let mut c1 = cand("m1", "b.rs");
-        c1.mesh = "m1".into();
-        let mut c2 = cand("m2", "c.rs");
-        c2.mesh = "m2".into();
-        let out = render(&[c1, c2], &[], false);
+        let mut s1 = sugg("m1", "b.rs");
+        let mut s2 = sugg("m2", "c.rs");
+        let out = render(&[s1, s2], &[], false);
         assert!(out.contains("#\n"));
     }
 
     #[test]
     fn marker_appended_when_present() {
-        let mut c = cand("m1", "b.rs");
-        c.partner_marker = "[CHANGED]".into();
-        let out = render(&[c], &[], false);
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let mut c = Candidate {
+            mesh: "m1".into(),
+            mesh_why: "why text".into(),
+            reason_kind: CRK::Partner,
+            partner_path: "b.rs".into(),
+            partner_start: Some(1),
+            partner_end: Some(10),
+            trigger_path: "t.rs".into(),
+            trigger_start: None,
+            trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
+            partner_marker: "[CHANGED]".into(),
+            partner_clause: String::new(),
+            density: CDensity::L0,
+            command: String::new(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
+        };
+        let s = candidate_to_suggestion(&c);
+        let out = render(&[s], &[], false);
         assert!(out.contains("[CHANGED]"));
     }
 
@@ -722,10 +800,34 @@ mod tests {
     /// (Bug 3). The terminal-states topic must be absent.
     #[test]
     fn bare_render_does_not_emit_doc_topic_preamble() {
-        let mut c = cand("m1", "b.rs");
-        c.reason_kind = ReasonKind::Terminal;
-        c.partner_marker = "[CHANGED]".into();
-        let out = render(&[c], &["terminal-states".into()], false);
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let c = Candidate {
+            mesh: "m1".into(),
+            mesh_why: "why text".into(),
+            reason_kind: CRK::Terminal,
+            partner_path: "b.rs".into(),
+            partner_start: Some(1),
+            partner_end: Some(10),
+            trigger_path: "t.rs".into(),
+            trigger_start: None,
+            trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
+            partner_marker: "[CHANGED]".into(),
+            partner_clause: String::new(),
+            density: CDensity::L0,
+            command: String::new(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
+        };
+        let s = candidate_to_suggestion(&c);
+        let out = render(&[s], &["terminal-states".into()], false);
         assert!(
             !out.contains("A terminal marker"),
             "bare render must not emit terminal-states topic; got:\n{out}"
@@ -739,10 +841,34 @@ mod tests {
     /// --documentation render must emit the doc-topic preamble (Bug 3).
     #[test]
     fn documentation_render_emits_doc_topic_preamble() {
-        let mut c = cand("m1", "b.rs");
-        c.reason_kind = ReasonKind::Terminal;
-        c.partner_marker = "[CHANGED]".into();
-        let out = render(&[c], &["terminal-states".into()], true);
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let c = Candidate {
+            mesh: "m1".into(),
+            mesh_why: "why text".into(),
+            reason_kind: CRK::Terminal,
+            partner_path: "b.rs".into(),
+            partner_start: Some(1),
+            partner_end: Some(10),
+            trigger_path: "t.rs".into(),
+            trigger_start: None,
+            trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
+            partner_marker: "[CHANGED]".into(),
+            partner_clause: String::new(),
+            density: CDensity::L0,
+            command: String::new(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
+        };
+        let s = candidate_to_suggestion(&c);
+        let out = render(&[s], &["terminal-states".into()], true);
         assert!(
             out.contains("A terminal marker"),
             "--documentation render must emit terminal-states topic; got:\n{out}"
@@ -753,15 +879,34 @@ mod tests {
     /// `# - a/one.rs [CHANGED]` with NO `# triggered by` line (Bug 4).
     #[test]
     fn partner_drift_renders_bullet_with_marker_no_triggered_by() {
-        let mut c = cand("my-mesh", "a/one.rs");
-        c.trigger_path = String::new(); // empty — partner drift
-        c.trigger_start = None;
-        c.trigger_end = None;
-        c.partner_start = None;
-        c.partner_end = None;
-        c.reason_kind = ReasonKind::Terminal;
-        c.partner_marker = "[CHANGED]".into();
-        let out = render(&[c], &[], false);
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let c = Candidate {
+            mesh: "my-mesh".into(),
+            mesh_why: "why text".into(),
+            reason_kind: CRK::Terminal,
+            partner_path: "a/one.rs".into(),
+            partner_start: None,
+            partner_end: None,
+            trigger_path: String::new(), // empty — partner drift
+            trigger_start: None,
+            trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
+            partner_marker: "[CHANGED]".into(),
+            partner_clause: String::new(),
+            density: CDensity::L0,
+            command: String::new(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
+        };
+        let s = candidate_to_suggestion(&c);
+        let out = render(&[s], &[], false);
         assert!(
             out.contains("# - a/one.rs [CHANGED]"),
             "must render partner bullet with marker; got:\n{out}"
@@ -777,13 +922,34 @@ mod tests {
     ///   `# - src/bar.ts [RENAMED] — was src/foo.ts`
     #[test]
     fn renamed_partner_renders_marker_and_clause() {
-        let mut c = cand("link", "src/bar.ts");
-        c.partner_start = None;
-        c.partner_end = None;
-        c.trigger_path = "src/uses.ts".into();
-        c.partner_marker = "[RENAMED]".into();
-        c.partner_clause = "was src/foo.ts".into();
-        let out = render(&[c], &[], false);
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let c = Candidate {
+            mesh: "link".into(),
+            mesh_why: "why text".into(),
+            reason_kind: CRK::Partner,
+            partner_path: "src/bar.ts".into(),
+            partner_start: None,
+            partner_end: None,
+            trigger_path: "src/uses.ts".into(),
+            trigger_start: None,
+            trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
+            partner_marker: "[RENAMED]".into(),
+            partner_clause: "was src/foo.ts".into(),
+            density: CDensity::L0,
+            command: String::new(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
+        };
+        let s = candidate_to_suggestion(&c);
+        let out = render(&[s], &[], false);
         assert!(
             out.contains("# - src/bar.ts [RENAMED] — was src/foo.ts"),
             "must render renamed partner with marker and clause; got:\n{out}"
@@ -794,14 +960,34 @@ mod tests {
     /// command block with the correct lead-in.
     #[test]
     fn rename_literal_l2_renders_command_block() {
-        let mut c = cand("link", "src/bar.ts");
-        c.partner_start = None;
-        c.partner_end = None;
-        c.trigger_path = "src/bar.ts".into();
-        c.reason_kind = ReasonKind::RenameLiteral;
-        c.density = Density::L2;
-        c.command = "git mesh rm  link src/foo.ts\ngit mesh add link src/bar.ts\ngit mesh commit link".into();
-        let out = render(&[c], &[], false);
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let c = Candidate {
+            mesh: "link".into(),
+            mesh_why: "why text".into(),
+            reason_kind: CRK::RenameLiteral,
+            partner_path: "src/bar.ts".into(),
+            partner_start: None,
+            partner_end: None,
+            trigger_path: "src/bar.ts".into(),
+            trigger_start: None,
+            trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
+            partner_marker: String::new(),
+            partner_clause: String::new(),
+            density: CDensity::L2,
+            command: "git mesh rm  link src/foo.ts\ngit mesh add link src/bar.ts\ngit mesh commit link".into(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
+        };
+        let s = candidate_to_suggestion(&c);
+        let out = render(&[s], &[], false);
         assert!(
             out.contains("# to re-record after the rename, run:"),
             "must emit rename lead-in; got:\n{out}"
@@ -824,10 +1010,34 @@ mod tests {
     /// as a bare path with no `#L…` suffix (Bug 1).
     #[test]
     fn whole_file_partner_renders_without_line_suffix() {
-        let mut c = cand("checkout-flow", "api/charge.ts");
-        c.partner_start = None;
-        c.partner_end = None;
-        let out = render(&[c], &[], false);
+        use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
+        let c = Candidate {
+            mesh: "checkout-flow".into(),
+            mesh_why: "why text".into(),
+            reason_kind: CRK::Partner,
+            partner_path: "api/charge.ts".into(),
+            partner_start: None,
+            partner_end: None,
+            trigger_path: "t.rs".into(),
+            trigger_start: None,
+            trigger_end: None,
+            touched_path: String::new(),
+            touched_start: None,
+            touched_end: None,
+            partner_marker: String::new(),
+            partner_clause: String::new(),
+            density: CDensity::L0,
+            command: String::new(),
+            excerpt_of_path: String::new(),
+            excerpt_start: None,
+            excerpt_end: None,
+            old_blob: None,
+            new_blob: None,
+            old_path: None,
+            new_path: None,
+        };
+        let s = candidate_to_suggestion(&c);
+        let out = render(&[s], &[], false);
         assert!(
             out.contains("# - api/charge.ts\n"),
             "whole-file partner must render as bare path; got:\n{out}"

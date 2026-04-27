@@ -13,6 +13,7 @@
 
 use crate::advice::session::state::{ReadRecord, TouchInterval};
 use crate::advice::workspace_tree::DiffEntry;
+use serde::{Deserialize, Serialize};
 
 // ── Candidate types (preserved from former `intersections.rs`) ───────────────
 
@@ -804,6 +805,160 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
     }
 
     out
+}
+
+// ── Detector trait impls ─────────────────────────────────────────────────────
+
+/// Convert a `Candidate` produced by a pairwise drift detector into a
+/// `Suggestion` at the `Detector` seam.
+///
+/// Layout:
+/// - `participants[0]` — partner range (always present)
+/// - `participants[1]` — trigger range (omitted when `trigger_path` is empty,
+///   e.g. partner-drift candidates)
+///
+/// Extra rendering fields (marker, clause, density, command, excerpt, touched)
+/// are JSON-serialized into `label` so `render.rs` can recover them without
+/// modifying `Suggestion`. This is intentionally opaque outside the
+/// candidates↔render seam.
+///
+/// `ConfidenceBand::High` is used for all drift detectors — they are
+/// deterministic, single-channel signals with no probabilistic scoring.
+pub fn candidate_to_suggestion(c: &Candidate) -> crate::advice::suggestion::Suggestion {
+    use crate::advice::suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
+
+    let partner = MeshRange {
+        name: c.mesh.clone(),
+        why: c.mesh_why.clone(),
+        path: std::path::PathBuf::from(&c.partner_path),
+        start: c.partner_start.map(|v| v as u32).unwrap_or(0),
+        end: c.partner_end.map(|v| v as u32).unwrap_or(u32::MAX),
+        whole: c.partner_start.is_none() || c.partner_end.is_none(),
+        status: MeshRangeStatus::Stable,
+    };
+
+    let mut participants = vec![partner];
+
+    if !c.trigger_path.is_empty() {
+        let trigger = MeshRange {
+            name: c.mesh.clone(),
+            why: c.mesh_why.clone(),
+            path: std::path::PathBuf::from(&c.trigger_path),
+            start: c.trigger_start.map(|v| v as u32).unwrap_or(0),
+            end: c.trigger_end.map(|v| v as u32).unwrap_or(u32::MAX),
+            whole: c.trigger_start.is_none() || c.trigger_end.is_none(),
+            status: MeshRangeStatus::Stable,
+        };
+        participants.push(trigger);
+    }
+
+    // Encode extra rendering fields as JSON in label so render.rs can recover them.
+    let meta = DriftMeta {
+        reason_kind: c.reason_kind.as_str().to_string(),
+        partner_marker: c.partner_marker.clone(),
+        partner_clause: c.partner_clause.clone(),
+        density: match c.density {
+            Density::L0 => 0,
+            Density::L1 => 1,
+            Density::L2 => 2,
+        },
+        command: c.command.clone(),
+        touched_path: c.touched_path.clone(),
+        touched_start: c.touched_start,
+        touched_end: c.touched_end,
+        excerpt_of_path: c.excerpt_of_path.clone(),
+        excerpt_start: c.excerpt_start,
+        excerpt_end: c.excerpt_end,
+    };
+    let label = serde_json::to_string(&meta).unwrap_or_default();
+
+    Suggestion::new(
+        ConfidenceBand::High,
+        Viability::Ready,
+        ScoreBreakdown { shared_id: 0.0, co_edit: 0.0, trigram: 0.0, composite: 1.0 },
+        participants,
+        label,
+    )
+}
+
+/// Metadata encoded in the `label` field of drift detector `Suggestion`s.
+/// Private to the candidates↔render seam.
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct DriftMeta {
+    pub reason_kind: String,
+    pub partner_marker: String,
+    pub partner_clause: String,
+    pub density: u8,
+    pub command: String,
+    pub touched_path: String,
+    pub touched_start: Option<i64>,
+    pub touched_end: Option<i64>,
+    pub excerpt_of_path: String,
+    pub excerpt_start: Option<i64>,
+    pub excerpt_end: Option<i64>,
+}
+
+/// Zero-sized struct: wraps `detect_partner_drift` behind the `Detector` trait.
+pub struct PartnerDriftDetector;
+
+impl crate::advice::detector::Detector for PartnerDriftDetector {
+    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
+        detect_partner_drift(input).iter().map(candidate_to_suggestion).collect()
+    }
+}
+
+/// Zero-sized struct: wraps `detect_read_intersects_mesh` behind the `Detector` trait.
+pub struct ReadIntersectsMeshDetector;
+
+impl crate::advice::detector::Detector for ReadIntersectsMeshDetector {
+    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
+        detect_read_intersects_mesh(input).iter().map(candidate_to_suggestion).collect()
+    }
+}
+
+/// Zero-sized struct: wraps `detect_session_co_touch` behind the `Detector` trait.
+pub struct SessionCoTouchDetector;
+
+impl crate::advice::detector::Detector for SessionCoTouchDetector {
+    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
+        detect_session_co_touch(input).iter().map(candidate_to_suggestion).collect()
+    }
+}
+
+/// Zero-sized struct: wraps `detect_staging_cross_cut` behind the `Detector` trait.
+pub struct StagingCrossCutDetector;
+
+impl crate::advice::detector::Detector for StagingCrossCutDetector {
+    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
+        detect_staging_cross_cut(input).iter().map(candidate_to_suggestion).collect()
+    }
+}
+
+/// Zero-sized struct: wraps `detect_delta_intersects_mesh` behind the `Detector` trait.
+pub struct DeltaIntersectsMeshDetector;
+
+impl crate::advice::detector::Detector for DeltaIntersectsMeshDetector {
+    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
+        detect_delta_intersects_mesh(input).iter().map(candidate_to_suggestion).collect()
+    }
+}
+
+/// Zero-sized struct: wraps `detect_range_shrink` behind the `Detector` trait.
+pub struct RangeShrinkDetector;
+
+impl crate::advice::detector::Detector for RangeShrinkDetector {
+    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
+        detect_range_shrink(input).iter().map(candidate_to_suggestion).collect()
+    }
+}
+
+/// Zero-sized struct: wraps `detect_rename_consequence` behind the `Detector` trait.
+pub struct RenameConsequenceDetector;
+
+impl crate::advice::detector::Detector for RenameConsequenceDetector {
+    fn detect(&self, input: &CandidateInput<'_>) -> Vec<crate::advice::suggestion::Suggestion> {
+        detect_rename_consequence(input).iter().map(candidate_to_suggestion).collect()
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

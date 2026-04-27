@@ -347,7 +347,12 @@ fn run_advice_render(
     } else {
         Vec::new()
     };
-    let rendered = crate::advice::render::render(&kept, &new_doc_topics, documentation);
+    // Convert candidates to Suggestions at the Detector seam before rendering.
+    let kept_suggestions: Vec<crate::advice::suggestion::Suggestion> = kept
+        .iter()
+        .map(crate::advice::candidates::candidate_to_suggestion)
+        .collect();
+    let rendered = crate::advice::render::render(&kept_suggestions, &new_doc_topics, documentation);
 
     // Build touch intervals (finding 3): one per affected path/range from
     // incr_delta + new_reads, sharing a single rfc3339 timestamp so a
