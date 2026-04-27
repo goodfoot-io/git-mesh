@@ -210,6 +210,137 @@ pub(crate) fn commit_tree_oid(repo: &gix::Repository, commit_oid: &str) -> Resul
         .to_string())
 }
 
+// ---------------------------------------------------------------------------
+// git_log_name_only — history channel helper for the suggest detector.
+// ---------------------------------------------------------------------------
+
+/// One commit's hash and the set of paths changed by it (vs its first parent).
+///
+/// Mirrors the JS `{ hash, files }` shape in `loadGitHistory`.
+#[derive(Clone, Debug)]
+pub struct CommitChanges {
+    pub hash: String,
+    /// Paths changed in this commit relative to its first parent.
+    /// For the root commit the parent is the empty tree.
+    pub changed_paths: Vec<String>,
+}
+
+/// Walk HEAD's first `n` ancestors (no-merges) via `gix` and return each
+/// commit's changed paths via tree-to-tree diff against its first parent.
+///
+/// Equivalent to `git log --name-only --no-merges -n N --pretty=format:commit:%H`
+/// but implemented entirely via the `gix` library.
+///
+/// Results are in git-log order (most recent first). Merge commits are excluded.
+pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitChanges>> {
+    let head_id = repo
+        .head_id()
+        .map_err(|e| Error::Git(format!("resolve HEAD: {e}")))?
+        .detach();
+
+    let walk = repo
+        .rev_walk([head_id])
+        .all()
+        .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
+
+    let mut out = Vec::with_capacity(n.min(512));
+
+    for info in walk {
+        if out.len() >= n {
+            break;
+        }
+        let info = info.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
+        let commit = repo
+            .find_commit(info.id)
+            .map_err(|e| Error::Git(format!("find commit {}: {e}", info.id)))?;
+
+        // Skip merge commits (more than one parent) — matches `--no-merges`.
+        let parent_ids: Vec<_> = commit.parent_ids().map(|p| p.detach()).collect();
+        if parent_ids.len() > 1 {
+            continue;
+        }
+
+        let new_tree = commit
+            .tree()
+            .map_err(|e| Error::Git(format!("commit tree {}: {e}", info.id)))?;
+
+        let old_tree = match parent_ids.first() {
+            Some(pid) => match repo.find_commit(*pid) {
+                Ok(parent) => parent.tree().unwrap_or_else(|_| repo.empty_tree()),
+                Err(_) => repo.empty_tree(),
+            },
+            None => repo.empty_tree(),
+        };
+
+        // Disable rename tracking — we only want which paths changed,
+        // not rename pairing (matches `git log --name-only` defaults).
+        let mut opts = gix::diff::Options::default();
+        opts.track_rewrites(None);
+
+        let changes = repo
+            .diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(opts))
+            .map_err(|e| Error::Git(format!("diff tree {}: {e}", info.id)))?;
+
+        let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for change in &changes {
+            use gix::object::tree::diff::ChangeDetached;
+            match change {
+                ChangeDetached::Addition { location, entry_mode, .. }
+                | ChangeDetached::Deletion { location, entry_mode, .. } => {
+                    // Only record blob entries; skip tree/directory entries.
+                    if !entry_mode.is_blob_or_symlink() {
+                        continue;
+                    }
+                    paths.insert(
+                        std::str::from_utf8(location.as_slice())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                ChangeDetached::Modification { location, entry_mode, .. } => {
+                    if !entry_mode.is_blob_or_symlink() {
+                        continue;
+                    }
+                    paths.insert(
+                        std::str::from_utf8(location.as_slice())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                ChangeDetached::Rewrite {
+                    source_location,
+                    source_entry_mode,
+                    location,
+                    entry_mode,
+                    ..
+                } => {
+                    if source_entry_mode.is_blob_or_symlink() {
+                        paths.insert(
+                            std::str::from_utf8(source_location.as_slice())
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                    }
+                    if entry_mode.is_blob_or_symlink() {
+                        paths.insert(
+                            std::str::from_utf8(location.as_slice())
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
+        out.push(CommitChanges {
+            hash: info.id.to_string(),
+            changed_paths: paths.into_iter().collect(),
+        });
+    }
+
+    Ok(out)
+}
+
 /// Extracted commit metadata.
 #[derive(Clone, Debug)]
 pub(crate) struct CommitMeta {

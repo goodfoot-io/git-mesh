@@ -5,12 +5,20 @@
 //! clique enumeration). In this initial phase it returns an empty vec so
 //! the surrounding infrastructure can be validated independently.
 
+pub mod apriori;
 pub mod canonical;
+pub mod edges;
+pub mod evidence;
+pub mod history;
 pub mod locator;
 pub mod op_stream;
 pub mod participants;
 
+pub use apriori::{atom_marginals_resolved, apriori_stats, AtomSessionIndex, AprioriStats};
 pub use canonical::{build_canonical_ranges, range_iou, CanonicalIndex, CanonicalRange};
+pub use edges::{score_edges, ComponentScores, Edge};
+pub use evidence::{build_pair_evidence, EvidenceRecord, PairEvidenceMap, PairKey, PairState, SessionParticipants, Technique};
+pub use history::{load_git_history, pair_history_score, CommitChanges, HistoryIndex};
 pub use locator::{attach_locators, prior_context_atoms, Atom};
 pub use op_stream::{build_op_stream, Op, OpKind, SessionRecord};
 pub use participants::{merge_ranges_per_file, participants as build_participants, Participant, ParticipantKind};
