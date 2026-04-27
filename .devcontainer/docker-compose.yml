@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   app:
     hostname: git-mesh
@@ -11,6 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     volumes:
       - ..:/workspace:cached
       - ${HOME}/devcontainer/git-mesh:/home/node:cached

@@ -1,6 +1,6 @@
 // src/workspace/post-commit.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join2, resolve } from "node:path";
 
@@ -621,13 +621,17 @@ async function recordPendingCommit(pid, sha) {
     LOCK_TIMEOUT_MS
   );
 }
-async function getPidCardId(pid) {
+async function getPidCardAssociation(pid) {
   return executeTransaction(
     getRegistryPath(),
     getLockPath(),
     (registry) => {
-      const pidStr = String(pid);
-      return registry.sessions[pidStr]?.cardId ?? null;
+      const entry = registry.sessions[String(pid)];
+      if (!entry?.cardId) return null;
+      const result = { cardId: entry.cardId };
+      if (entry.mode !== void 0) result.mode = entry.mode;
+      if (entry.workspacePath !== void 0) result.workspacePath = entry.workspacePath;
+      return result;
     },
     (registry) => pruneStaleEntries(registry.sessions, isProcessAlive, MAX_ENTRY_AGE_MS),
     { sessions: {} },
@@ -803,7 +807,13 @@ async function main() {
   const baseUrl = `http://${config.host}:${config.port}`;
   const token = config.accessToken;
   const sha = execFileSync3("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  const worktreePath = execFileSync3("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const rawWorktreePath = execFileSync3("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  let worktreePath;
+  try {
+    worktreePath = realpathSync(rawWorktreePath);
+  } catch {
+    worktreePath = rawWorktreePath;
+  }
   let cleanEnv;
   const getCleanEnv = () => {
     cleanEnv ??= buildCleanEnv();
@@ -827,16 +837,39 @@ async function main() {
     logger2.close();
     return;
   }
+  let anyAssociation = false;
   for (const pid of agentPids) {
-    const pidCardId = await getPidCardId(pid);
-    if (!pidCardId) continue;
-    if (!await cardHasWorktreeAt(baseUrl, token, pidCardId, worktreePath)) continue;
+    const association = await getPidCardAssociation(pid);
+    if (!association) {
+      logger2.debug("workspace/post-commit: no card association", { pid });
+      continue;
+    }
+    anyAssociation = true;
+    const { cardId: pidCardId, mode, workspacePath: attachedPath } = association;
+    if (mode === "attach" || attachedPath !== void 0) {
+      let canonicalAttached;
+      try {
+        canonicalAttached = attachedPath !== void 0 ? realpathSync(attachedPath) : "";
+      } catch {
+        canonicalAttached = attachedPath ?? "";
+      }
+      if (canonicalAttached !== worktreePath) {
+        logger2.info("workspace/post-commit: workspace mismatch (attach-mode)", {
+          attachedPath: canonicalAttached,
+          worktreePath,
+          cardId: pidCardId
+        });
+        continue;
+      }
+    } else {
+      if (!await cardHasWorktreeAt(baseUrl, token, pidCardId, worktreePath)) continue;
+    }
     await processCommitForCard(baseUrl, token, pidCardId, sha, worktreePath, sessionId);
     await checkpointSessionStream(config.reposPath, pidCardId, sha, getCleanEnv, logger2);
     logger2.close();
     return;
   }
-  await recordPendingCommit(agentPids[0], sha);
+  if (!anyAssociation) await recordPendingCommit(agentPids[0], sha);
   logger2.close();
 }
 async function processCommitForCard(baseUrl, token, cardId, sha, workspacePath, sessionId) {
