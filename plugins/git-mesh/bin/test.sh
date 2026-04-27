@@ -135,7 +135,8 @@ if [ -f "$BASELINE" ]; then
 else
   bad "SessionStart: baseline.state missing at $BASELINE"
 fi
-assert_stdout_empty "SessionStart"
+assert_stdout_json_field "SessionStart" '.hookSpecificOutput.hookEventName' "SessionStart"
+assert_stdout_contains "SessionStart" "git mesh advice is active"
 
 log "Test 1b: SessionStart with source=compact also snapshots (new session id)"
 SID1B="sess-one-b"

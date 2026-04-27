@@ -13,4 +13,7 @@ sid="$(hook_field '.session_id')"
 [ -n "$sid" ] || exit 0
 
 git mesh advice "$sid" snapshot >/dev/null 2>&1 || true
+
+emit_advice_text SessionStart \
+  "git mesh advice is active for this session: after each tool call you may receive a short note surfacing mesh drift, partner anchors, or co-touched ranges in the repos you touch."
 exit 0

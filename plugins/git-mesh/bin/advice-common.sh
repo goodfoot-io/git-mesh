@@ -95,7 +95,7 @@ emit_advice_text() {
   # accept hookSpecificOutput.additionalContext. Stop (and any other
   # event) must use only top-level fields like systemMessage.
   case "$event" in
-    PreToolUse|UserPromptSubmit|PostToolUse|PostToolBatch)
+    PreToolUse|UserPromptSubmit|PostToolUse|PostToolBatch|SessionStart)
       jq -nc --arg e "$event" --arg c "$text" \
         '{hookSpecificOutput: {hookEventName: $e, additionalContext: $c}, systemMessage: $c}'
       ;;
