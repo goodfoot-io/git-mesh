@@ -287,7 +287,7 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
             let fn_str = fname.to_string_lossy().into_owned();
             // Ops files have no extension; `.why` and `.<N>` are sidecars.
             if !fn_str.contains('.') {
-                candidates.insert(fn_str);
+                candidates.insert(crate::staging::decode_name_from_fs(&fn_str));
             }
         }
     }

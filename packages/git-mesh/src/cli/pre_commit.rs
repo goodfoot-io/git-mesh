@@ -155,7 +155,7 @@ fn mesh_names_with_staging(repo: &gix::Repository) -> Result<Vec<String>> {
             if s.contains('.') {
                 continue;
             }
-            names.insert(s.to_string());
+            names.insert(crate::staging::decode_name_from_fs(s));
         }
     }
     let mut out: Vec<String> = names.into_iter().collect();
