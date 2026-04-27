@@ -78,7 +78,7 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
         Some(AdviceCommand::Read { paths }) => {
             run_advice_read(repo, args.session_id, paths, args.snapshot_if_missing)
         }
-        Some(AdviceCommand::Suggest) => run_advice_suggest(),
+        Some(AdviceCommand::Suggest) => run_advice_suggest(&args.session_id),
         None => run_advice_render(
             repo,
             &args.session_id,
@@ -650,39 +650,157 @@ fn snapshot_into(
     Ok(())
 }
 
+/// Standalone entry point for `git mesh advice <id> suggest`, callable
+/// before repo discovery. Used by `main.rs` to bypass the require-repo
+/// gate for this hidden subcommand.
+pub fn run_advice_suggest_standalone(session_id: &str) -> Result<i32> {
+    run_advice_suggest(session_id)
+}
+
 /// Run the n-ary mesh suggestion detector and emit each suggestion as one
-/// JSON line to stdout. Currently produces no output (detector returns
-/// `vec![]` until pipeline stages are implemented).
-fn run_advice_suggest() -> Result<i32> {
-    use crate::advice::suggest::{SuggestConfig, SuggestDetector};
-    use crate::advice::detector::Detector;
-    use crate::advice::candidates::{CandidateInput, StagingState};
+/// JSON line to stdout.
+///
+/// Session data is loaded from `GIT_MESH_ADVICE_DIR/<session_id>/` (flat
+/// layout used by parity fixtures and the hidden CLI subcommand). A git
+/// repository is opened from the current directory for the history channel;
+/// if none is found, history is silently disabled.
+///
+/// The session directory is `<GIT_MESH_ADVICE_DIR>/<session_id>/` — no
+/// repo-key hashing — so the parity fixtures can sit in a flat directory
+/// without a real git repo.
+fn run_advice_suggest(_session_id: &str) -> Result<i32> {
+    use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
 
-    let detector = SuggestDetector::new(SuggestConfig::default());
+    let cfg = SuggestConfig::from_env();
 
-    // Construct a minimal no-op CandidateInput — the detector stub ignores
-    // all fields and returns vec![], so there is no need for a live repo or
-    // advice store at this stage.
-    let input = CandidateInput {
-        session_delta: &[],
-        incr_delta: &[],
-        new_reads: &[],
-        touch_intervals: &[],
-        mesh_ranges: &[],
-        internal_path_prefixes: &[],
-        staging: StagingState {
-            adds: &[],
-            removes: &[],
-        },
+    // The pipeline loads ALL sessions from GIT_MESH_ADVICE_DIR (the JS
+    // equivalent of the per-repo directory). Each subdirectory with both
+    // reads.jsonl and touches.jsonl is treated as one session.
+    //
+    // When GIT_MESH_ADVICE_DIR is the flat parity-fixture layout
+    // (`sessions/s1/`, `sessions/s2/`, …), every subdirectory is a session.
+    // When it is the normal advice-store layout, the caller should set
+    // GIT_MESH_ADVICE_DIR to the per-repo subdirectory
+    // (`<advice_base>/<repo_key>`).
+    let advice_dir = crate::advice::session::store::advice_base_dir();
+    let sessions = load_all_sessions(&advice_dir)?;
+
+    // Attempt to open the git repo for the history channel.
+    // Only try repo discovery when history is not explicitly disabled
+    // (GIT_MESH_SUGGEST_HISTORY=0) — use the current directory as the
+    // candidate. If discovery fails, or if the advice base dir is an
+    // override (GIT_MESH_ADVICE_DIR is set), disable history so that
+    // fixture/test runs are not contaminated by an unrelated repo's log.
+    let advice_dir_override = std::env::var("GIT_MESH_ADVICE_DIR").is_ok_and(|v| !v.is_empty());
+    let (repo_opt, repo_root) = if cfg.history_enabled && !advice_dir_override {
+        match gix::discover(".") {
+            Ok(repo) => {
+                let root = repo
+                    .workdir()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                (Some(repo), root)
+            }
+            Err(_) => (None, std::path::PathBuf::from(".")),
+        }
+    } else {
+        (None, std::path::PathBuf::from("."))
     };
 
-    let suggestions = detector.detect(&input);
+    // Allow parity-test harnesses to point the cohesion stage at a fixture
+    // directory containing source files, independent of the working directory.
+    let repo_root = if let Ok(override_root) = std::env::var("GIT_MESH_SUGGEST_REPO_ROOT") {
+        if !override_root.is_empty() {
+            std::path::PathBuf::from(override_root)
+        } else {
+            repo_root
+        }
+    } else {
+        repo_root
+    };
+
+    let suggestions = run_suggest_pipeline(
+        &sessions,
+        repo_opt.as_ref(),
+        &repo_root,
+        &cfg,
+    );
+
+    use std::io::Write;
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
     for s in &suggestions {
         let line = serde_json::to_string(s)
             .map_err(|e| anyhow::anyhow!("serialize suggestion: {e}"))?;
-        println!("{line}");
+        writeln!(handle, "{line}")
+            .map_err(|e| anyhow::anyhow!("write suggestion: {e}"))?;
     }
     Ok(0)
+}
+
+/// Load JSONL lines from a file, returning an empty vec if the file is absent.
+fn load_jsonl_lines<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<Vec<T>> {
+    use std::io::BufRead;
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(anyhow::anyhow!("open `{}`: {e}", path.display())),
+    };
+    let mut out = Vec::new();
+    for (idx, line) in std::io::BufReader::new(f).lines().enumerate() {
+        let line = line.map_err(|e| anyhow::anyhow!("read `{}`: {e}", path.display()))?;
+        if line.is_empty() {
+            continue;
+        }
+        let v: T = serde_json::from_str(&line).map_err(|e| {
+            anyhow::anyhow!("parse `{}` line {}: {e}", path.display(), idx + 1)
+        })?;
+        out.push(v);
+    }
+    Ok(out)
+}
+
+/// Load all sessions from a directory by scanning subdirectories.
+///
+/// Each subdirectory that contains `reads.jsonl` and/or `touches.jsonl`
+/// is treated as one session. Sessions are sorted by directory name for
+/// deterministic ordering.
+fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest::SessionRecord>> {
+    use crate::advice::session::state::{ReadRecord, TouchInterval};
+    use crate::advice::suggest::SessionRecord;
+
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    entries.sort();
+
+    let mut sessions = Vec::new();
+    for entry in entries {
+        let reads_path = entry.join("reads.jsonl");
+        let touches_path = entry.join("touches.jsonl");
+        // A valid session directory has at least one of reads/touches.
+        if !reads_path.exists() && !touches_path.exists() {
+            continue;
+        }
+        let sid = entry
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if sid.is_empty() {
+            continue;
+        }
+        let reads = load_jsonl_lines::<ReadRecord>(&reads_path)?;
+        let touches = load_jsonl_lines::<TouchInterval>(&touches_path)?;
+        sessions.push(SessionRecord { sid, reads, touches });
+    }
+    Ok(sessions)
 }
 
 /// Capture the current workspace tree into the file-backed session store.

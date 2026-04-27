@@ -1,9 +1,9 @@
 //! n-ary mesh suggestion detector.
 //!
-//! `SuggestDetector` implements the `Detector` trait and will eventually
-//! run the full v4 pipeline (trigram scoring, history channel,
-//! clique enumeration). In this initial phase it returns an empty vec so
-//! the surrounding infrastructure can be validated independently.
+//! `SuggestDetector` implements the `Detector` trait and runs the full v4
+//! pipeline (trigram scoring, history channel, clique enumeration).
+//! The primary entry point for parity testing is `run_suggest_pipeline`,
+//! which accepts pre-loaded `SessionRecord`s and an optional git repo.
 
 pub mod apriori;
 pub mod band;
@@ -35,6 +35,9 @@ pub use history::{load_git_history, pair_history_score, CommitChanges, HistoryIn
 pub use locator::{attach_locators, prior_context_atoms, Atom};
 pub use op_stream::{build_op_stream, Op, OpKind, SessionRecord};
 pub use participants::{merge_ranges_per_file, participants as build_participants, Participant, ParticipantKind};
+
+use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::advice::candidates::CandidateInput;
 use crate::advice::detector::Detector;
@@ -126,10 +129,255 @@ impl Default for SuggestConfig {
     }
 }
 
+impl SuggestConfig {
+    /// Build a `SuggestConfig` from the process environment.
+    ///
+    /// Honoured variables:
+    /// - `GIT_MESH_SUGGEST_TRIGRAM=0`  → `trigram_enabled = false`
+    /// - `GIT_MESH_SUGGEST_HISTORY=0`  → `history_enabled = false`
+    pub fn from_env() -> Self {
+        let mut cfg = Self::default();
+        if std::env::var("GIT_MESH_SUGGEST_TRIGRAM").as_deref() == Ok("0") {
+            cfg.trigram_enabled = false;
+        }
+        if std::env::var("GIT_MESH_SUGGEST_HISTORY").as_deref() == Ok("0") {
+            cfg.history_enabled = false;
+        }
+        cfg
+    }
+}
+
+// ── Orchestrator ─────────────────────────────────────────────────────────────
+
+/// Run the full v4 suggest pipeline and return scored `Suggestion`s.
+///
+/// `sessions`   — pre-loaded session records (reads + touches).
+/// `repo`       — optional git repository for the history channel.
+/// `repo_root`  — filesystem root used for file I/O in the cohesion stage.
+///                Pass the worktree root when a real repo is available,
+///                or any path when history is disabled (cohesion reads will
+///                silently return empty tokens).
+///
+/// This is the primary entry point for parity testing and the CLI
+/// `git mesh advice <id> suggest` subcommand.
+pub fn run_suggest_pipeline(
+    sessions: &[SessionRecord],
+    repo: Option<&gix::Repository>,
+    repo_root: &Path,
+    cfg: &SuggestConfig,
+) -> Vec<Suggestion> {
+    if sessions.is_empty() {
+        return Vec::new();
+    }
+
+    // ── Stages 3–5: op-stream → locators → participants per session ───────────
+    let mut session_participants: Vec<SessionParticipants> = Vec::new();
+    let mut all_parts: Vec<Participant> = Vec::new();
+
+    for rec in sessions {
+        let mut ops = build_op_stream(rec, cfg);
+        attach_locators(&mut ops, cfg);
+        let raw_parts = build_participants(&ops, &rec.sid);
+        let merged = merge_ranges_per_file(&raw_parts, cfg);
+        all_parts.extend(merged.clone());
+        session_participants.push(SessionParticipants {
+            sid: rec.sid.clone(),
+            ops,
+            parts: merged,
+        });
+    }
+
+    // ── Stage 6: canonical ranges ─────────────────────────────────────────────
+    let canonical = build_canonical_ranges(&all_parts, cfg);
+    if canonical.ranges.is_empty() {
+        return Vec::new();
+    }
+
+    // ── Stage 7: pair evidence ────────────────────────────────────────────────
+    let pairs = build_pair_evidence(&session_participants, &canonical, cfg);
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+
+    // ── Stage 8: apriori atom marginals ──────────────────────────────────────
+    // Build the (canonical_id, session_sid) pairs from all participants.
+    let resolved: Vec<(usize, String)> = all_parts
+        .iter()
+        .filter_map(|p| {
+            let key = canonical::part_key(p);
+            canonical.canonical_id_of.get(&key).map(|&cid| (cid, p.session_sid.clone()))
+        })
+        .collect();
+    let atom_sessions = atom_marginals_resolved(&resolved);
+
+    // ── Stage 9: git history ──────────────────────────────────────────────────
+    let mut effective_cfg = cfg.clone();
+    let history = if cfg.history_enabled {
+        if let Some(r) = repo {
+            let all_paths: Vec<String> = canonical.ranges.iter().map(|r| r.path.clone()).collect();
+            match load_git_history(r, &all_paths, cfg) {
+                Ok(h) => h,
+                Err(_) => {
+                    effective_cfg.history_enabled = false;
+                    HistoryIndex::default()
+                }
+            }
+        } else {
+            effective_cfg.history_enabled = false;
+            HistoryIndex::default()
+        }
+    } else {
+        HistoryIndex::default()
+    };
+    let history_available = history.available;
+
+    // ── Stage 10: score edges (pre-content, no floor yet) ────────────────────
+    // The JS applies the edge_score_floor AFTER adding per-edge cohesion
+    // (0.12 * pair_cohesion), not before. Pass floor=0 so score_edges returns
+    // all edges; the real floor is enforced below after cohesion is added.
+    let mut no_floor_cfg = effective_cfg.clone();
+    no_floor_cfg.edge_score_floor = 0.0;
+    let mut edges = score_edges(&pairs, &session_participants, &canonical, &atom_sessions, &history, &no_floor_cfg);
+
+    // ── Stage 11: per-edge cohesion (fill the None seam) ─────────────────────
+    // Build source cache and IDF from canonical ranges if trigram is enabled.
+    let mut source_cache: SourceCache = BTreeMap::new();
+    let idf: Idf = if effective_cfg.trigram_enabled {
+        // Populate the source cache for all canonical ranges.
+        for r in &canonical.ranges {
+            cache_range(repo_root, &r.path, r.start, r.end, &mut source_cache);
+        }
+        // Build IDF from token lists.
+        let range_tokens_for_idf: BTreeMap<CanonicalId, Vec<String>> = canonical
+            .ranges
+            .iter()
+            .enumerate()
+            .filter_map(|(id, r)| {
+                let key = format!("{}#{}-{}", r.path, r.start, r.end);
+                source_cache.get(&key).map(|rt| {
+                    (id, rt.identifiers.iter().cloned().collect::<Vec<_>>())
+                })
+            })
+            .collect();
+        build_idf(&range_tokens_for_idf)
+    } else {
+        BTreeMap::new()
+    };
+
+    // Fill per_edge_cohesion for each edge.
+    for edge in &mut edges {
+        let a_range = match canonical.ranges.get(edge.canonical_a) {
+            Some(r) => r,
+            None => continue,
+        };
+        let b_range = match canonical.ranges.get(edge.canonical_b) {
+            Some(r) => r,
+            None => continue,
+        };
+        let key_a = format!("{}#{}-{}", a_range.path, a_range.start, a_range.end);
+        let key_b = format!("{}#{}-{}", b_range.path, b_range.start, b_range.end);
+        // Use None when files are unavailable (distinguishes "not computable"
+        // from "computable but zero"). The edge-floor filter only applies the
+        // pair_cohesion >= 0.10 gate when cohesion is Some (files exist).
+        edge.per_edge_cohesion = match (source_cache.get(&key_a), source_cache.get(&key_b)) {
+            (Some(ta), Some(tb)) => Some(per_edge_cohesion(ta, tb, &idf, effective_cfg.shared_id_saturation)),
+            _ => None,
+        };
+    }
+
+    // ── Edge-floor pruning (post-cohesion, matching JS line 1093) ────────────
+    // Final score = score_pre_content + 0.12 * pair_cohesion.
+    // The JS also requires pair_cohesion >= 0.10 when trigram is enabled AND
+    // the source files were accessible (`per_edge_cohesion = Some`). When
+    // files are unavailable the cohesion gate is skipped (pair is kept on
+    // behaviour evidence alone).
+    for edge in &mut edges {
+        let cohesion = edge.per_edge_cohesion.unwrap_or(0.0);
+        edge.score += 0.12 * cohesion;
+    }
+    edges.retain(|e| {
+        if e.score < effective_cfg.edge_score_floor {
+            return false;
+        }
+        // Trigram cohesion gate: only when trigram is enabled AND files were
+        // readable. None = files absent → skip gate.
+        if effective_cfg.trigram_enabled
+            && e.per_edge_cohesion.is_some_and(|c| c < 0.10)
+        {
+            return false;
+        }
+        true
+    });
+
+    if edges.is_empty() {
+        return Vec::new();
+    }
+
+    // ── Stage 12: clique enumeration ──────────────────────────────────────────
+    let adj = build_edge_adjacency(&edges);
+    let components = connected_components(&adj);
+    let mut all_cliques: Vec<Vec<CanonicalId>> = Vec::new();
+    for comp in &components {
+        let cliques = bron_kerbosch(comp, &adj, effective_cfg.max_clique_size as usize);
+        all_cliques.extend(cliques);
+    }
+    // Also add size-2 pairs (each edge is a potential pair candidate).
+    for e in &edges {
+        all_cliques.push(vec![e.canonical_a, e.canonical_b]);
+    }
+    // Deduplicate and sort for determinism.
+    all_cliques.sort();
+    all_cliques.dedup();
+
+    // ── Stage 13: score candidates ────────────────────────────────────────────
+    let scored: Vec<CandidateScore> = all_cliques
+        .iter()
+        .map(|ids| {
+            score_candidate(ids, &edges, &adj, &canonical, &source_cache, &idf, &history, &effective_cfg)
+        })
+        .collect();
+
+    // ── Stage 14: pre-emission filters (JS lines 1124–1133) ──────────────────
+    // Apply the same candidate-level filters the JS applies before `emit()`:
+    //   1. composite >= MIN_SCORE (0.0 by default)
+    //   2. distinct_files >= 2
+    //   3. same_file_dominance <= MAX_SAME_FILE_DOMINANCE
+    //   4. op_distance_avg <= SPRAWL_OP_DISTANCE_AVG
+    //   5. viability != 'weak' (Suppressed in Rust)
+    let scored: Vec<CandidateScore> = scored
+        .into_iter()
+        .filter(|c| {
+            if c.composite < effective_cfg.min_score {
+                return false;
+            }
+            if c.distinct_files < 2 {
+                return false;
+            }
+            if c.same_file_dominance > effective_cfg.max_same_file_dominance {
+                return false;
+            }
+            if c.op_distance_avg > effective_cfg.sprawl_op_distance_avg as f64 {
+                return false;
+            }
+            // Pre-assign viability; drop weak candidates.
+            let viability = viability_label(c, history_available);
+            viability != crate::advice::suggestion::Viability::Suppressed
+        })
+        .collect();
+
+    // ── Emission ──────────────────────────────────────────────────────────────
+    emit(scored, &canonical, &effective_cfg, history_available)
+}
+
 // ── Detector ─────────────────────────────────────────────────────────────────
 
-/// No-op suggest detector. Returns an empty vec until the pipeline stages
-/// are implemented (Steps 3+).
+/// Suggest detector. Runs the full v4 pipeline on sessions loaded from the
+/// advice store associated with `CandidateInput`.
+///
+/// Note: `CandidateInput` does not carry pre-loaded sessions, so this
+/// `Detector` implementation returns an empty vec. The primary entry point
+/// for production use is `run_suggest_pipeline` (called by the CLI
+/// `git mesh advice <id> suggest` subcommand).
 pub struct SuggestDetector {
     pub config: SuggestConfig,
 }
@@ -148,6 +396,8 @@ impl Default for SuggestDetector {
 
 impl Detector for SuggestDetector {
     fn detect(&self, _input: &CandidateInput<'_>) -> Vec<Suggestion> {
+        // `CandidateInput` does not carry pre-loaded sessions; the full pipeline
+        // is invoked via `run_suggest_pipeline` from the CLI suggest subcommand.
         vec![]
     }
 }

@@ -20,20 +20,33 @@ const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 /// Run `git mesh advice <session_id> suggest` with `GIT_MESH_ADVICE_DIR` set
 /// to the given path and return stdout as a String. The binary is expected to
 /// succeed (exit 0).
-fn run_suggest(advice_dir: &Path, session_id: &str) -> Result<String> {
+///
+/// `repo_root` is passed as `GIT_MESH_SUGGEST_REPO_ROOT` so the cohesion
+/// stage can find source files in the fixture directory.
+///
+/// `extra_env` is an optional slice of `(key, value)` pairs appended to the
+/// child environment (e.g. `&[("GIT_MESH_SUGGEST_TRIGRAM", "0")]`).
+fn run_suggest(
+    advice_dir: &Path,
+    repo_root: &Path,
+    session_id: &str,
+    extra_env: &[(&str, &str)],
+) -> Result<String> {
     let bin = env!("CARGO_BIN_EXE_git-mesh");
     // `git mesh advice suggest` is a hidden subcommand that does not require a
     // real git repository — it reads sessions from GIT_MESH_ADVICE_DIR
     // (post–Step 3) and emits one JSON line per suggestion.
-    //
-    // During Step 2 (TDD bootstrap) the command is a no-op stub and will emit
-    // nothing. The test body is `#[ignore]`d so the assertion is not reached.
-    let out = Command::new(bin)
-        .env("GIT_MESH_ADVICE_DIR", advice_dir)
+    let mut cmd = Command::new(bin);
+    cmd.env("GIT_MESH_ADVICE_DIR", advice_dir)
+        .env("GIT_MESH_SUGGEST_REPO_ROOT", repo_root)
         // The `advice` subcommand requires a git repo; use a temp dir. When
         // the pipeline is implemented it will read sessions from the env var
         // rather than walking the repo, so this will still be valid.
-        .env("HOME", "/tmp")
+        .env("HOME", "/tmp");
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let out = cmd
         .args(["advice", session_id, "suggest"])
         .output()
         .map_err(|e| anyhow::anyhow!("spawn git-mesh: {e}"))?;
@@ -69,12 +82,19 @@ fn load_expected(scenario: &str) -> Result<Vec<Value>> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — suggester not yet implemented"]
 fn parity_pair_only() -> Result<()> {
     let fixture = Path::new(MANIFEST_DIR).join("tests/fixtures/advice/pair_only");
     let sessions_dir = fixture.join("sessions");
 
-    let actual_text = run_suggest(&sessions_dir, "s1")?;
+    // pair_only: trigram disabled (only 2 canonical ranges — shared tokens have
+    // IDF=0 with N=2, so pair_cohesion is always 0 and the trigram gate would
+    // filter the pair). The expected output reflects this with trigram:0.0.
+    let actual_text = run_suggest(
+        &sessions_dir,
+        &fixture,
+        "s1",
+        &[("GIT_MESH_SUGGEST_TRIGRAM", "0")],
+    )?;
     let actual = parse_jsonl(&actual_text)?;
     let expected = load_expected("pair_only")?;
 
@@ -98,12 +118,11 @@ fn parity_pair_only() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — suggester not yet implemented"]
 fn parity_triad_strong() -> Result<()> {
     let fixture = Path::new(MANIFEST_DIR).join("tests/fixtures/advice/triad_strong");
     let sessions_dir = fixture.join("sessions");
 
-    let actual_text = run_suggest(&sessions_dir, "s1")?;
+    let actual_text = run_suggest(&sessions_dir, &fixture, "s1", &[])?;
     let actual = parse_jsonl(&actual_text)?;
     let expected = load_expected("triad_strong")?;
 
@@ -127,12 +146,11 @@ fn parity_triad_strong() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "phase 3 — suggester not yet implemented"]
 fn parity_subsumed_pair() -> Result<()> {
     let fixture = Path::new(MANIFEST_DIR).join("tests/fixtures/advice/subsumed_pair");
     let sessions_dir = fixture.join("sessions");
 
-    let actual_text = run_suggest(&sessions_dir, "s1")?;
+    let actual_text = run_suggest(&sessions_dir, &fixture, "s1", &[])?;
     let actual = parse_jsonl(&actual_text)?;
     let expected = load_expected("subsumed_pair")?;
 
