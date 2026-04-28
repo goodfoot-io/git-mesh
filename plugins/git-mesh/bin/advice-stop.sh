@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Stop: final flush so anything crossed by the last assistant turn that
-# no PostToolUse caught (e.g. staging changes from a Bash git command)
-# still surfaces. Informational only — never blocks turn-end.
+# Stop: call `git mesh advice <sid> stop` so the CLI can emit any final
+# mesh-tracking notice. Informational only — never blocks turn-end.
 
 set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
@@ -18,5 +17,11 @@ case "$stop_reason" in
   max_tokens|stop_sequence) exit 0 ;;
 esac
 
-emit_advice Stop "$sid"
+cwd="$(hook_field '.cwd')"
+[ -n "$cwd" ] || cwd="$PWD"
+root="$(resolve_repo_root "$cwd")"
+[ -n "$root" ] || exit 0
+
+text="$(run_advice_verb "$root" "$sid" stop)"
+emit_advice_text Stop "$text"
 exit 0

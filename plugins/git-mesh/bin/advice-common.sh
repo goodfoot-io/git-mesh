@@ -92,17 +92,29 @@ bash_candidate_dirs() {
       done
 }
 
-# Render advice for one repo and print the raw text (no JSON wrapper).
-# Silent if there's nothing to say or no baseline yet.
+# Run a single advice verb for one repo and print the raw text (no JSON wrapper).
+# Usage: run_advice_verb <repo_root> <sid> <verb> [<anchor>]
+# Silent if there's nothing to say or the verb returns non-zero.
 # When GIT_MESH_ADVICE_DEBUG=1, appends stderr to _ADVICE_DEBUG_FILE if set.
-render_advice_in() {
-  local repo_root="$1" sid="$2"
+run_advice_verb() {
+  local repo_root="$1" sid="$2" verb="$3"
+  local anchor="${4:-}"
   if [ "${GIT_MESH_ADVICE_DEBUG:-0}" = "1" ] && [ -n "${_ADVICE_DEBUG_FILE:-}" ]; then
-    (cd "$repo_root" && git mesh advice "$sid" --snapshot-if-missing --documentation \
-      2>>"$_ADVICE_DEBUG_FILE") || true
+    if [ -n "$anchor" ]; then
+      (cd "$repo_root" && git mesh advice "$sid" "$verb" "$anchor" \
+        2>>"$_ADVICE_DEBUG_FILE") || true
+    else
+      (cd "$repo_root" && git mesh advice "$sid" "$verb" \
+        2>>"$_ADVICE_DEBUG_FILE") || true
+    fi
   else
-    (cd "$repo_root" && git mesh advice "$sid" --snapshot-if-missing --documentation \
-      2>/dev/null) || true
+    if [ -n "$anchor" ]; then
+      (cd "$repo_root" && git mesh advice "$sid" "$verb" "$anchor" \
+        2>/dev/null) || true
+    else
+      (cd "$repo_root" && git mesh advice "$sid" "$verb" \
+        2>/dev/null) || true
+    fi
   fi
 }
 
@@ -134,14 +146,3 @@ emit_advice_text() {
   esac
 }
 
-# Convenience: render advice for a single repo (cwd) and emit JSON.
-emit_advice() {
-  local event="$1" sid="$2"
-  if [ "${GIT_MESH_ADVICE_DEBUG:-0}" = "1" ] && [ -n "${_ADVICE_DEBUG_FILE:-}" ]; then
-    local text
-    text="$(git mesh advice "$sid" --documentation 2>>"$_ADVICE_DEBUG_FILE" || true)"
-    emit_advice_text "$event" "$text"
-  else
-    emit_advice_text "$event" "$(git mesh advice "$sid" --documentation 2>/dev/null || true)"
-  fi
-}

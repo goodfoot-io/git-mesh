@@ -13,21 +13,9 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/advice-user-prompt.sh",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
-        "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Bash|mcp__.*",
+        "matcher": "Read|Bash|mcp__.*",
         "hooks": [
           {
             "type": "command",
