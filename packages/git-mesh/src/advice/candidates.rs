@@ -55,6 +55,12 @@ pub enum ReasonKind {
     Terminal,
 }
 
+impl std::fmt::Display for ReasonKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl ReasonKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -315,6 +321,7 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
             let mesh_start = if range.whole { 0 } else { range.start };
             let mesh_end = if range.whole { u32::MAX } else { range.end };
             if ranges_overlap(read_start, read_end, mesh_start, mesh_end) {
+                let before = out.len();
                 out.extend(partner_candidates_for_trigger(
                     input,
                     &read.path,
@@ -322,6 +329,18 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
                     read.end_line.map(i64::from),
                     range,
                 ));
+                for c in &out[before..] {
+                    crate::advice_debug!(
+                        "detect_read_intersects_mesh",
+                        "mesh" => c.mesh,
+                        "reason_kind" => c.reason_kind,
+                        "partner" => format!("{}#L{}-L{}", c.partner_path,
+                            c.partner_start.unwrap_or(0), c.partner_end.unwrap_or(0)),
+                        "trigger" => format!("{}#L{}-L{}", c.trigger_path,
+                            c.trigger_start.unwrap_or(0), c.trigger_end.unwrap_or(0)),
+                        "marker" => if c.partner_marker.is_empty() { "-" } else { &c.partner_marker }
+                    );
+                }
             }
         }
     }
@@ -484,6 +503,15 @@ fn delta_path_partners_inner(
                 c.old_path = Some(partner_path_str);
                 c.new_path = Some(effective_partner_path);
             }
+            crate::advice_debug!(
+                "detect_delta_intersects_mesh",
+                "mesh" => c.mesh,
+                "reason_kind" => c.reason_kind,
+                "partner" => format!("{}#L{}-L{}", c.partner_path,
+                    c.partner_start.unwrap_or(0), c.partner_end.unwrap_or(0)),
+                "trigger" => c.trigger_path.clone(),
+                "marker" => if c.partner_marker.is_empty() { "-" } else { &c.partner_marker }
+            );
             out.push(c);
         }
     }
@@ -534,6 +562,14 @@ pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
                 ("", None, None),
             );
             c.partner_marker = marker.to_string();
+            crate::advice_debug!(
+                "detect_partner_drift",
+                "mesh" => c.mesh,
+                "reason_kind" => c.reason_kind,
+                "partner" => format!("{}#L{}-L{}", c.partner_path,
+                    c.partner_start.unwrap_or(0), c.partner_end.unwrap_or(0)),
+                "marker" => marker
+            );
             out.push(c);
         }
     }
@@ -575,6 +611,13 @@ pub fn detect_rename_consequence(input: &CandidateInput<'_>) -> Vec<Candidate> {
                 c.command = command;
                 c.old_path = Some(from.clone());
                 c.new_path = Some(to.clone());
+                crate::advice_debug!(
+                    "detect_rename_consequence",
+                    "mesh" => c.mesh,
+                    "reason_kind" => c.reason_kind,
+                    "from" => from,
+                    "to" => to
+                );
                 out.push(c);
             }
         }
@@ -633,6 +676,15 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
                 } else {
                     (Some(add.start as i64), Some(add.end as i64))
                 };
+                crate::advice_debug!(
+                    "detect_staging_cross_cut",
+                    "mesh" => range.name,
+                    "reason_kind" => ReasonKind::StagingCrossCut,
+                    "partner" => format!("{}#L{}-L{}", range_path,
+                        rs.unwrap_or(0), re.unwrap_or(0)),
+                    "trigger" => format!("{}#L{}-L{}", add_path,
+                        as_.unwrap_or(0), ae.unwrap_or(0))
+                );
                 out.push(bare_candidate(
                     &range.name,
                     &range.why,
@@ -668,6 +720,15 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
                 } else {
                     (Some(remove.start as i64), Some(remove.end as i64))
                 };
+                crate::advice_debug!(
+                    "detect_staging_cross_cut",
+                    "mesh" => range.name,
+                    "reason_kind" => ReasonKind::EmptyMesh,
+                    "partner" => format!("{}#L{}-L{}", range_path,
+                        rs.unwrap_or(0), re.unwrap_or(0)),
+                    "trigger" => format!("{}#L{}-L{}", rem_path,
+                        rms.unwrap_or(0), rme.unwrap_or(0))
+                );
                 out.push(bare_candidate(
                     &range.name,
                     &range.why,

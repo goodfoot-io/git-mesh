@@ -297,6 +297,14 @@ pub fn run_suggest_pipeline(
     }
     edges.retain(|e| {
         if e.score < effective_cfg.edge_score_floor {
+            crate::advice_debug!(
+                "suggester-edge",
+                "a" => e.canonical_a,
+                "b" => e.canonical_b,
+                "action" => "dropped",
+                "reason" => "score-floor",
+                "score" => e.score
+            );
             return false;
         }
         // Trigram cohesion gate: only when trigram is enabled AND files were
@@ -304,8 +312,24 @@ pub fn run_suggest_pipeline(
         if effective_cfg.trigram_enabled
             && e.per_edge_cohesion.is_some_and(|c| c < 0.10)
         {
+            crate::advice_debug!(
+                "suggester-edge",
+                "a" => e.canonical_a,
+                "b" => e.canonical_b,
+                "action" => "dropped",
+                "cohesion" => e.per_edge_cohesion.unwrap_or(0.0),
+                "reason" => "cohesion-gate"
+            );
             return false;
         }
+        crate::advice_debug!(
+            "suggester-edge",
+            "a" => e.canonical_a,
+            "b" => e.canonical_b,
+            "action" => "kept",
+            "cohesion" => e.per_edge_cohesion.unwrap_or(0.0),
+            "score" => e.score
+        );
         true
     });
 
@@ -347,21 +371,30 @@ pub fn run_suggest_pipeline(
     let scored: Vec<CandidateScore> = scored
         .into_iter()
         .filter(|c| {
+            let ids_str = c.canon_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
             if c.composite < effective_cfg.min_score {
+                crate::advice_debug!("suggester-drop", "reason" => "min-score", "canonical_ids" => ids_str, "composite" => c.composite);
                 return false;
             }
             if c.distinct_files < 2 {
+                crate::advice_debug!("suggester-drop", "reason" => "distinct-files", "canonical_ids" => ids_str);
                 return false;
             }
             if c.same_file_dominance > effective_cfg.max_same_file_dominance {
+                crate::advice_debug!("suggester-drop", "reason" => "same-file-dominance", "canonical_ids" => ids_str, "dominance" => c.same_file_dominance);
                 return false;
             }
             if c.op_distance_avg > effective_cfg.sprawl_op_distance_avg as f64 {
+                crate::advice_debug!("suggester-drop", "reason" => "op-distance", "canonical_ids" => ids_str, "op_distance_avg" => c.op_distance_avg);
                 return false;
             }
             // Pre-assign viability; drop weak candidates.
             let viability = viability_label(c, history_available);
-            viability != crate::advice::suggestion::Viability::Suppressed
+            if viability == crate::advice::suggestion::Viability::Suppressed {
+                crate::advice_debug!("suggester-drop", "reason" => "viability:Suppressed", "canonical_ids" => ids_str, "composite" => c.composite);
+                return false;
+            }
+            true
         })
         .collect();
 

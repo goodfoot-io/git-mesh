@@ -69,19 +69,39 @@ pub fn emit(
 
     // Step 1: keep cliques, dropping any that are subsumed by a larger already-kept clique.
     for c in cliques {
+        let ids_str = c.canon_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         if kept.iter().any(|k| is_superset(&k.canon_ids, &c.canon_ids)) {
+            crate::advice_debug!(
+                "suggester-drop",
+                "canonical_ids" => ids_str,
+                "composite" => c.composite,
+                "reason" => "viability:Superseded"
+            );
             continue;
         }
+        crate::advice_debug!(
+            "suggester-emit",
+            "canonical_ids" => ids_str,
+            "composite" => c.composite,
+            "viability" => "Strong"
+        );
         kept.push(c);
     }
 
     // Step 2: pair escape hatch.
     for p in pairs {
+        let ids_str = p.canon_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let containers: Vec<&CandidateScore> = kept
             .iter()
             .filter(|k| is_superset(&k.canon_ids, &p.canon_ids))
             .collect();
         if containers.is_empty() {
+            crate::advice_debug!(
+                "suggester-emit",
+                "canonical_ids" => ids_str,
+                "composite" => p.composite,
+                "viability" => "Strong"
+            );
             kept.push(p);
             continue;
         }
@@ -90,7 +110,20 @@ pub fn emit(
             .map(|c| c.composite)
             .fold(f64::NEG_INFINITY, f64::max);
         if p.composite >= best + cfg.pair_escape_bonus {
+            crate::advice_debug!(
+                "suggester-emit",
+                "canonical_ids" => ids_str,
+                "composite" => p.composite,
+                "viability" => "Strong"
+            );
             kept.push(p);
+        } else {
+            crate::advice_debug!(
+                "suggester-drop",
+                "canonical_ids" => ids_str,
+                "composite" => p.composite,
+                "reason" => "viability:Suppressed"
+            );
         }
     }
 

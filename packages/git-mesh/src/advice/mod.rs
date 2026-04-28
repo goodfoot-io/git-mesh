@@ -3,6 +3,7 @@
 //! Public re-exports for the advice subsystem.
 
 pub mod candidates;
+pub mod debug;
 pub mod detector;
 pub mod fingerprint;
 pub mod path_filter;

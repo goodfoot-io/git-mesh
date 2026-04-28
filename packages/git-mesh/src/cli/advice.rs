@@ -168,6 +168,14 @@ fn run_advice_render(
     let mut store = SessionStore::open(wd, &gd, session_id)?;
     let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
 
+    crate::advice_debug!(
+        "cli-entry",
+        "sid" => session_id,
+        "repo" => wd.display(),
+        "documentation" => documentation,
+        "snapshot_if_missing" => snapshot_if_missing
+    );
+
     // Step 2: require baseline.state — fail closed unless --snapshot-if-missing.
     if !store.dir().join("baseline.state").exists() {
         if snapshot_if_missing {
@@ -333,16 +341,36 @@ fn run_advice_render(
         },
     };
     let mut candidates: Vec<crate::advice::candidates::Candidate> = Vec::new();
-    candidates.extend(crate::advice::candidates::detect_read_intersects_mesh(
-        &input,
-    ));
-    candidates.extend(crate::advice::candidates::detect_delta_intersects_mesh(
-        &input,
-    ));
-    candidates.extend(crate::advice::candidates::detect_partner_drift(&input));
-    candidates.extend(crate::advice::candidates::detect_rename_consequence(&input));
-    candidates.extend(crate::advice::candidates::detect_range_shrink(&input));
-    candidates.extend(crate::advice::candidates::detect_staging_cross_cut(&input));
+    {
+        let before = candidates.len();
+        candidates.extend(crate::advice::candidates::detect_read_intersects_mesh(&input));
+        crate::advice_debug!("detector", "name" => "detect_read_intersects_mesh", "candidates" => candidates.len() - before);
+    }
+    {
+        let before = candidates.len();
+        candidates.extend(crate::advice::candidates::detect_delta_intersects_mesh(&input));
+        crate::advice_debug!("detector", "name" => "detect_delta_intersects_mesh", "candidates" => candidates.len() - before);
+    }
+    {
+        let before = candidates.len();
+        candidates.extend(crate::advice::candidates::detect_partner_drift(&input));
+        crate::advice_debug!("detector", "name" => "detect_partner_drift", "candidates" => candidates.len() - before);
+    }
+    {
+        let before = candidates.len();
+        candidates.extend(crate::advice::candidates::detect_rename_consequence(&input));
+        crate::advice_debug!("detector", "name" => "detect_rename_consequence", "candidates" => candidates.len() - before);
+    }
+    {
+        let before = candidates.len();
+        candidates.extend(crate::advice::candidates::detect_range_shrink(&input));
+        crate::advice_debug!("detector", "name" => "detect_range_shrink", "candidates" => candidates.len() - before);
+    }
+    {
+        let before = candidates.len();
+        candidates.extend(crate::advice::candidates::detect_staging_cross_cut(&input));
+        crate::advice_debug!("detector", "name" => "detect_staging_cross_cut", "candidates" => candidates.len() - before);
+    }
     // Card main-13 slice 2: the pairwise `detect_session_co_touch` channel was
     // replaced by the n-ary, line-bounded suggester; its output is folded into
     // `kept_suggestions` below after fingerprint-dedup.
@@ -359,11 +387,30 @@ fn run_advice_render(
         .filter_map(|c| {
             let fp = crate::advice::fingerprint::fingerprint(&c);
             if advice_seen.contains(&fp) {
+                crate::advice_debug!(
+                    "dropped",
+                    "reason" => "advice-seen",
+                    "fp" => fp,
+                    "mesh" => c.mesh
+                );
                 return None;
             }
             if !c.mesh.is_empty() && meshes_seen.contains(&c.mesh) {
+                crate::advice_debug!(
+                    "dropped",
+                    "reason" => "meshes-seen",
+                    "fp" => fp,
+                    "mesh" => c.mesh
+                );
                 return None;
             }
+            crate::advice_debug!(
+                "kept",
+                "fp" => fp,
+                "mesh" => c.mesh,
+                "reason_kind" => c.reason_kind,
+                "partner" => c.partner_path
+            );
             emitted_fps.push(fp);
             Some(c)
         })
@@ -425,16 +472,25 @@ fn run_advice_render(
             load_all_sessions(&advice_dir).unwrap_or_default()
         };
         if !sessions.is_empty() {
+            crate::advice_debug!("suggester-entry", "sessions" => sessions.len());
             let cfg = SuggestConfig::from_env();
             let suggester_out = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg);
+            let mut dropped_seen = 0usize;
+            let before = kept_suggestions.len();
             for sug in suggester_out {
                 let fp = crate::advice::fingerprint::fingerprint_suggestion(&sug);
                 if advice_seen.contains(&fp) {
+                    dropped_seen += 1;
                     continue;
                 }
                 emitted_fps.push(fp);
                 kept_suggestions.push(sug);
             }
+            crate::advice_debug!(
+                "suggester-exit",
+                "emitted" => kept_suggestions.len() - before,
+                "dropped_seen" => dropped_seen
+            );
         }
     }
 
@@ -528,6 +584,12 @@ fn run_advice_render(
         store.append_touch(interval)?;
     }
 
+    crate::advice_debug!(
+        "cli-exit",
+        "suggestions" => kept_suggestions.len(),
+        "doc_topics" => new_doc_topics.len()
+    );
+
     Ok(0)
 }
 
@@ -550,6 +612,7 @@ fn build_touch_intervals(
             | DiffEntry::Deleted { path, .. }
             | DiffEntry::ModeChange { path, .. } => {
                 if advice_path_is_internal(path, internal_path_prefixes) {
+                    crate::advice_debug!("dropped", "reason" => "internal-path", "path" => path);
                     continue;
                 }
                 out.push(TouchInterval {
@@ -567,6 +630,8 @@ fn build_touch_intervals(
                         end_line: 0,
                         ts: ts.to_string(),
                     });
+                } else {
+                    crate::advice_debug!("dropped", "reason" => "internal-path", "path" => from);
                 }
                 if !advice_path_is_internal(to, internal_path_prefixes) {
                     out.push(TouchInterval {
@@ -575,12 +640,15 @@ fn build_touch_intervals(
                         end_line: 0,
                         ts: ts.to_string(),
                     });
+                } else {
+                    crate::advice_debug!("dropped", "reason" => "internal-path", "path" => to);
                 }
             }
         }
     }
     for r in new_reads {
         if advice_path_is_internal(&r.path, internal_path_prefixes) {
+            crate::advice_debug!("dropped", "reason" => "internal-path", "path" => r.path);
             continue;
         }
         out.push(TouchInterval {

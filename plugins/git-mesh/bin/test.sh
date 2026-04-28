@@ -349,6 +349,82 @@ assert_mesh_exit "delete missing (runtime: mesh not found)" 1 "$REPO12" delete m
 assert_mesh_exit "commit empty (runtime: nothing staged)" 1 "$REPO12" commit no-such-mesh
 
 # ---------------------------------------------------------------------------
+# Test 13: GIT_MESH_ADVICE_DEBUG=1 — systemMessage gets trace marker,
+# additionalContext does not.
+#
+# This test requires the debug-instrumented build. Locate the binary by
+# searching common cargo target dirs; skip gracefully if unavailable.
+# ---------------------------------------------------------------------------
+log "Test 13: GIT_MESH_ADVICE_DEBUG=1 trace appears in systemMessage only"
+MESH_BIN=""
+WORKSPACE_ROOT="$(git -C "$BIN_DIR" rev-parse --show-toplevel 2>/dev/null)"
+for candidate in \
+    "${WORKSPACE_ROOT}/packages/git-mesh/target/debug/git-mesh" \
+    "${WORKSPACE_ROOT}/packages/git-mesh/target/release/git-mesh" \
+    "${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/test/debug/git-mesh" \
+    "${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build/debug/git-mesh" \
+    "${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build/release/git-mesh" \
+  ; do
+  if [ -x "$candidate" ]; then
+    MESH_BIN="$candidate"
+    break
+  fi
+done
+
+if [ -z "$MESH_BIN" ]; then
+  ok "Test 13 (skip): debug-instrumented binary not found; run 'cargo build' in packages/git-mesh first"
+else
+  SAVED_PATH="$PATH"
+  export PATH="$(dirname "$MESH_BIN"):$PATH"
+REPO13="$(make_repo repo13)"
+SID13="sess-thirteen"
+# Snapshot so there's a baseline.
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+assert_rc_zero "SessionStart(debug)"
+
+# Edit a.txt to trigger advice.
+echo "debug edit" >> "$REPO13/a.txt"
+PAYLOAD13="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t13", duration_ms:1}')"
+
+export GIT_MESH_ADVICE_DEBUG=1
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD13"
+unset GIT_MESH_ADVICE_DEBUG
+
+assert_rc_zero "PostToolUse(debug)"
+
+SYS_HAS_MARKER=0
+AC_HAS_MARKER=0
+if printf '%s' "$HOOK_OUT" | jq -e '.systemMessage' >/dev/null 2>&1; then
+  SYS_MSG="$(printf '%s' "$HOOK_OUT" | jq -r '.systemMessage')"
+  if printf '%s' "$SYS_MSG" | grep -qF -- '--- git-mesh-advice-debug ---'; then
+    SYS_HAS_MARKER=1
+  fi
+fi
+if printf '%s' "$HOOK_OUT" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null 2>&1; then
+  ADD_CTX="$(printf '%s' "$HOOK_OUT" | jq -r '.hookSpecificOutput.additionalContext')"
+  if printf '%s' "$ADD_CTX" | grep -qF -- '--- git-mesh-advice-debug ---'; then
+    AC_HAS_MARKER=1
+  fi
+fi
+
+if [ "$SYS_HAS_MARKER" -eq 1 ]; then
+  ok "Test 13: systemMessage contains debug marker"
+else
+  bad "Test 13: systemMessage missing debug marker; out=${HOOK_OUT:-<empty>}"
+fi
+if [ "$AC_HAS_MARKER" -eq 0 ]; then
+  ok "Test 13: additionalContext does not contain debug marker"
+else
+  bad "Test 13: additionalContext must NOT contain debug marker"
+fi
+
+  export PATH="$SAVED_PATH"
+fi  # end: MESH_BIN found
+
+# ---------------------------------------------------------------------------
 log ""
 log "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
