@@ -41,7 +41,7 @@ fn json_envelope_has_schema_version_and_findings() -> Result<()> {
     let first = &v["findings"][0];
     assert_eq!(first["status"]["code"], "CHANGED");
     assert_eq!(first["mesh"], "m");
-    assert!(first["range_id"].is_null());
+    assert!(first["anchor_id"].is_null());
     assert!(first["anchored"]["path"].is_string());
     Ok(())
 }
@@ -166,11 +166,11 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
     assert!(out.contains("REMOVE file1.txt#L1-L5"), "stdout={out}");
     assert!(
         !out.contains("file2.txt L1-L5") && !out.contains("file1.txt L1-L5"),
-        "pending ops should use range-address syntax: {out}"
+        "pending ops should use anchor-address syntax: {out}"
     );
     assert!(
         !out.contains("()"),
-        "empty range-id parentheses should not be rendered: {out}"
+        "empty anchor-id parentheses should not be rendered: {out}"
     );
     Ok(())
 }

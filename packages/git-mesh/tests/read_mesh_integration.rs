@@ -45,7 +45,7 @@ fn read_mesh_returns_tip_state() -> Result<()> {
     seed_two_meshes(&repo)?;
     let m = read_mesh(&repo.gix_repo()?, "alpha")?;
     assert_eq!(m.name, "alpha");
-    assert_eq!(m.ranges.len(), 1);
+    assert_eq!(m.anchors.len(), 1);
     assert!(m.message.contains("alpha init"));
     Ok(())
 }
@@ -81,9 +81,9 @@ fn read_mesh_at_walks_history() -> Result<()> {
     set_why(&gix, "hist", "v2")?;
     commit_mesh(&gix, "hist")?;
     let old = read_mesh_at(&gix, "hist", Some(&first))?;
-    assert_eq!(old.ranges.len(), 1);
+    assert_eq!(old.anchors.len(), 1);
     let tip = read_mesh_at(&gix, "hist", None)?;
-    assert_eq!(tip.ranges.len(), 2);
+    assert_eq!(tip.anchors.len(), 2);
     Ok(())
 }
 

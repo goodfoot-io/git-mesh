@@ -2,11 +2,11 @@
 //! the implicit semantic dependencies a developer has crossed.
 //!
 //! Each render emits one candidate per coupling crossed since the last
-//! flush: a mesh range was read, edited, or deleted; a partner of an
-//! edited range drifted; a rename broke an anchored path; sibling
-//! ranges were touched in the same session; staging cuts across the
+//! flush: a mesh anchor was read, edited, or deleted; a partner of an
+//! edited anchor drifted; a rename broke an anchored path; sibling
+//! anchors were touched in the same session; staging cuts across the
 //! mesh. Candidates carry the mesh's `why` — the one-sentence
-//! definition of the relationship the anchored ranges hold — so the
+//! definition of the relationship the anchored set holds — so the
 //! developer reads what the coupling is at the moment they're
 //! stepping on it.
 
@@ -41,7 +41,7 @@ pub struct AdviceArgs {
 
     /// Append per-reason documentation blocks to the render. Blocks emit
     /// only when the flush surfaces a reason with an associated doc topic
-    /// (rename, range shrink, symbol rename, cross-mesh overlap, terminal
+    /// (rename, anchor shrink, symbol rename, cross-mesh overlap, terminal
     /// state, etc.); pure partner-read surfacings have no topic and
     /// produce no extra output. Each topic emits once per session —
     /// already-seen topics in `docs-seen.jsonl` are suppressed.
@@ -63,7 +63,7 @@ pub enum AdviceCommand {
     /// Record one or more read events; later renders use these to surface
     /// dependencies the developer crossed by reading (not just editing).
     Read {
-        /// Paths (optionally range-qualified) to record as reads.
+        /// Paths (optionally anchor-qualified) to record as reads.
         paths: Vec<String>,
     },
     /// Corpus-wide debug/parity surface for the n-ary mesh suggester:
@@ -133,7 +133,7 @@ fn run_advice_render(
     snapshot_if_missing: bool,
 ) -> Result<i32> {
     use crate::advice::candidates::{
-        CandidateInput, MeshRange, MeshRangeStatus, StagedAddr, StagingState,
+        CandidateInput, MeshAnchor, MeshAnchorStatus, StagedAddr, StagingState,
     };
     use crate::advice::session::SessionStore;
     use crate::advice::session::state::TouchInterval;
@@ -247,35 +247,35 @@ fn run_advice_render(
 
     // Step 8: load mesh state. Treat any error as empty (greenfield: a
     // missing mesh-state directory is not a render failure).
-    let mesh_ranges: Vec<MeshRange> =
+    let mesh_anchors: Vec<MeshAnchor> =
         match crate::resolver::stale_meshes(repo, default_engine_options()) {
             Ok(meshes) => meshes
                 .into_iter()
                 .flat_map(|m| {
                     let name = m.name.clone();
                     let why = m.message.clone();
-                    m.ranges.into_iter().map(move |r| {
-                        let whole = matches!(r.anchored.extent, crate::types::RangeExtent::Whole);
-                        MeshRange {
+                    m.anchors.into_iter().map(move |r| {
+                        let whole = matches!(r.anchored.extent, crate::types::AnchorExtent::WholeFile);
+                        MeshAnchor {
                             name: name.clone(),
                             why: why.clone(),
                             path: std::path::PathBuf::from(
                                 r.anchored.path.to_string_lossy().into_owned(),
                             ),
                             start: match r.anchored.extent {
-                                crate::types::RangeExtent::Lines { start, .. } => start,
-                                crate::types::RangeExtent::Whole => 0,
+                                crate::types::AnchorExtent::LineRange { start, .. } => start,
+                                crate::types::AnchorExtent::WholeFile => 0,
                             },
                             end: match r.anchored.extent {
-                                crate::types::RangeExtent::Lines { end, .. } => end,
-                                crate::types::RangeExtent::Whole => u32::MAX,
+                                crate::types::AnchorExtent::LineRange { end, .. } => end,
+                                crate::types::AnchorExtent::WholeFile => u32::MAX,
                             },
                             whole,
                             status: match r.status {
-                                crate::types::RangeStatus::Fresh => MeshRangeStatus::Stable,
-                                crate::types::RangeStatus::Moved => MeshRangeStatus::Moved,
-                                crate::types::RangeStatus::Changed => MeshRangeStatus::Changed,
-                                _ => MeshRangeStatus::Terminal,
+                                crate::types::AnchorStatus::Fresh => MeshAnchorStatus::Stable,
+                                crate::types::AnchorStatus::Moved => MeshAnchorStatus::Moved,
+                                crate::types::AnchorStatus::Changed => MeshAnchorStatus::Changed,
+                                _ => MeshAnchorStatus::Terminal,
                             },
                         }
                     })
@@ -293,10 +293,10 @@ fn run_advice_render(
                 continue;
             };
             for add in staging.adds {
-                let whole = matches!(add.extent, crate::types::RangeExtent::Whole);
+                let whole = matches!(add.extent, crate::types::AnchorExtent::WholeFile);
                 let (s, e) = match add.extent {
-                    crate::types::RangeExtent::Lines { start, end } => (start, end),
-                    crate::types::RangeExtent::Whole => (0, u32::MAX),
+                    crate::types::AnchorExtent::LineRange { start, end } => (start, end),
+                    crate::types::AnchorExtent::WholeFile => (0, u32::MAX),
                 };
                 staging_adds.push(StagedAddr {
                     path: std::path::PathBuf::from(add.path),
@@ -306,10 +306,10 @@ fn run_advice_render(
                 });
             }
             for rem in staging.removes {
-                let whole = matches!(rem.extent, crate::types::RangeExtent::Whole);
+                let whole = matches!(rem.extent, crate::types::AnchorExtent::WholeFile);
                 let (s, e) = match rem.extent {
-                    crate::types::RangeExtent::Lines { start, end } => (start, end),
-                    crate::types::RangeExtent::Whole => (0, u32::MAX),
+                    crate::types::AnchorExtent::LineRange { start, end } => (start, end),
+                    crate::types::AnchorExtent::WholeFile => (0, u32::MAX),
                 };
                 staging_removes.push(StagedAddr {
                     path: std::path::PathBuf::from(rem.path),
@@ -333,7 +333,7 @@ fn run_advice_render(
         incr_delta: &incr_delta,
         new_reads: &new_reads,
         touch_intervals: &touch_intervals,
-        mesh_ranges: &mesh_ranges,
+        mesh_anchors: &mesh_anchors,
         internal_path_prefixes: &internal_path_prefixes,
         staging: StagingState {
             adds: &staging_adds,
@@ -498,7 +498,7 @@ fn run_advice_render(
 
     let rendered = crate::advice::render::render(&kept_suggestions, &new_doc_topics, documentation);
 
-    // Build touch intervals (finding 3): one per affected path/range from
+    // Build touch intervals (finding 3): one per affected path/anchor from
     // incr_delta + new_reads, sharing a single rfc3339 timestamp so a
     // future co-touch detector can group them by interval.
     let touch_ts = chrono::Utc::now().to_rfc3339();
@@ -596,7 +596,7 @@ fn run_advice_render(
 }
 
 /// Translate a session's `incr_delta` + `new_reads` into one
-/// `TouchInterval` per affected path/range, all sharing `ts` so a co-touch
+/// `TouchInterval` per affected path/anchor, all sharing `ts` so a co-touch
 /// detector can group them by timestamp. (Finding 3.)
 fn build_touch_intervals(
     incr_delta: &[crate::advice::workspace_tree::DiffEntry],
@@ -1171,7 +1171,7 @@ fn run_advice_read(
         bail!("git mesh advice <id> read: at least one path is required");
     }
 
-    // Validate every path/range first; only append if all are valid.
+    // Validate every path/anchor first; only append if all are valid.
     for spec in &paths {
         validate_read_spec(repo, spec)?;
     }
@@ -1190,7 +1190,7 @@ fn run_advice_read(
 
     let now = chrono::Utc::now().to_rfc3339();
     for spec in &paths {
-        let (path_str, range) = match spec.split_once("#L") {
+        let (path_str, anchor) = match spec.split_once("#L") {
             Some((p, frag)) => {
                 let (s, e) = frag.split_once("-L").unwrap();
                 (
@@ -1202,8 +1202,8 @@ fn run_advice_read(
         };
         let rec = ReadRecord {
             path: path_str,
-            start_line: range.map(|(s, _)| s),
-            end_line: range.map(|(_, e)| e),
+            start_line: anchor.map(|(s, _)| s),
+            end_line: anchor.map(|(_, e)| e),
             ts: now.clone(),
         };
         store.append_read(
@@ -1236,13 +1236,13 @@ fn validate_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reject `read` specs that point at non-existent paths or out-of-range
+/// Reject `read` specs that point at non-existent paths or out-of-anchor
 /// / inverted line ranges.
 fn validate_read_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
     if spec.is_empty() {
         bail!("invalid spec: path must not be empty");
     }
-    let (path_str, range) = match spec.split_once("#L") {
+    let (path_str, anchor) = match spec.split_once("#L") {
         Some((p, frag)) => {
             let (s, e) = frag.split_once("-L").ok_or_else(|| {
                 anyhow::anyhow!("invalid anchor `{spec}`; expected <path>#L<start>-L<end>")
@@ -1271,7 +1271,7 @@ fn validate_read_spec(repo: &gix::Repository, spec: &str) -> Result<()> {
     if !abs.exists() {
         bail!("path not found in worktree: `{path_str}`");
     }
-    if let Some((start, end)) = range {
+    if let Some((start, end)) = anchor {
         let bytes = std::fs::read(&abs).map_err(|e| anyhow::anyhow!("read `{path_str}`: {e}"))?;
         let line_count = String::from_utf8_lossy(&bytes).lines().count() as u32;
         if end > line_count {

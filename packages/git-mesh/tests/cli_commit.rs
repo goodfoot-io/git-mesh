@@ -469,7 +469,7 @@ fn cli_rm_of_range_not_in_mesh_errors() -> Result<()> {
 
 #[test]
 fn cli_rm_of_staged_add_succeeds() -> Result<()> {
-    // Removing a range that exists only as a staged add should be allowed
+    // Removing a anchor that exists only as a staged add should be allowed
     // (it "undoes" the add in the same staging pass).
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;

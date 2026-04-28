@@ -4,9 +4,9 @@ use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
 use crate::mesh::read::{parse_config_blob, serialize_config_blob};
-use crate::range::{create_range_with_extent_skipping_blob_bounds, read_range};
+use crate::anchor::{create_anchor_with_extent_skipping_blob_bounds, read_anchor};
 use crate::staging::{self, StagedConfig, Staging};
-use crate::types::{Mesh, MeshConfig, RangeExtent};
+use crate::types::{Mesh, MeshConfig, AnchorExtent};
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
 use gix::objs::Tree;
@@ -26,10 +26,10 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let base_tip = resolve_ref_oid_optional(wd, &mesh_ref)?;
 
     // Load current state (if any).
-    let (range_ids, base_config, base_message) = match base_tip.as_deref() {
+    let (anchor_ids, base_config, base_message) = match base_tip.as_deref() {
         Some(tip) => {
             let m = super::read::read_mesh_at(repo, name, Some(tip))?;
-            (m.ranges, m.config, Some(m.message))
+            (m.anchors, m.config, Some(m.message))
         }
         None => (
             Vec::new(),
@@ -47,39 +47,39 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let staging = dedup_staged_adds(staging);
 
     // Validate removes exist and adds don't collide post-remove. Work on a
-    // materialized snapshot `(range_id, path, extent)`.
-    let mut snapshots: Vec<(String, String, RangeExtent)> = Vec::with_capacity(range_ids.len());
-    for id in &range_ids {
-        let r = read_range(repo, id)?;
+    // materialized snapshot `(anchor_id, path, extent)`.
+    let mut snapshots: Vec<(String, String, AnchorExtent)> = Vec::with_capacity(anchor_ids.len());
+    for id in &anchor_ids {
+        let r = read_anchor(repo, id)?;
         snapshots.push((id.clone(), r.path, r.extent));
     }
     for rem in &staging.removes {
         let idx = snapshots
             .iter()
             .position(|(_, p, e)| p == &rem.path && *e == rem.extent)
-            .ok_or_else(|| Error::RangeNotInMesh {
+            .ok_or_else(|| Error::AnchorNotInMesh {
                 path: rem.path.clone(),
                 start: rem.start(),
                 end: rem.end(),
             })?;
         snapshots.remove(idx);
     }
-    // A staged add can carry the range_id it supersedes in its sidecar
-    // metadata. This is what makes re-anchoring a moved range work: the
+    // A staged add can carry the anchor_id it supersedes in its sidecar
+    // metadata. This is what makes re-anchoring a moved anchor work: the
     // new address may not match the old `(path, extent)`, but it still
-    // replaces the same durable range relationship.
+    // replaces the same durable anchor relationship.
     for a in &staging.adds {
         let Some(meta) = staging::read_sidecar_meta(repo, name, a.line_number) else {
             continue;
         };
-        let Some(range_id) = meta.range_id else {
+        let Some(anchor_id) = meta.anchor_id else {
             continue;
         };
-        if let Some(idx) = snapshots.iter().position(|(id, _, _)| id == &range_id) {
+        if let Some(idx) = snapshots.iter().position(|(id, _, _)| id == &anchor_id) {
             snapshots.remove(idx);
         }
     }
-    // Adds that collide with an existing range at `(path, extent)` are
+    // Adds that collide with an existing anchor at `(path, extent)` are
     // dedup-overrides per §D5: drop the prior snapshot, keep the staged
     // add.
     for a in &staging.adds {
@@ -136,7 +136,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         (None, None) => return Err(Error::WhyRequired(name.into())),
     };
 
-    // Slice 4: hard-fail on any tampered sidecar BEFORE any range refs
+    // Slice 4: hard-fail on any tampered sidecar BEFORE any anchor refs
     // are written. `<fail-closed>`: a missing/unreadable meta or an
     // empty/non-matching `content_sha256` is treated as tampered.
     for a in &staging.adds {
@@ -156,16 +156,16 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         }
     }
 
-    // Drift check and range creation for staged adds. All-or-nothing:
-    // create range refs for each add; on any failure propagate.
+    // Drift check and anchor creation for staged adds. All-or-nothing:
+    // create anchor refs for each add; on any failure propagate.
     let head_sha = git::head_oid(repo)?;
-    let mut new_range_ids: Vec<String> = Vec::new();
+    let mut new_anchor_ids: Vec<String> = Vec::new();
     // Pre-validate every add against its resolved anchor (prevent partial
-    // writes) BEFORE creating any range refs.
+    // writes) BEFORE creating any anchor refs.
     for a in &staging.adds {
         let anchor = a.anchor.clone().unwrap_or_else(|| head_sha.clone());
         match a.extent {
-            RangeExtent::Lines { start, end } => {
+            AnchorExtent::LineRange { start, end } => {
                 // Slice 1: source the line count from the sidecar meta
                 // (captured at stage-time from filtered worktree bytes),
                 // *never* from the raw blob — the latter is the LFS
@@ -182,10 +182,10 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                         a.path, name, a.line_number
                     )))?;
                 if start < 1 || end < start || end > line_count {
-                    return Err(Error::InvalidRange { start, end });
+                    return Err(Error::InvalidAnchor { start, end });
                 }
             }
-            RangeExtent::Whole => {
+            AnchorExtent::WholeFile => {
                 // Confirm the path resolves to a tree entry; gitlink
                 // and blob both acceptable.
                 if crate::git::path_blob_at(repo, &anchor, &a.path).is_err()
@@ -201,11 +201,11 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     }
     for a in &staging.adds {
         let anchor = a.anchor.clone().unwrap_or_else(|| head_sha.clone());
-        let id = create_range_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
-        new_range_ids.push(id);
+        let id = create_anchor_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
+        new_anchor_ids.push(id);
     }
 
-    // CAS retry loop (§6). Range blobs are content-addressed and already
+    // CAS retry loop (§6). Anchor blobs are content-addressed and already
     // written; only the tree/commit/ref-update step needs retrying. On
     // conflict, reload the mesh tip, re-validate post-remove collisions
     // against the new snapshot, rebuild the tree/commit with the new
@@ -216,10 +216,10 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let new_commit: String;
     let mut attempt: usize = 0;
     loop {
-        // Combine ranges and canonicalize by (path, extent).
-        let mut combined: Vec<(String, String, RangeExtent)> = current_snapshots.clone();
-        for id in &new_range_ids {
-            let r = read_range(repo, id)?;
+        // Combine anchors and canonicalize by (path, extent).
+        let mut combined: Vec<(String, String, AnchorExtent)> = current_snapshots.clone();
+        for id in &new_anchor_ids {
+            let r = read_anchor(repo, id)?;
             combined.push((id.clone(), r.path, r.extent));
         }
         combined.sort_by(|a, b| {
@@ -227,8 +227,8 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         });
         let final_ids: Vec<String> = combined.iter().map(|(id, _, _)| id.clone()).collect();
 
-        // Build tree: `ranges` blob + `config` blob.
-        let ranges_text: String = {
+        // Build tree: `anchors` blob + `config` blob.
+        let anchors_text: String = {
             let mut s = String::new();
             for id in &final_ids {
                 s.push_str(id);
@@ -236,26 +236,26 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             }
             s
         };
-        let ranges_blob = git::write_blob_bytes(repo, ranges_text.as_bytes())?;
+        let anchors_blob = git::write_blob_bytes(repo, anchors_text.as_bytes())?;
         let config_text = serialize_config_blob(&new_config);
         let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
-        // Build a tree with `config` and `ranges` entries. `git mktree`
+        // Build a tree with `anchors` and `config` entries. `git mktree`
         // sorts entries by name; gix expects them pre-sorted as well.
         let tree = Tree {
             entries: vec![
+                Entry {
+                    mode: EntryKind::Blob.into(),
+                    filename: "anchors".into(),
+                    oid: anchors_blob
+                        .parse()
+                        .map_err(|e| crate::Error::Git(format!("parse anchors blob oid: {e}")))?,
+                },
                 Entry {
                     mode: EntryKind::Blob.into(),
                     filename: "config".into(),
                     oid: config_blob
                         .parse()
                         .map_err(|e| crate::Error::Git(format!("parse config blob oid: {e}")))?,
-                },
-                Entry {
-                    mode: EntryKind::Blob.into(),
-                    filename: "ranges".into(),
-                    oid: ranges_blob
-                        .parse()
-                        .map_err(|e| crate::Error::Git(format!("parse ranges blob oid: {e}")))?,
                 },
             ],
         };
@@ -313,9 +313,9 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 let new_snapshots = match current_parent.as_deref() {
                     Some(tip) => {
                         let m = super::read::read_mesh_at(repo, name, Some(tip))?;
-                        let mut out = Vec::with_capacity(m.ranges.len());
-                        for id in &m.ranges {
-                            let r = read_range(repo, id)?;
+                        let mut out = Vec::with_capacity(m.anchors.len());
+                        for id in &m.anchors {
+                            let r = read_anchor(repo, id)?;
                             out.push((id.clone(), r.path, r.extent));
                         }
                         out
@@ -327,14 +327,14 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                     let idx = post
                         .iter()
                         .position(|(_, p, e)| p == &rem.path && *e == rem.extent)
-                        .ok_or_else(|| Error::RangeNotInMesh {
+                        .ok_or_else(|| Error::AnchorNotInMesh {
                             path: rem.path.clone(),
                             start: rem.start(),
                             end: rem.end(),
                         })?;
                     post.remove(idx);
                 }
-                // Adds at the same `(path, extent)` as an existing range
+                // Adds at the same `(path, extent)` as an existing anchor
                 // are treated as last-write-wins overrides (plan §D5).
                 for a in &staging.adds {
                     if let Some(idx) = post
@@ -371,7 +371,7 @@ fn _unused(_: &Mesh, _: &Path, _: &Staging, _: fn(&str) -> Result<MeshConfig>) {
 /// write wins" since the parser already orders by file position).
 fn dedup_staged_adds(mut staging: Staging) -> Staging {
     use std::collections::HashMap;
-    let mut last_for_key: HashMap<(String, RangeExtent), u32> = HashMap::new();
+    let mut last_for_key: HashMap<(String, AnchorExtent), u32> = HashMap::new();
     for a in &staging.adds {
         let key = (a.path.clone(), a.extent);
         let entry = last_for_key.entry(key).or_insert(0);
@@ -385,10 +385,10 @@ fn dedup_staged_adds(mut staging: Staging) -> Staging {
     staging
 }
 
-fn extent_sort_key(extent: &RangeExtent) -> (u32, u32) {
+fn extent_sort_key(extent: &AnchorExtent) -> (u32, u32) {
     match *extent {
-        RangeExtent::Whole => (0, 0),
-        RangeExtent::Lines { start, end } => (start, end),
+        AnchorExtent::WholeFile => (0, 0),
+        AnchorExtent::LineRange { start, end } => (start, end),
     }
 }
 

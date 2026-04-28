@@ -65,16 +65,16 @@ line ranges (or whole files), in code or prose, that no schema, type, or test
 enforces.
 Each
 .B mesh
-anchors the participating ranges and carries a durable
+anchors the participating anchors and carries a durable
 .I why
-\[em] one prose sentence that names the relationship the anchored ranges hold
+\[em] one prose sentence that names the relationship the anchored set holds
 and survives a rewrite of either side.
 .PP
 The standing question at commit time: did this change create or rely on a
 coupling that is not visible from the lines themselves?
 .PP
 .B Writing the why.
-Name the relationship the ranges hold in one prose sentence, written so it
+Name the relationship the anchors hold in one prose sentence, written so it
 survives a rewrite of either side.
 Describe the relationship in role\-words (\(lqthe doc,\(rq \(lqthe parser,\(rq
 \(lqthe runbook,\(rq \(lqthe migration\(rq) rather than repeating filenames.
@@ -113,7 +113,7 @@ Bare invocations:
 List every mesh in the repository.
 .TP
 .BI git\ mesh\  <name>
-Show one mesh (ranges, why, config).
+Show one mesh (anchors, why, config).
 .RE
 "#;
 

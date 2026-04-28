@@ -56,7 +56,7 @@ fn show_oneline_drops_header() -> Result<()> {
 fn show_at_walks_history() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "h")?;
-    // Second commit adds a second range.
+    // Second commit adds a second anchor.
     repo.mesh_stdout(["add", "h", "file2.txt#L1-L3"])?;
     repo.mesh_stdout(["why", "h", "-m", "v2"])?;
     repo.mesh_stdout(["commit", "h"])?;

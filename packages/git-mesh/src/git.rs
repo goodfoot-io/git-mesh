@@ -545,7 +545,7 @@ fn blob_data(repo: &gix::Repository, blob_oid: &str) -> Result<Vec<u8>> {
 // Typed public helpers (Slice B signatures).
 // ---------------------------------------------------------------------------
 
-/// Read a blob object as UTF-8 text (range records, config blobs, etc).
+/// Read a blob object as UTF-8 text (anchor records, config blobs, etc).
 pub fn read_git_text(repo: &gix::Repository, oid: &str) -> Result<String> {
     let data = blob_data(repo, oid)?;
     String::from_utf8(data).map_err(|e| Error::Parse(format!("object not utf-8: {e}")))
@@ -657,7 +657,7 @@ pub fn extract_blob_lines(
     let lo = start.saturating_sub(1) as usize;
     let hi = (end as usize).min(lines.len());
     if lo > hi {
-        return Err(Error::InvalidRange { start, end });
+        return Err(Error::InvalidAnchor { start, end });
     }
     let mut out = String::new();
     for line in &lines[lo..hi] {
@@ -680,7 +680,7 @@ pub fn log_l_resolve(
     // Resolver lives in stale.rs (ported from v1). This hook exists only
     // to preserve the Slice B signature.
     Err(Error::Git(
-        "git::log_l_resolve is not used; call resolver::resolve_range".into(),
+        "git::log_l_resolve is not used; call resolver::resolve_anchor".into(),
     ))
 }
 

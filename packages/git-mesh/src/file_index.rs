@@ -2,8 +2,8 @@
 
 use crate::git::mesh_dir;
 use crate::mesh::read::{list_mesh_names, read_mesh};
-use crate::range::read_range;
-use crate::types::RangeExtent;
+use crate::anchor::read_anchor;
+use crate::types::AnchorExtent;
 use crate::{Error, Result};
 use std::fs;
 use std::path::PathBuf;
@@ -46,14 +46,14 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
     let mut out = Vec::new();
     for name in list_mesh_names(repo)? {
         let mesh = read_mesh(repo, &name)?;
-        for id in mesh.ranges {
-            let r = read_range(repo, &id)?;
+        for id in mesh.anchors {
+            let r = read_anchor(repo, &id)?;
             let (start, end) = match r.extent {
-                RangeExtent::Lines { start, end } => (start, end),
+                AnchorExtent::LineRange { start, end } => (start, end),
                 // Whole-file pins are recorded as `0..0` in the index for
                 // sort/lookup; the renderer prints `*` in place of a
                 // line range. See plan §D2.
-                RangeExtent::Whole => (0, 0),
+                AnchorExtent::WholeFile => (0, 0),
             };
             out.push(IndexEntry {
                 path: r.path,
@@ -123,7 +123,7 @@ pub fn ls_by_path(repo: &gix::Repository, path: &str) -> Result<Vec<IndexEntry>>
         .collect())
 }
 
-pub fn ls_by_path_range(
+pub fn ls_by_path_line_range(
     repo: &gix::Repository,
     path: &str,
     start: u32,

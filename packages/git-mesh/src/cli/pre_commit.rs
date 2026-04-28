@@ -3,7 +3,7 @@
 //! Runs the resolver in pre-commit mode (HEAD + Index + Staged-mesh; no
 //! worktree) and fails iff anything is rendered:
 //!
-//! - any non-Fresh, unacknowledged range finding, OR
+//! - any non-Fresh, unacknowledged anchor finding, OR
 //! - any pending `Add`/`Remove` carrying `Some(PendingDrift)`.
 //!
 //! `--no-exit-code` keeps the report but always exits 0 (informational
@@ -15,7 +15,7 @@ use crate::mesh::read::list_mesh_names;
 use crate::resolver::{build_pending_findings, resolve_mesh};
 use crate::types::{
     DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
-    RangeExtent, RangeStatus,
+    AnchorExtent, AnchorStatus,
 };
 use anyhow::Result;
 use std::collections::HashSet;
@@ -49,7 +49,7 @@ pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32
                 meshes.push(MeshResolved {
                     name: name.clone(),
                     message: String::new(),
-                    ranges: Vec::new(),
+                    anchors: Vec::new(),
                     pending: build_pending_findings(repo, name),
                 });
             }
@@ -61,15 +61,15 @@ pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32
     let findings: Vec<Finding> = meshes
         .iter()
         .flat_map(|m| {
-            m.ranges
+            m.anchors
                 .iter()
-                .filter(|r| r.status != RangeStatus::Fresh)
+                .filter(|r| r.status != AnchorStatus::Fresh)
                 .flat_map(|r| {
                     let ack = r.acknowledged_by.clone();
                     if r.layer_sources.is_empty() {
                         vec![Finding {
                             mesh: m.name.clone(),
-                            range_id: r.range_id.clone(),
+                            anchor_id: r.anchor_id.clone(),
                             status: r.status.clone(),
                             source: r.source,
                             anchored: r.anchored.clone(),
@@ -82,7 +82,7 @@ pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32
                             .iter()
                             .map(|&src| Finding {
                                 mesh: m.name.clone(),
-                                range_id: r.range_id.clone(),
+                                anchor_id: r.anchor_id.clone(),
                                 status: r.status.clone(),
                                 source: Some(src),
                                 anchored: r.anchored.clone(),
@@ -228,10 +228,10 @@ fn drift_note(drift: &Option<PendingDrift>) -> &'static str {
     }
 }
 
-fn render_pending_address(path: &str, extent: RangeExtent) -> String {
+fn render_pending_address(path: &str, extent: AnchorExtent) -> String {
     match extent {
-        RangeExtent::Whole => format!("{path}  (whole)"),
-        RangeExtent::Lines { start, end } => format!("{path}#L{start}-L{end}"),
+        AnchorExtent::WholeFile => format!("{path}  (whole)"),
+        AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
     }
 }
 

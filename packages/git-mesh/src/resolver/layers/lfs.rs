@@ -4,7 +4,7 @@
 use super::filter_process::{FilterProcess, FilterSpawnError, filter_smudge, spawn_lfs_process};
 use crate::git;
 use crate::types::{
-    self, DriftSource, Range, RangeExtent, RangeLocation, RangeResolved, RangeStatus,
+    self, DriftSource, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
     UnavailableReason,
 };
 use std::path::PathBuf;
@@ -92,22 +92,22 @@ fn head_blob_for(repo: &gix::Repository, path: &str) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_lfs_range(
+pub(crate) fn resolve_lfs_anchor(
     repo: &gix::Repository,
     lfs: &mut LfsState,
-    range_id: &str,
-    r: &Range,
-    anchored: RangeLocation,
+    anchor_id: &str,
+    r: &Anchor,
+    anchored: AnchorLocation,
     tracked: &Tracked,
     deepest_layer: DriftSource,
     index_blob_oid: Option<&str>,
     worktree_changed: bool,
-) -> RangeResolved {
+) -> AnchorResolved {
     let workdir = match git::work_dir(repo) {
         Ok(w) => w,
         Err(_) => {
             return lfs_terminal(
-                range_id,
+                anchor_id,
                 r,
                 anchored,
                 UnavailableReason::IoError {
@@ -121,7 +121,7 @@ pub(crate) fn resolve_lfs_range(
         Ok(b) => b,
         Err(_) => {
             return lfs_terminal(
-                range_id,
+                anchor_id,
                 r,
                 anchored,
                 UnavailableReason::IoError {
@@ -161,14 +161,14 @@ pub(crate) fn resolve_lfs_range(
     let anchored_oid = lfs_pointer_oid(&anchored_pointer);
     let current_oid = lfs_pointer_oid(&current_pointer);
     let same_path_extent = tracked.path == r.path
-        && matches!(r.extent, RangeExtent::Lines { start, end } if start == tracked.start && end == tracked.end);
+        && matches!(r.extent, AnchorExtent::LineRange { start, end } if start == tracked.start && end == tracked.end);
     if anchored_oid.is_some() && anchored_oid == current_oid {
         let status = if same_path_extent {
-            RangeStatus::Fresh
+            AnchorStatus::Fresh
         } else {
-            RangeStatus::Moved
+            AnchorStatus::Moved
         };
-        let source = if status == RangeStatus::Fresh {
+        let source = if status == AnchorStatus::Fresh {
             None
         } else {
             Some(deepest_layer)
@@ -178,13 +178,13 @@ pub(crate) fn resolve_lfs_range(
         } else {
             vec![]
         };
-        return RangeResolved {
-            range_id: range_id.into(),
+        return AnchorResolved {
+            anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha.clone(),
             anchored,
-            current: Some(RangeLocation {
+            current: Some(AnchorLocation {
                 path: PathBuf::from(&tracked.path),
-                extent: RangeExtent::Lines {
+                extent: AnchorExtent::LineRange {
                     start: tracked.start,
                     end: tracked.end,
                 },
@@ -201,19 +201,19 @@ pub(crate) fn resolve_lfs_range(
     let anchored_smudged = match lfs_read(lfs, workdir, &r.path, &anchored_pointer) {
         LfsReadOutcome::Bytes(b) => b,
         LfsReadOutcome::NotFetched => {
-            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotFetched);
+            return lfs_terminal(anchor_id, r, anchored, UnavailableReason::LfsNotFetched);
         }
         LfsReadOutcome::NotInstalled => {
-            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotInstalled);
+            return lfs_terminal(anchor_id, r, anchored, UnavailableReason::LfsNotInstalled);
         }
     };
     let current_smudged = match lfs_read(lfs, workdir, &tracked.path, &current_pointer) {
         LfsReadOutcome::Bytes(b) => b,
         LfsReadOutcome::NotFetched => {
-            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotFetched);
+            return lfs_terminal(anchor_id, r, anchored, UnavailableReason::LfsNotFetched);
         }
         LfsReadOutcome::NotInstalled => {
-            return lfs_terminal(range_id, r, anchored, UnavailableReason::LfsNotInstalled);
+            return lfs_terminal(anchor_id, r, anchored, UnavailableReason::LfsNotInstalled);
         }
     };
 
@@ -222,14 +222,14 @@ pub(crate) fn resolve_lfs_range(
     if a_smudged_oid.is_some() || c_smudged_oid.is_some() {
         let status = if a_smudged_oid == c_smudged_oid {
             if same_path_extent {
-                RangeStatus::Fresh
+                AnchorStatus::Fresh
             } else {
-                RangeStatus::Moved
+                AnchorStatus::Moved
             }
         } else {
-            RangeStatus::Changed
+            AnchorStatus::Changed
         };
-        let source = if status == RangeStatus::Fresh {
+        let source = if status == AnchorStatus::Fresh {
             None
         } else {
             Some(deepest_layer)
@@ -239,13 +239,13 @@ pub(crate) fn resolve_lfs_range(
         } else {
             vec![]
         };
-        return RangeResolved {
-            range_id: range_id.into(),
+        return AnchorResolved {
+            anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha.clone(),
             anchored,
-            current: Some(RangeLocation {
+            current: Some(AnchorLocation {
                 path: PathBuf::from(&tracked.path),
-                extent: RangeExtent::Lines {
+                extent: AnchorExtent::LineRange {
                     start: tracked.start,
                     end: tracked.end,
                 },
@@ -260,8 +260,8 @@ pub(crate) fn resolve_lfs_range(
     }
 
     let (a_start, a_end) = match r.extent {
-        RangeExtent::Lines { start, end } => (start, end),
-        RangeExtent::Whole => (1, 1),
+        AnchorExtent::LineRange { start, end } => (start, end),
+        AnchorExtent::WholeFile => (1, 1),
     };
     let a_text = String::from_utf8_lossy(&anchored_smudged);
     let c_text = String::from_utf8_lossy(&current_smudged);
@@ -284,14 +284,14 @@ pub(crate) fn resolve_lfs_range(
     let equal = a_slice == c_slice;
     let status = if equal {
         if same_path_extent {
-            RangeStatus::Fresh
+            AnchorStatus::Fresh
         } else {
-            RangeStatus::Moved
+            AnchorStatus::Moved
         }
     } else {
-        RangeStatus::Changed
+        AnchorStatus::Changed
     };
-    let source = if status == RangeStatus::Fresh {
+    let source = if status == AnchorStatus::Fresh {
         None
     } else {
         Some(deepest_layer)
@@ -301,13 +301,13 @@ pub(crate) fn resolve_lfs_range(
     } else {
         vec![]
     };
-    RangeResolved {
-        range_id: range_id.into(),
+    AnchorResolved {
+        anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
         anchored,
-        current: Some(RangeLocation {
+        current: Some(AnchorLocation {
             path: PathBuf::from(&tracked.path),
-            extent: RangeExtent::Lines {
+            extent: AnchorExtent::LineRange {
                 start: tracked.start,
                 end: tracked.end,
             },
@@ -322,17 +322,17 @@ pub(crate) fn resolve_lfs_range(
 }
 
 fn lfs_terminal(
-    range_id: &str,
-    r: &Range,
-    anchored: RangeLocation,
+    anchor_id: &str,
+    r: &Anchor,
+    anchored: AnchorLocation,
     reason: UnavailableReason,
-) -> RangeResolved {
-    RangeResolved {
-        range_id: range_id.into(),
+) -> AnchorResolved {
+    AnchorResolved {
+        anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
         anchored,
         current: None,
-        status: RangeStatus::ContentUnavailable(reason),
+        status: AnchorStatus::ContentUnavailable(reason),
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,

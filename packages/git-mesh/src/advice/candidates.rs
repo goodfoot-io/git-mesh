@@ -37,7 +37,7 @@ pub enum ReasonKind {
     WriteAcross,
     /// T3 rename literal in partner.
     RenameLiteral,
-    /// T4 range collapse on partner.
+    /// T4 anchor collapse on partner.
     RangeCollapse,
     /// T5 losing coherence.
     LosingCoherence,
@@ -112,14 +112,14 @@ pub struct Candidate {
     pub partner_path: String,
     pub partner_start: Option<i64>,
     pub partner_end: Option<i64>,
-    /// The file the developer just touched (trigger range) — only used for
+    /// The file the developer just touched (trigger anchor) — only used for
     /// dedup and for the command text. May be empty.
     pub trigger_path: String,
     pub trigger_start: Option<i64>,
     pub trigger_end: Option<i64>,
-    /// The recorded mesh range on the trigger side — the range the
+    /// The recorded mesh anchor on the trigger side — the anchor the
     /// developer's edit hit. Surfaced in the bullet list so the mesh's
-    /// complete range set is visible. Empty path = unknown / not
+    /// complete anchor set is visible. Empty path = unknown / not
     /// applicable (e.g. cross-cutting candidates).
     pub touched_path: String,
     pub touched_start: Option<i64>,
@@ -132,7 +132,7 @@ pub struct Candidate {
     pub density: Density,
     /// Optional ready-to-run command (L2). Empty for L0/L1.
     pub command: String,
-    /// L1/L2 excerpt block attached to a specific partner path+range. Empty
+    /// L1/L2 excerpt block attached to a specific partner path+anchor. Empty
     /// for L0.
     pub excerpt_of_path: String,
     pub excerpt_start: Option<i64>,
@@ -150,7 +150,7 @@ pub struct Candidate {
 // ── Pure-data types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MeshRangeStatus {
+pub enum MeshAnchorStatus {
     Stable,
     Changed,
     Moved,
@@ -158,7 +158,7 @@ pub enum MeshRangeStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct MeshRange {
+pub struct MeshAnchor {
     pub name: String,
     pub why: String,
     pub path: std::path::PathBuf,
@@ -166,7 +166,7 @@ pub struct MeshRange {
     pub end: u32,
     /// True when the mesh pin covers the whole file rather than a line range.
     pub whole: bool,
-    pub status: MeshRangeStatus,
+    pub status: MeshAnchorStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -188,7 +188,7 @@ pub struct CandidateInput<'a> {
     pub incr_delta: &'a [DiffEntry],
     pub new_reads: &'a [ReadRecord],
     pub touch_intervals: &'a [TouchInterval],
-    pub mesh_ranges: &'a [MeshRange],
+    pub mesh_anchors: &'a [MeshAnchor],
     pub internal_path_prefixes: &'a [String],
     pub staging: StagingState<'a>,
 }
@@ -236,7 +236,7 @@ fn bare_candidate(
     }
 }
 
-fn same_range(a: &MeshRange, b: &MeshRange) -> bool {
+fn same_anchor(a: &MeshAnchor, b: &MeshAnchor) -> bool {
     a.name == b.name && a.path == b.path && a.start == b.start && a.end == b.end
 }
 
@@ -254,7 +254,7 @@ fn partner_candidates_for_trigger(
     trigger_path: &str,
     trigger_start: Option<i64>,
     trigger_end: Option<i64>,
-    touched: &MeshRange,
+    touched: &MeshAnchor,
 ) -> Vec<Candidate> {
     partner_candidates_for_trigger_kind(
         input,
@@ -272,12 +272,12 @@ fn partner_candidates_for_trigger_kind(
     trigger_path: &str,
     trigger_start: Option<i64>,
     trigger_end: Option<i64>,
-    touched: &MeshRange,
+    touched: &MeshAnchor,
 ) -> Vec<Candidate> {
     input
-        .mesh_ranges
+        .mesh_anchors
         .iter()
-        .filter(|partner| partner.name == touched.name && !same_range(partner, touched))
+        .filter(|partner| partner.name == touched.name && !same_anchor(partner, touched))
         .map(|partner| {
             let partner_path = partner.path.to_string_lossy();
             let (ps, pe) = if partner.whole {
@@ -304,7 +304,7 @@ fn partner_candidates_for_trigger_kind(
 
 // ── Detector functions ───────────────────────────────────────────────────────
 
-/// Emit `Partner` for each `new_reads` interval that intersects a mesh range.
+/// Emit `Partner` for each `new_reads` interval that intersects a mesh anchor.
 pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate> {
     let mut out = Vec::new();
     for read in input.new_reads {
@@ -313,13 +313,13 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
         }
         let read_start = read.start_line.unwrap_or(0);
         let read_end = read.end_line.unwrap_or(u32::MAX);
-        for range in input.mesh_ranges {
-            let path_str = range.path.to_string_lossy();
+        for anchor in input.mesh_anchors {
+            let path_str = anchor.path.to_string_lossy();
             if read.path != path_str.as_ref() {
                 continue;
             }
-            let mesh_start = if range.whole { 0 } else { range.start };
-            let mesh_end = if range.whole { u32::MAX } else { range.end };
+            let mesh_start = if anchor.whole { 0 } else { anchor.start };
+            let mesh_end = if anchor.whole { u32::MAX } else { anchor.end };
             if ranges_overlap(read_start, read_end, mesh_start, mesh_end) {
                 let before = out.len();
                 out.extend(partner_candidates_for_trigger(
@@ -327,7 +327,7 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
                     &read.path,
                     read.start_line.map(i64::from),
                     read.end_line.map(i64::from),
-                    range,
+                    anchor,
                 ));
                 for c in &out[before..] {
                     crate::advice_debug!(
@@ -351,7 +351,7 @@ pub fn detect_read_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate>
 ///
 /// Without hunk ranges, a changed path can only be treated as whole-file
 /// attention. To fail closed, this emits only partners already present in the
-/// same mesh as an existing range on the changed/deleted/old/new path.
+/// same mesh as an existing anchor on the changed/deleted/old/new path.
 pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate> {
     let mut out = Vec::new();
     for entry in input.incr_delta {
@@ -389,7 +389,7 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
                 // When `from` is NOT a meshed path but `to` is (a file was
                 // renamed *into* a meshed location), treat it like an Added.
                 let from_is_meshed = input
-                    .mesh_ranges
+                    .mesh_anchors
                     .iter()
                     .any(|r| r.path.to_string_lossy() == from.as_str());
                 if !from_is_meshed {
@@ -425,18 +425,18 @@ fn delta_path_partners(
 }
 
 /// Returns true if any hunk's `[start, end]` overlaps the line-bounded mesh
-/// range `[range.start, range.end]` (inclusive on both ends). When `hunks` is
+/// anchor `[anchor.start, anchor.end]` (inclusive on both ends). When `hunks` is
 /// `None` or empty the function returns `true` — the no-false-negative
 /// invariant means "unknown hunks" must always fire.
 fn hunks_overlap_range(
-    range: &MeshRange,
+    anchor: &MeshAnchor,
     hunks: Option<&[crate::advice::workspace_tree::LineRange]>,
 ) -> bool {
     match hunks {
         None | Some([]) => true,
         Some(hs) => hs
             .iter()
-            .any(|h| ranges_overlap(h.start, h.end, range.start, range.end)),
+            .any(|h| ranges_overlap(h.start, h.end, anchor.start, anchor.end)),
     }
 }
 
@@ -450,20 +450,20 @@ fn delta_path_partners_inner(
         return Vec::new();
     }
     let mut out = Vec::new();
-    for range in input.mesh_ranges {
-        let range_path = range.path.to_string_lossy();
-        if path != range_path.as_ref() {
+    for anchor in input.mesh_anchors {
+        let anchor_path = anchor.path.to_string_lossy();
+        if path != anchor_path.as_ref() {
             continue;
         }
-        // Line-range filter: a line-bounded mesh range only fires when at
-        // least one known hunk overlaps it. Whole-file ranges always fire,
+        // Line-anchor filter: a line-bounded mesh anchor only fires when at
+        // least one known hunk overlaps it. Whole-file anchors always fire,
         // and unknown hunks (`None` / empty) always fire (no false negatives).
-        if !range.whole && !hunks_overlap_range(range, hunks) {
+        if !anchor.whole && !hunks_overlap_range(anchor, hunks) {
             continue;
         }
-        // Emit one candidate per partner range in this mesh.
-        for partner in input.mesh_ranges {
-            if partner.name != range.name || same_range(partner, range) {
+        // Emit one candidate per partner anchor in this mesh.
+        for partner in input.mesh_anchors {
+            if partner.name != anchor.name || same_anchor(partner, anchor) {
                 continue;
             }
             let partner_path_str = partner.path.to_string_lossy().to_string();
@@ -472,7 +472,7 @@ fn delta_path_partners_inner(
             } else {
                 (Some(partner.start as i64), Some(partner.end as i64))
             };
-            // If the partner range's path was renamed in the session, surface
+            // If the partner anchor's path was renamed in the session, surface
             // the new path instead of the old (non-existent) path, and annotate
             // with [RENAMED] / was <old>.
             let (effective_partner_path, marker, clause) =
@@ -494,10 +494,10 @@ fn delta_path_partners_inner(
             );
             c.partner_marker = marker;
             c.partner_clause = clause;
-            c.touched_path = range_path.to_string();
-            if !range.whole {
-                c.touched_start = Some(range.start as i64);
-                c.touched_end = Some(range.end as i64);
+            c.touched_path = anchor_path.to_string();
+            if !anchor.whole {
+                c.touched_start = Some(anchor.start as i64);
+                c.touched_end = Some(anchor.end as i64);
             }
             if effective_partner_path != partner_path_str {
                 c.old_path = Some(partner_path_str);
@@ -519,7 +519,7 @@ fn delta_path_partners_inner(
 }
 
 
-/// Emit `Terminal` for `mesh_ranges` rows with Changed/Moved/Terminal status.
+/// Emit `Terminal` for `mesh_anchors` rows with Changed/Moved/Terminal status.
 pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
     let touched_paths: std::collections::HashSet<&str> = input
         .incr_delta
@@ -534,29 +534,29 @@ pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
         })
         .collect();
     let mut out = Vec::new();
-    for range in input.mesh_ranges {
+    for anchor in input.mesh_anchors {
         if matches!(
-            range.status,
-            MeshRangeStatus::Changed | MeshRangeStatus::Moved | MeshRangeStatus::Terminal
+            anchor.status,
+            MeshAnchorStatus::Changed | MeshAnchorStatus::Moved | MeshAnchorStatus::Terminal
         ) {
-            let path_str = range.path.to_string_lossy();
+            let path_str = anchor.path.to_string_lossy();
             if touched_paths.contains(path_str.as_ref()) {
                 continue;
             }
-            let (rs, re) = if range.whole {
+            let (rs, re) = if anchor.whole {
                 (None, None)
             } else {
-                (Some(range.start as i64), Some(range.end as i64))
+                (Some(anchor.start as i64), Some(anchor.end as i64))
             };
-            let marker = match range.status {
-                MeshRangeStatus::Changed => "[CHANGED]",
-                MeshRangeStatus::Moved => "[MOVED]",
-                MeshRangeStatus::Terminal => "[TERMINAL]",
-                MeshRangeStatus::Stable => "",
+            let marker = match anchor.status {
+                MeshAnchorStatus::Changed => "[CHANGED]",
+                MeshAnchorStatus::Moved => "[MOVED]",
+                MeshAnchorStatus::Terminal => "[TERMINAL]",
+                MeshAnchorStatus::Stable => "",
             };
             let mut c = bare_candidate(
-                &range.name,
-                &range.why,
+                &anchor.name,
+                &anchor.why,
                 ReasonKind::Terminal,
                 (&path_str, rs, re),
                 ("", None, None),
@@ -577,7 +577,7 @@ pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
 }
 
 /// Emit `RenameLiteral` (L2) for `session_delta` Renamed entries whose old path
-/// is a meshed range, with a ready-to-run `git mesh rm/add/commit` command.
+/// is a meshed anchor, with a ready-to-run `git mesh rm/add/commit` command.
 ///
 /// When the renamed path (`from`) is uniquely determined (exactly one Renamed
 /// entry maps it to a single `to`), emit a single L2 candidate carrying the
@@ -588,21 +588,21 @@ pub fn detect_rename_consequence(input: &CandidateInput<'_>) -> Vec<Candidate> {
     let mut out = Vec::new();
     for entry in input.session_delta {
         if let DiffEntry::Renamed { from, to, .. } = entry {
-            for range in input.mesh_ranges {
-                let range_path = range.path.to_string_lossy();
-                if from.as_str() != range_path.as_ref() {
+            for anchor in input.mesh_anchors {
+                let anchor_path = anchor.path.to_string_lossy();
+                if from.as_str() != anchor_path.as_ref() {
                     continue;
                 }
                 // `from` is a meshed path. Emit a single L2 candidate with
                 // the rm/add/commit command. Use `to` as both trigger and
                 // partner so the rendered address is navigable.
-                let mesh = &range.name;
+                let mesh = &anchor.name;
                 let command = format!(
                     "git mesh rm  {mesh} {from}\ngit mesh add {mesh} {to}\ngit mesh commit {mesh}"
                 );
                 let mut c = bare_candidate(
                     mesh,
-                    &range.why,
+                    &anchor.why,
                     ReasonKind::RenameLiteral,
                     (to, None, None),
                     (to, None, None),
@@ -627,9 +627,9 @@ pub fn detect_rename_consequence(input: &CandidateInput<'_>) -> Vec<Candidate> {
 
 /// Deferred detector — currently returns no candidates.
 ///
-/// User-experienced gap: range-collapse advice will not surface. A user
-/// whose edit shrinks a meshed range below its recorded extent will not
-/// be prompted to narrow-or-retire that range until this detector lands.
+/// User-experienced gap: anchor-collapse advice will not surface. A user
+/// whose edit shrinks a meshed anchor below its recorded extent will not
+/// be prompted to narrow-or-retire that anchor until this detector lands.
 ///
 /// Why deferred: requires blob line counts on `DiffEntry`. Emitting
 /// `RangeCollapse` on every modified meshed path would pollute the
@@ -649,27 +649,27 @@ pub fn detect_range_shrink(_input: &CandidateInput<'_>) -> Vec<Candidate> {
 // outcomes 3/5).
 
 /// Emit `StagingCrossCut`/`EmptyMesh` for `staging.adds`/`staging.removes`
-/// vs `mesh_ranges`.
+/// vs `mesh_anchors`.
 pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
     let mut out = Vec::new();
 
-    // staged adds overlapping a mesh range → StagingCrossCut
+    // staged adds overlapping a mesh anchor → StagingCrossCut
     for add in input.staging.adds {
         let add_path = add.path.to_string_lossy();
         let add_start = if add.whole { 0 } else { add.start };
         let add_end = if add.whole { u32::MAX } else { add.end };
-        for range in input.mesh_ranges {
-            let range_path = range.path.to_string_lossy();
-            if add_path.as_ref() != range_path.as_ref() {
+        for anchor in input.mesh_anchors {
+            let anchor_path = anchor.path.to_string_lossy();
+            if add_path.as_ref() != anchor_path.as_ref() {
                 continue;
             }
-            let mesh_start = if range.whole { 0 } else { range.start };
-            let mesh_end = if range.whole { u32::MAX } else { range.end };
+            let mesh_start = if anchor.whole { 0 } else { anchor.start };
+            let mesh_end = if anchor.whole { u32::MAX } else { anchor.end };
             if ranges_overlap(add_start, add_end, mesh_start, mesh_end) {
-                let (rs, re) = if range.whole {
+                let (rs, re) = if anchor.whole {
                     (None, None)
                 } else {
-                    (Some(range.start as i64), Some(range.end as i64))
+                    (Some(anchor.start as i64), Some(anchor.end as i64))
                 };
                 let (as_, ae) = if add.whole {
                     (None, None)
@@ -678,42 +678,42 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
                 };
                 crate::advice_debug!(
                     "detect_staging_cross_cut",
-                    "mesh" => range.name,
+                    "mesh" => anchor.name,
                     "reason_kind" => ReasonKind::StagingCrossCut,
-                    "partner" => format!("{}#L{}-L{}", range_path,
+                    "partner" => format!("{}#L{}-L{}", anchor_path,
                         rs.unwrap_or(0), re.unwrap_or(0)),
                     "trigger" => format!("{}#L{}-L{}", add_path,
                         as_.unwrap_or(0), ae.unwrap_or(0))
                 );
                 out.push(bare_candidate(
-                    &range.name,
-                    &range.why,
+                    &anchor.name,
+                    &anchor.why,
                     ReasonKind::StagingCrossCut,
-                    (&range_path, rs, re),
+                    (&anchor_path, rs, re),
                     (&add_path, as_, ae),
                 ));
             }
         }
     }
 
-    // staged removes fully covering a mesh range → EmptyMesh
+    // staged removes fully covering a mesh anchor → EmptyMesh
     for remove in input.staging.removes {
         let rem_path = remove.path.to_string_lossy();
         let rem_start = if remove.whole { 0 } else { remove.start };
         let rem_end = if remove.whole { u32::MAX } else { remove.end };
-        for range in input.mesh_ranges {
-            let range_path = range.path.to_string_lossy();
-            if rem_path.as_ref() != range_path.as_ref() {
+        for anchor in input.mesh_anchors {
+            let anchor_path = anchor.path.to_string_lossy();
+            if rem_path.as_ref() != anchor_path.as_ref() {
                 continue;
             }
-            let mesh_start = if range.whole { 0 } else { range.start };
-            let mesh_end = if range.whole { u32::MAX } else { range.end };
-            // A remove empties the mesh if it covers the entire mesh range
+            let mesh_start = if anchor.whole { 0 } else { anchor.start };
+            let mesh_end = if anchor.whole { u32::MAX } else { anchor.end };
+            // A remove empties the mesh if it covers the entire mesh anchor
             if rem_start <= mesh_start && rem_end >= mesh_end {
-                let (rs, re) = if range.whole {
+                let (rs, re) = if anchor.whole {
                     (None, None)
                 } else {
-                    (Some(range.start as i64), Some(range.end as i64))
+                    (Some(anchor.start as i64), Some(anchor.end as i64))
                 };
                 let (rms, rme) = if remove.whole {
                     (None, None)
@@ -722,18 +722,18 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
                 };
                 crate::advice_debug!(
                     "detect_staging_cross_cut",
-                    "mesh" => range.name,
+                    "mesh" => anchor.name,
                     "reason_kind" => ReasonKind::EmptyMesh,
-                    "partner" => format!("{}#L{}-L{}", range_path,
+                    "partner" => format!("{}#L{}-L{}", anchor_path,
                         rs.unwrap_or(0), re.unwrap_or(0)),
                     "trigger" => format!("{}#L{}-L{}", rem_path,
                         rms.unwrap_or(0), rme.unwrap_or(0))
                 );
                 out.push(bare_candidate(
-                    &range.name,
-                    &range.why,
+                    &anchor.name,
+                    &anchor.why,
                     ReasonKind::EmptyMesh,
-                    (&range_path, rs, re),
+                    (&anchor_path, rs, re),
                     (&rem_path, rms, rme),
                 ));
             }
@@ -749,8 +749,8 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
 /// `Suggestion` at the `Detector` seam.
 ///
 /// Layout:
-/// - `participants[0]` — partner range (always present)
-/// - `participants[1]` — trigger range (omitted when `trigger_path` is empty,
+/// - `participants[0]` — partner anchor (always present)
+/// - `participants[1]` — trigger anchor (omitted when `trigger_path` is empty,
 ///   e.g. partner-drift candidates)
 ///
 /// Extra rendering fields (marker, clause, density, command, excerpt, touched)
@@ -762,27 +762,27 @@ pub fn detect_staging_cross_cut(input: &CandidateInput<'_>) -> Vec<Candidate> {
 pub fn candidate_to_suggestion(c: &Candidate) -> crate::advice::suggestion::Suggestion {
     use crate::advice::suggestion::{ConfidenceBand, ScoreBreakdown, Suggestion, Viability};
 
-    let partner = MeshRange {
+    let partner = MeshAnchor {
         name: c.mesh.clone(),
         why: c.mesh_why.clone(),
         path: std::path::PathBuf::from(&c.partner_path),
         start: c.partner_start.map(|v| v as u32).unwrap_or(0),
         end: c.partner_end.map(|v| v as u32).unwrap_or(u32::MAX),
         whole: c.partner_start.is_none() || c.partner_end.is_none(),
-        status: MeshRangeStatus::Stable,
+        status: MeshAnchorStatus::Stable,
     };
 
     let mut participants = vec![partner];
 
     if !c.trigger_path.is_empty() {
-        let trigger = MeshRange {
+        let trigger = MeshAnchor {
             name: c.mesh.clone(),
             why: c.mesh_why.clone(),
             path: std::path::PathBuf::from(&c.trigger_path),
             start: c.trigger_start.map(|v| v as u32).unwrap_or(0),
             end: c.trigger_end.map(|v| v as u32).unwrap_or(u32::MAX),
             whole: c.trigger_start.is_none() || c.trigger_end.is_none(),
-            status: MeshRangeStatus::Stable,
+            status: MeshAnchorStatus::Stable,
         };
         participants.push(trigger);
     }
@@ -884,27 +884,27 @@ mod tests {
 
     // ── Fixture helpers ──────────────────────────────────────────────────────
 
-    fn make_mesh_range(name: &str, path: &str, start: u32, end: u32) -> MeshRange {
-        MeshRange {
+    fn make_mesh_anchor(name: &str, path: &str, start: u32, end: u32) -> MeshAnchor {
+        MeshAnchor {
             name: name.to_string(),
             why: "why text".to_string(),
             path: PathBuf::from(path),
             start,
             end,
             whole: false,
-            status: MeshRangeStatus::Stable,
+            status: MeshAnchorStatus::Stable,
         }
     }
 
-    fn make_whole_mesh_range(name: &str, path: &str) -> MeshRange {
-        MeshRange {
+    fn make_whole_mesh_range(name: &str, path: &str) -> MeshAnchor {
+        MeshAnchor {
             name: name.to_string(),
             why: "why text".to_string(),
             path: PathBuf::from(path),
             start: 0,
             end: u32::MAX,
             whole: true,
-            status: MeshRangeStatus::Stable,
+            status: MeshAnchorStatus::Stable,
         }
     }
 
@@ -921,14 +921,14 @@ mod tests {
         delta: &'a [DiffEntry],
         reads: &'a [ReadRecord],
         touches: &'a [TouchInterval],
-        ranges: &'a [MeshRange],
+        anchors: &'a [MeshAnchor],
     ) -> CandidateInput<'a> {
         CandidateInput {
             session_delta: delta,
             incr_delta: delta,
             new_reads: reads,
             touch_intervals: touches,
-            mesh_ranges: ranges,
+            mesh_anchors: anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -939,13 +939,13 @@ mod tests {
 
     // ── detect_read_intersects_mesh ──────────────────────────────────────────
 
-    /// A ReadRecord whose line range overlaps a MeshRange must produce
-    /// Partner Candidates for the other ranges in the same mesh.
+    /// A ReadRecord whose line range overlaps a MeshAnchor must produce
+    /// Partner Candidates for the other anchors in the same mesh.
     #[test]
     fn read_intersects_mesh_emits_partner() {
-        let ranges = [
-            make_mesh_range("my-mesh", "src/foo.rs", 10, 20),
-            make_mesh_range("my-mesh", "src/bar.rs", 1, 5),
+        let anchors = [
+            make_mesh_anchor("my-mesh", "src/foo.rs", 10, 20),
+            make_mesh_anchor("my-mesh", "src/bar.rs", 1, 5),
         ];
         let reads = [make_read("src/foo.rs", 12, 15)];
         let input = CandidateInput {
@@ -953,7 +953,7 @@ mod tests {
             incr_delta: &[],
             new_reads: &reads,
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -973,14 +973,14 @@ mod tests {
 
     #[test]
     fn read_single_range_mesh_emits_nothing() {
-        let ranges = [make_mesh_range("my-mesh", "src/foo.rs", 10, 20)];
+        let anchors = [make_mesh_anchor("my-mesh", "src/foo.rs", 10, 20)];
         let reads = [make_read("src/foo.rs", 12, 15)];
         let input = CandidateInput {
             session_delta: &[],
             incr_delta: &[],
             new_reads: &reads,
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -991,17 +991,17 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// A ReadRecord on a path not in mesh_ranges emits nothing.
+    /// A ReadRecord on a path not in mesh_anchors emits nothing.
     #[test]
     fn read_outside_mesh_emits_nothing() {
-        let ranges = [make_mesh_range("my-mesh", "src/foo.rs", 10, 20)];
+        let anchors = [make_mesh_anchor("my-mesh", "src/foo.rs", 10, 20)];
         let reads = [make_read("src/bar.rs", 12, 15)];
         let input = CandidateInput {
             session_delta: &[],
             incr_delta: &[],
             new_reads: &reads,
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1015,12 +1015,12 @@ mod tests {
     // ── detect_delta_intersects_mesh ─────────────────────────────────────────
 
     /// A DiffEntry::Modified on a meshed path conservatively produces partners
-    /// from the other ranges in the same mesh.
+    /// from the other anchors in the same mesh.
     #[test]
     fn delta_modify_intersects_mesh_emits_partner() {
-        let ranges = [
-            make_mesh_range("net-mesh", "src/net.rs", 1, 50),
-            make_mesh_range("net-mesh", "src/caller.rs", 1, 10),
+        let anchors = [
+            make_mesh_anchor("net-mesh", "src/net.rs", 1, 50),
+            make_mesh_anchor("net-mesh", "src/caller.rs", 1, 10),
         ];
         let delta = [DiffEntry::Modified {
             path: "src/net.rs".to_string(),
@@ -1034,7 +1034,7 @@ mod tests {
             incr_delta: &delta,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1050,10 +1050,10 @@ mod tests {
         assert_eq!(result[0].trigger_end, None);
     }
 
-    /// A DiffEntry::Modified on a path not in mesh_ranges emits nothing.
+    /// A DiffEntry::Modified on a path not in mesh_anchors emits nothing.
     #[test]
     fn delta_outside_mesh_emits_nothing() {
-        let ranges = [make_mesh_range("net-mesh", "src/net.rs", 1, 50)];
+        let anchors = [make_mesh_anchor("net-mesh", "src/net.rs", 1, 50)];
         let delta = [DiffEntry::Modified {
             path: "src/other.rs".to_string(),
             old_oid: None,
@@ -1066,7 +1066,7 @@ mod tests {
             incr_delta: &delta,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1079,17 +1079,17 @@ mod tests {
 
     // ── detect_partner_drift ─────────────────────────────────────────────────
 
-    /// A MeshRange with Changed status must produce a Terminal Candidate.
+    /// A MeshAnchor with Changed status must produce a Terminal Candidate.
     #[test]
     fn partner_drift_changed_status_emits_terminal() {
-        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
-        r.status = MeshRangeStatus::Changed;
+        let mut r = make_mesh_anchor("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshAnchorStatus::Changed;
         let input = CandidateInput {
             session_delta: &[],
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &[r],
+            mesh_anchors: &[r],
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1106,14 +1106,14 @@ mod tests {
     /// trigger_path == "" and partner_marker == "[CHANGED]" (Bug 4).
     #[test]
     fn partner_drift_changed_produces_empty_trigger_and_changed_marker() {
-        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
-        r.status = MeshRangeStatus::Changed;
+        let mut r = make_mesh_anchor("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshAnchorStatus::Changed;
         let input = CandidateInput {
             session_delta: &[],
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &[r],
+            mesh_anchors: &[r],
             internal_path_prefixes: &[],
             staging: StagingState { adds: &[], removes: &[] },
         };
@@ -1126,14 +1126,14 @@ mod tests {
     /// detect_partner_drift with Moved status must produce partner_marker == "[MOVED]".
     #[test]
     fn partner_drift_moved_produces_moved_marker() {
-        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
-        r.status = MeshRangeStatus::Moved;
+        let mut r = make_mesh_anchor("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshAnchorStatus::Moved;
         let input = CandidateInput {
             session_delta: &[],
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &[r],
+            mesh_anchors: &[r],
             internal_path_prefixes: &[],
             staging: StagingState { adds: &[], removes: &[] },
         };
@@ -1145,14 +1145,14 @@ mod tests {
     /// detect_partner_drift with Terminal status must produce partner_marker == "[TERMINAL]".
     #[test]
     fn partner_drift_terminal_produces_terminal_marker() {
-        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
-        r.status = MeshRangeStatus::Terminal;
+        let mut r = make_mesh_anchor("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshAnchorStatus::Terminal;
         let input = CandidateInput {
             session_delta: &[],
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &[r],
+            mesh_anchors: &[r],
             internal_path_prefixes: &[],
             staging: StagingState { adds: &[], removes: &[] },
         };
@@ -1163,8 +1163,8 @@ mod tests {
 
     #[test]
     fn partner_drift_on_session_touched_path_emits_nothing() {
-        let mut r = make_mesh_range("drift-mesh", "src/drift.rs", 5, 30);
-        r.status = MeshRangeStatus::Changed;
+        let mut r = make_mesh_anchor("drift-mesh", "src/drift.rs", 5, 30);
+        r.status = MeshAnchorStatus::Changed;
         let delta = [DiffEntry::Modified {
             path: "src/drift.rs".to_string(),
             old_oid: None,
@@ -1177,7 +1177,7 @@ mod tests {
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &[r],
+            mesh_anchors: &[r],
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1194,9 +1194,9 @@ mod tests {
     /// The trigger and partner_path are both the new path (`to`).
     #[test]
     fn rename_of_meshed_path_emits_rename_literal() {
-        let ranges = [
-            make_mesh_range("ren-mesh", "src/old.rs", 1, 10),
-            make_mesh_range("ren-mesh", "src/caller.rs", 1, 5),
+        let anchors = [
+            make_mesh_anchor("ren-mesh", "src/old.rs", 1, 10),
+            make_mesh_anchor("ren-mesh", "src/caller.rs", 1, 5),
         ];
         let delta = [DiffEntry::Renamed {
             from: "src/old.rs".to_string(),
@@ -1212,7 +1212,7 @@ mod tests {
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1220,7 +1220,7 @@ mod tests {
             },
         };
         let result = detect_rename_consequence(&input);
-        // One L2 candidate per meshed range that was renamed (src/old.rs).
+        // One L2 candidate per meshed anchor that was renamed (src/old.rs).
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].reason_kind, ReasonKind::RenameLiteral);
         assert_eq!(result[0].density, Density::L2);
@@ -1249,7 +1249,7 @@ mod tests {
     }
 
     /// Full Bug 5 scenario: Renamed { from: src/foo.ts, to: src/bar.ts } in both
-    /// session_delta and incr_delta, plus a partner range on src/uses.ts.
+    /// session_delta and incr_delta, plus a partner anchor on src/uses.ts.
     ///
     /// detect_delta_intersects_mesh must produce:
     ///   - one Partner candidate with partner_path="src/bar.ts", partner_marker="[RENAMED]",
@@ -1260,7 +1260,7 @@ mod tests {
     ///   - one L2 RenameLiteral candidate with command containing rm/add/commit
     #[test]
     fn bug5_rename_of_meshed_path_full_scenario() {
-        let ranges = [
+        let anchors = [
             make_whole_mesh_range("link", "src/foo.ts"),
             make_whole_mesh_range("link", "src/uses.ts"),
         ];
@@ -1286,7 +1286,7 @@ mod tests {
             incr_delta: &delta,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState { adds: &[], removes: &[] },
         };
@@ -1326,8 +1326,8 @@ mod tests {
     #[test]
     #[ignore = "deferred: detect_range_shrink requires blob line-count data (sub-card C)"]
     fn range_shrink_emits_range_collapse_when_blob_lines_decrease() {
-        // DiffEntry::Modified on a path whose mesh range end > new blob line count
-        let ranges = [make_mesh_range("shrink-mesh", "src/big.rs", 1, 200)];
+        // DiffEntry::Modified on a path whose mesh anchor end > new blob line count
+        let anchors = [make_mesh_anchor("shrink-mesh", "src/big.rs", 1, 200)];
         let delta = [DiffEntry::Modified {
             path: "src/big.rs".to_string(),
             old_oid: None,
@@ -1336,13 +1336,13 @@ mod tests {
         
         }];
         // Phase C will attach old_lines/new_lines to DiffEntry; for now the
-        // detector must detect "range end exceeds new blob size" to emit RangeCollapse.
+        // detector must detect "anchor end exceeds new blob size" to emit RangeCollapse.
         let input = CandidateInput {
             session_delta: &[],
             incr_delta: &delta,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1356,11 +1356,11 @@ mod tests {
 
     // ── detect_staging_cross_cut ─────────────────────────────────────────────
 
-    /// A staged add that overlaps an existing mesh range must produce a
+    /// A staged add that overlaps an existing mesh anchor must produce a
     /// StagingCrossCut Candidate.
     #[test]
     fn staging_add_overlapping_existing_mesh_emits_cross_cut() {
-        let ranges = [make_mesh_range("stage-mesh", "src/api.rs", 10, 50)];
+        let anchors = [make_mesh_anchor("stage-mesh", "src/api.rs", 10, 50)];
         let adds = [StagedAddr {
             path: PathBuf::from("src/api.rs"),
             start: 20,
@@ -1372,7 +1372,7 @@ mod tests {
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &adds,
@@ -1384,12 +1384,12 @@ mod tests {
         assert_eq!(result[0].reason_kind, ReasonKind::StagingCrossCut);
     }
 
-    /// A staged remove that empties a mesh range must produce an EmptyMesh
+    /// A staged remove that empties a mesh anchor must produce an EmptyMesh
     /// Candidate.
     #[test]
     fn staging_remove_emptying_mesh_emits_empty_mesh() {
-        let ranges = [make_mesh_range("empty-mesh", "src/api.rs", 10, 50)];
-        // Remove covers the entire mesh range
+        let anchors = [make_mesh_anchor("empty-mesh", "src/api.rs", 10, 50)];
+        // Remove covers the entire mesh anchor
         let removes = [StagedAddr {
             path: PathBuf::from("src/api.rs"),
             start: 10,
@@ -1401,7 +1401,7 @@ mod tests {
             incr_delta: &[],
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1427,12 +1427,12 @@ mod tests {
 
     // ── whole-file pin rendering (Bug 1) ─────────────────────────────────────
 
-    /// When the partner mesh range is whole-file (whole=true), the produced
+    /// When the partner mesh anchor is whole-file (whole=true), the produced
     /// Candidate must have partner_start=None and partner_end=None so that
     /// format_addr renders it as a bare path with no #L… suffix.
     #[test]
     fn whole_file_partner_produces_none_range() {
-        let trigger = make_mesh_range("checkout-flow", "web/checkout.tsx", 1, 100);
+        let trigger = make_mesh_anchor("checkout-flow", "web/checkout.tsx", 1, 100);
         let partner = make_whole_mesh_range("checkout-flow", "api/charge.ts");
         let delta = [DiffEntry::Modified {
             path: "web/checkout.tsx".to_string(),
@@ -1446,7 +1446,7 @@ mod tests {
             incr_delta: &delta,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &[trigger, partner],
+            mesh_anchors: &[trigger, partner],
             internal_path_prefixes: &[],
             staging: StagingState {
                 adds: &[],
@@ -1468,9 +1468,9 @@ mod tests {
     fn successive_content_edits_produce_distinct_fingerprints() {
         use crate::advice::fingerprint::fingerprint;
 
-        let ranges = [
-            make_mesh_range("checkout-flow", "web/checkout.tsx", 1, 100),
-            make_mesh_range("checkout-flow", "api/charge.ts", 1, 80),
+        let anchors = [
+            make_mesh_anchor("checkout-flow", "web/checkout.tsx", 1, 100),
+            make_mesh_anchor("checkout-flow", "api/charge.ts", 1, 80),
         ];
 
         let delta_first = [DiffEntry::Modified {
@@ -1485,7 +1485,7 @@ mod tests {
             incr_delta: &delta_first,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState { adds: &[], removes: &[] },
         };
@@ -1504,7 +1504,7 @@ mod tests {
             incr_delta: &delta_second,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState { adds: &[], removes: &[] },
         };
@@ -1524,9 +1524,9 @@ mod tests {
     fn noop_render_produces_same_fingerprint() {
         use crate::advice::fingerprint::fingerprint;
 
-        let ranges = [
-            make_mesh_range("checkout-flow", "web/checkout.tsx", 1, 100),
-            make_mesh_range("checkout-flow", "api/charge.ts", 1, 80),
+        let anchors = [
+            make_mesh_anchor("checkout-flow", "web/checkout.tsx", 1, 100),
+            make_mesh_anchor("checkout-flow", "api/charge.ts", 1, 80),
         ];
         let delta = [DiffEntry::Modified {
             path: "web/checkout.tsx".to_string(),
@@ -1540,7 +1540,7 @@ mod tests {
             incr_delta: &delta,
             new_reads: &[],
             touch_intervals: &[],
-            mesh_ranges: &ranges,
+            mesh_anchors: &anchors,
             internal_path_prefixes: &[],
             staging: StagingState { adds: &[], removes: &[] },
         };

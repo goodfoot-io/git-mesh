@@ -2,7 +2,7 @@
 //!
 //! Computes four granularities of cohesion:
 //!   1. Per-edge: IDF-weighted shared identifiers between two ranges.
-//!   2. Clique intersection: identifiers in EVERY range, IDF-weighted.
+//!   2. Clique intersection: identifiers in EVERY anchor, IDF-weighted.
 //!   3. Clique pairwise-min/median/mean: per-pair cohesion statistics.
 //!   4. Clique trigram: minimum pairwise Jaccard of trigram sets.
 
@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::advice::suggest::canonical::CanonicalIndex;
 
-/// Canonical range identifier — index into `CanonicalIndex::ranges`.
+/// Canonical anchor identifier — index into `CanonicalIndex::ranges`.
 pub type CanonicalId = usize;
 
 // ── IDF type ─────────────────────────────────────────────────────────────────
@@ -21,10 +21,10 @@ pub type Idf = BTreeMap<String, f64>;
 
 // ── Source cache ──────────────────────────────────────────────────────────────
 
-/// Cached token data for a single range (keyed by `"{path}#{start}-{end}"`).
+/// Cached token data for a single anchor (keyed by `"{path}#{start}-{end}"`).
 #[derive(Clone, Debug)]
 pub struct RangeTokens {
-    /// Unique identifiers (length ≥ 3, not a keyword) found in the range.
+    /// Unique identifiers (length ≥ 3, not a keyword) found in the anchor.
     pub identifiers: BTreeSet<String>,
     /// Character trigrams of the sorted identifier sequence.
     pub trigrams: BTreeSet<String>,
@@ -61,7 +61,7 @@ fn is_keyword(s: &str) -> bool {
 /// Read lines `[start, end]` (1-based, inclusive) from a file under `repo_root`.
 ///
 /// Returns `None` if the file does not exist or cannot be read.
-pub fn read_range(repo_root: &Path, p: &str, start: u32, end: u32) -> Option<String> {
+pub fn read_anchor(repo_root: &Path, p: &str, start: u32, end: u32) -> Option<String> {
     let fp = repo_root.join(p);
     let text = std::fs::read_to_string(&fp).ok()?;
     let lines: Vec<&str> = text.split('\n').collect();
@@ -132,7 +132,7 @@ pub fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
     inter as f64 / (a.len() + b.len() - inter) as f64
 }
 
-/// Build an IDF map from a collection of per-range identifier sets.
+/// Build an IDF map from a collection of per-anchor identifier sets.
 ///
 /// Ports `buildIdf` from `docs/analyze-v4.mjs` line 675.
 pub fn build_idf(range_tokens: &BTreeMap<CanonicalId, Vec<String>>) -> Idf {
@@ -219,7 +219,7 @@ pub fn range_tokens_of(text: &str) -> RangeTokens {
     }
 }
 
-/// Populate a `SourceCache` entry for a canonical range, reading from disk.
+/// Populate a `SourceCache` entry for a canonical anchor, reading from disk.
 ///
 /// Returns `None` if the file cannot be read.
 pub fn cache_range(
@@ -233,12 +233,12 @@ pub fn cache_range(
     if cache.contains_key(&key) {
         return Some(());
     }
-    let text = read_range(repo_root, path, start, end)?;
+    let text = read_anchor(repo_root, path, start, end)?;
     cache.insert(key, range_tokens_of(&text));
     Some(())
 }
 
-/// Intersection cohesion: identifiers in EVERY range, IDF-weighted.
+/// Intersection cohesion: identifiers in EVERY anchor, IDF-weighted.
 ///
 /// Ports `intersectionCohesion` from `docs/analyze-v4.mjs` line 696.
 pub fn intersection_cohesion(
@@ -437,7 +437,7 @@ mod tests {
         assert!((trigram_cohesion(&map) - 1.0).abs() < 1e-9);
     }
 
-    /// Regression: an inverted range (start > end) against a file with enough
+    /// Regression: an inverted anchor (start > end) against a file with enough
     /// lines must return `None` rather than panicking with a slice index error.
     #[test]
     fn read_range_inverted_returns_none_not_panic() {
@@ -451,14 +451,14 @@ mod tests {
         }
         drop(f);
         let repo_root = dir.path();
-        // Inverted range: start=10, end=5 — lo=9, hi=5 → lo >= hi must fire.
-        let result = read_range(repo_root, "test.txt", 10, 5);
+        // Inverted anchor: start=10, end=5 — lo=9, hi=5 → lo >= hi must fire.
+        let result = read_anchor(repo_root, "test.txt", 10, 5);
         assert!(
             result.is_none(),
-            "inverted range must return None, got: {result:?}"
+            "inverted anchor must return None, got: {result:?}"
         );
-        // Also verify a normal range still works.
-        let ok = read_range(repo_root, "test.txt", 1, 3);
-        assert!(ok.is_some(), "normal range must return Some");
+        // Also verify a normal anchor still works.
+        let ok = read_anchor(repo_root, "test.txt", 1, 3);
+        assert!(ok.is_some(), "normal anchor must return Some");
     }
 }

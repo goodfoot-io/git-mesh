@@ -136,7 +136,7 @@ fn t3_topic_block_renders_verbatim() {
 #[test]
 fn t4_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["shrinking-ranges".into()], true);
-    assert!(out.contains("# The edit reduced a line-range anchor to far fewer lines than were"));
+    assert!(out.contains("# The edit reduced a line-anchor anchor to far fewer lines than were"));
     assert!(out.contains("#   git mesh rm  <name> <path>#L<old-s>-L<old-e>"));
     assert!(out.contains("#   git mesh add <name> <path>#L<new-s>-L<new-e>"));
 }

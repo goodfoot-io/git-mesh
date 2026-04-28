@@ -3,12 +3,12 @@
 use crate::git;
 use crate::staging::{SidecarVerifyError, read_sidecar_verified};
 use crate::types::{
-    PendingDrift, PendingFinding, RangeExtent, RangeResolved, RangeStatus, StagedOpRef,
+    PendingDrift, PendingFinding, AnchorExtent, AnchorResolved, AnchorStatus, StagedOpRef,
 };
 
-/// Acknowledgment matching by `range_id` (plan §B2).
-pub(crate) fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &mut RangeResolved) {
-    if r.status == RangeStatus::Fresh {
+/// Acknowledgment matching by `anchor_id` (plan §B2).
+pub(crate) fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &mut AnchorResolved) {
+    if r.status == AnchorStatus::Fresh {
         return;
     }
     let staging = match crate::staging::read_staging(repo, mesh_name) {
@@ -20,8 +20,8 @@ pub(crate) fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &
             Some(m) => m,
             None => continue,
         };
-        let Some(rid) = &meta.range_id else { continue };
-        if rid != &r.range_id {
+        let Some(rid) = &meta.anchor_id else { continue };
+        if rid != &r.anchor_id {
             continue;
         }
         // Slice 4: integrity-check the sidecar bytes before consuming.
@@ -37,8 +37,8 @@ pub(crate) fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &
             None => continue,
         };
         let matches = match r.anchored.extent {
-            RangeExtent::Whole => side_norm == live_norm,
-            RangeExtent::Lines { .. } => {
+            AnchorExtent::WholeFile => side_norm == live_norm,
+            AnchorExtent::LineRange { .. } => {
                 let side_text = String::from_utf8_lossy(&side_norm);
                 let live_text = String::from_utf8_lossy(&live_norm);
                 let side_extent = add.extent;
@@ -62,17 +62,17 @@ pub(crate) fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &
 
 fn slice_eq_at(
     side_text: &str,
-    side_extent: RangeExtent,
+    side_extent: AnchorExtent,
     live_text: &str,
-    live_extent: RangeExtent,
+    live_extent: AnchorExtent,
 ) -> bool {
     let (s_lo, s_hi) = match side_extent {
-        RangeExtent::Lines { start, end } => (start.saturating_sub(1) as usize, end as usize),
-        RangeExtent::Whole => return side_text == live_text,
+        AnchorExtent::LineRange { start, end } => (start.saturating_sub(1) as usize, end as usize),
+        AnchorExtent::WholeFile => return side_text == live_text,
     };
     let (l_lo, l_hi) = match live_extent {
-        RangeExtent::Lines { start, end } => (start.saturating_sub(1) as usize, end as usize),
-        RangeExtent::Whole => return side_text == live_text,
+        AnchorExtent::LineRange { start, end } => (start.saturating_sub(1) as usize, end as usize),
+        AnchorExtent::WholeFile => return side_text == live_text,
     };
     let side_lines: Vec<&str> = side_text.lines().collect();
     let live_lines: Vec<&str> = live_text.lines().collect();
@@ -160,7 +160,7 @@ fn path_is_binary(repo: &gix::Repository, path: &str) -> bool {
     }
 }
 
-fn read_live_for_range(repo: &gix::Repository, r: &RangeResolved) -> Option<Vec<u8>> {
+fn read_live_for_range(repo: &gix::Repository, r: &AnchorResolved) -> Option<Vec<u8>> {
     let workdir = git::work_dir(repo).ok()?;
     let path = r
         .current
@@ -191,14 +191,14 @@ pub fn build_pending_findings(repo: &gix::Repository, mesh_name: &str) -> Vec<Pe
         match op {
             crate::staging::StagedOp::Add(a) => {
                 let meta = crate::staging::read_sidecar_meta(repo, mesh_name, a.line_number);
-                let range_id = meta
+                let anchor_id = meta
                     .as_ref()
-                    .and_then(|m| m.range_id.clone())
+                    .and_then(|m| m.anchor_id.clone())
                     .unwrap_or_default();
                 let drift = pending_add_drift(repo, mesh_name, &a, meta.as_ref());
                 out.push(PendingFinding::Add {
                     mesh: mesh_name.to_string(),
-                    range_id,
+                    anchor_id,
                     op: a,
                     drift,
                 });
@@ -206,7 +206,7 @@ pub fn build_pending_findings(repo: &gix::Repository, mesh_name: &str) -> Vec<Pe
             crate::staging::StagedOp::Remove(rm) => {
                 out.push(PendingFinding::Remove {
                     mesh: mesh_name.to_string(),
-                    range_id: String::new(),
+                    anchor_id: String::new(),
                     op: rm,
                     drift: None,
                 });
@@ -259,8 +259,8 @@ fn pending_add_drift(
         crlf_to_lf(&live)
     };
     let equal = match add.extent {
-        RangeExtent::Whole => side_norm == live_norm,
-        RangeExtent::Lines { start, end } => {
+        AnchorExtent::WholeFile => side_norm == live_norm,
+        AnchorExtent::LineRange { start, end } => {
             let st = String::from_utf8_lossy(&side_norm);
             let lt = String::from_utf8_lossy(&live_norm);
             let lo = start.saturating_sub(1) as usize;

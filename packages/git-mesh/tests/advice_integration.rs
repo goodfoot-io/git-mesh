@@ -6,7 +6,7 @@
 //!
 //! Tests deleted (no file-backed equivalent):
 //! - `add_events_create_db`         — SQL DB creation, gone with SQL stack.
-//! - `flush_t2_excerpt_on_write`    — required hunk-range data; deferred.
+//! - `flush_t2_excerpt_on_write`    — required hunk-anchor data; deferred.
 //! - `flush_t4_range_collapse`      — `detect_range_shrink` deferred.
 //! - `flush_t5_coherence`           — required SQL drift state and write events.
 //! - `flush_t6_symbol_rename`       — required pre/post blob storage; gone.
@@ -56,7 +56,7 @@ fn render(repo: &TestRepo, session: &str, extra: &[&str]) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
-// T1 — partner list (L0): read ∩ mesh surfaces partner ranges.
+// T1 — partner list (L0): read ∩ mesh surfaces partner anchors.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -83,7 +83,7 @@ fn flush_t1_partner_list() -> Result<()> {
     );
     assert!(
         stdout.contains("# - file1.txt#L1-L5"),
-        "trigger range must appear in the bullet list, got:\n{stdout}"
+        "trigger anchor must appear in the bullet list, got:\n{stdout}"
     );
     for line in stdout.lines() {
         assert!(line.starts_with('#'), "line not prefixed: {line:?}");
@@ -147,7 +147,7 @@ fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
     assert!(stdout.contains("# - file2.txt#L1-L5"), "got:\n{stdout}");
     assert!(
         stdout.contains("# - file1.txt#L1-L5"),
-        "trigger range must appear in the bullet list, got:\n{stdout}"
+        "trigger anchor must appear in the bullet list, got:\n{stdout}"
     );
     Ok(())
 }
@@ -195,7 +195,7 @@ fn flush_t8_staging_crosscut() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "mesh-a", "file1.txt", 1, 5, None)?;
-    set_why(&gix, "mesh-a", "owner of file1 range")?;
+    set_why(&gix, "mesh-a", "owner of file1 anchor")?;
     commit_mesh(&gix, "mesh-a")?;
 
     append_add(&gix, "mesh-b", "file2.txt", 1, 5, None)?;
@@ -224,7 +224,7 @@ fn flush_t9_empty_mesh_risk() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "soon-empty", "file1.txt", 1, 5, None)?;
-    set_why(&gix, "soon-empty", "single range")?;
+    set_why(&gix, "soon-empty", "single anchor")?;
     commit_mesh(&gix, "soon-empty")?;
 
     git_mesh::staging::append_remove(&gix, "soon-empty", "file1.txt", 1, 5)?;

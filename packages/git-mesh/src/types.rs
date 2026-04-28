@@ -17,33 +17,33 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The extent of a pinned range: either the whole file, or an inclusive
+/// The extent of a pinned anchor: either the whole file, or an inclusive
 /// 1-based line range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RangeExtent {
-    Whole,
-    Lines { start: u32, end: u32 },
+pub enum AnchorExtent {
+    WholeFile,
+    LineRange { start: u32, end: u32 },
 }
 
-/// In-memory representation of the Range record stored at
-/// `refs/ranges/v1/<rangeId>`. The id itself is the ref name suffix and
+/// In-memory representation of the Anchor record stored at
+/// `refs/anchors/v1/<anchorId>`. The id itself is the ref name suffix and
 /// is not repeated in the blob.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Range {
-    /// Commit this range was anchored to at creation.
+pub struct Anchor {
+    /// Commit this anchor was anchored to at creation.
     pub anchor_sha: String,
     /// ISO-8601 creation timestamp.
     pub created_at: String,
     /// File path at the anchor commit.
     pub path: String,
-    /// Extent (whole-file or line-range) pinned by this range.
-    pub extent: RangeExtent,
+    /// Extent (whole-file or line-anchor) pinned by this anchor.
+    pub extent: AnchorExtent,
     /// Blob OID of `path` at `anchor_sha`.
     pub blob: String,
 }
 
 /// `-C` levels for `git log -L` copy detection. Stored in mesh config,
-/// not in the range record. Serialized as the kebab-case variant name:
+/// not in the anchor record. Serialized as the kebab-case variant name:
 /// `off`, `same-commit`, `any-file-in-commit`, `any-file-in-repo`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -54,7 +54,7 @@ pub enum CopyDetection {
     AnyFileInRepo,
 }
 
-/// Resolver options for all ranges in a mesh.
+/// Resolver options for all anchors in a mesh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MeshConfig {
     pub copy_detection: CopyDetection,
@@ -64,18 +64,18 @@ pub struct MeshConfig {
 pub const DEFAULT_COPY_DETECTION: CopyDetection = CopyDetection::SameCommit;
 pub const DEFAULT_IGNORE_WHITESPACE: bool = false;
 
-/// A Mesh is a commit whose tree contains `ranges` and `config` files
+/// A Mesh is a commit whose tree contains `anchors` and `config` files
 /// and whose commit message is the Mesh's message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mesh {
     /// The Mesh's name (ref suffix; the identity).
     pub name: String,
-    /// Active Range ids. Canonical order: sorted by the referenced
-    /// Range's `(path, start, end)` ascending.
-    pub ranges: Vec<String>,
+    /// Active Anchor ids. Canonical order: sorted by the referenced
+    /// Anchor's `(path, start, end)` ascending.
+    pub anchors: Vec<String>,
     /// The commit's message.
     pub message: String,
-    /// Resolver options for all ranges in this mesh.
+    /// Resolver options for all anchors in this mesh.
     pub config: MeshConfig,
 }
 
@@ -102,7 +102,7 @@ pub enum UnavailableReason {
 /// callers that want a one-line summary can reduce via `.max()`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum RangeStatus {
+pub enum AnchorStatus {
     /// Current bytes equal anchored bytes.
     Fresh,
     /// Bytes equal; `(path, extent)` changed.
@@ -120,9 +120,9 @@ pub enum RangeStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RangeLocation {
+pub struct AnchorLocation {
     pub path: PathBuf,
-    pub extent: RangeExtent,
+    pub extent: AnchorExtent,
     /// Present when the path has a blob at the resolved layer; `None` for
     /// worktree-only reads, submodule gitlinks, and terminal statuses where
     /// no blob resolves.
@@ -130,21 +130,21 @@ pub struct RangeLocation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RangeResolved {
-    pub range_id: String,
+pub struct AnchorResolved {
+    pub anchor_id: String,
     pub anchor_sha: String,
-    pub anchored: RangeLocation,
-    pub current: Option<RangeLocation>,
-    pub status: RangeStatus,
+    pub anchored: AnchorLocation,
+    pub current: Option<AnchorLocation>,
+    pub status: AnchorStatus,
     /// Layer that produced the drift; `None` when `Fresh` or terminal.
     pub source: Option<DriftSource>,
-    /// All layers that show drift for this range, in shallow-to-deep order
+    /// All layers that show drift for this anchor, in shallow-to-deep order
     /// (Index → Worktree → Head). Empty for `Fresh` and terminal statuses.
     /// When non-empty, one `Finding` is emitted per entry at render time.
     pub layer_sources: Vec<DriftSource>,
-    /// Staged re-anchor that acknowledges this drift, matched by `range_id`.
+    /// Staged re-anchor that acknowledges this drift, matched by `anchor_id`.
     /// Populated in slice 5: the engine compares re-normalized sidecar
-    /// bytes against the live content for the referenced range.
+    /// bytes against the live content for the referenced anchor.
     pub acknowledged_by: Option<StagedOpRef>,
     /// Commit blamed for the current divergence. Only populated when
     /// `source == Some(Head)` and `current.blob.is_some()` (plan §B2/§D3).
@@ -155,9 +155,9 @@ pub struct RangeResolved {
 pub struct MeshResolved {
     pub name: String,
     pub message: String,
-    /// One resolved entry per Range id in the Mesh, in the Mesh's
+    /// One resolved entry per Anchor id in the Mesh, in the Mesh's
     /// stored order.
-    pub ranges: Vec<RangeResolved>,
+    pub anchors: Vec<AnchorResolved>,
     /// Pending mesh ops surfaced from `.git/mesh/staging/<name>` when
     /// `LayerSet.staged_mesh` is on. Empty otherwise.
     pub pending: Vec<PendingFinding>,
@@ -170,9 +170,9 @@ pub struct MeshResolved {
 /// is documented with the spec section that motivates it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// A range ref `refs/ranges/v1/<id>` does not exist (§3.1).
+    /// A anchor ref `refs/anchors/v1/<id>` does not exist (§3.1).
     #[error("anchor not found: {0}")]
-    RangeNotFound(String),
+    AnchorNotFound(String),
 
     /// A mesh ref `refs/meshes/v1/<name>` does not exist (§3.1).
     #[error("mesh not found: {0}")]
@@ -190,9 +190,9 @@ pub enum Error {
     /// `start` is not >= 1, or `end` < `start`, or the line range is
     /// outside the file's line count at the anchor commit (§6.1).
     #[error("invalid anchor: start={start} end={end}")]
-    InvalidRange { start: u32, end: u32 },
+    InvalidAnchor { start: u32, end: u32 },
 
-    /// On-disk record could not be parsed (range blob, ranges file,
+    /// On-disk record could not be parsed (anchor blob, anchors file,
     /// config file, or staging operations file). (§4.1, §4.2, §6.3)
     #[error("parse error: {0}")]
     Parse(String),
@@ -209,7 +209,7 @@ pub enum Error {
     #[error("reserved mesh name: {0}")]
     ReservedName(String),
 
-    /// Mesh name or range id violates the §3.5 ref-legal rules.
+    /// Mesh name or anchor id violates the §3.5 ref-legal rules.
     #[error("invalid name: {0}")]
     InvalidName(String),
 
@@ -223,13 +223,13 @@ pub enum Error {
     )]
     WhyRequired(String),
 
-    /// `anchor_sha` is not reachable; resolver classifies the range as
-    /// `Orphaned` rather than erroring, but callers writing new ranges
+    /// `anchor_sha` is not reachable; resolver classifies the anchor as
+    /// `Orphaned` rather than erroring, but callers writing new anchors
     /// surface this as a hard error (§5.3, §6.8).
     #[error("anchor commit unreachable: {anchor_sha}")]
     Unreachable { anchor_sha: String },
 
-    /// Remote does not have any `refs/{ranges,meshes}/*` refspec
+    /// Remote does not have any `refs/{anchors,meshes}/*` refspec
     /// configured, and lazy-config refused to add it (§7.1, §6.7 doctor).
     #[error("refspec missing for remote: {remote}")]
     RefspecMissing { remote: String },
@@ -243,9 +243,9 @@ pub enum Error {
     #[error("staged config is a no-op: {key}={value}")]
     ConfigNoOp { key: String, value: String },
 
-    /// Range address `<path>#L<start>-L<end>` could not be parsed (§10.3).
+    /// Anchor address `<path>#L<start>-L<end>` could not be parsed (§10.3).
     #[error("invalid anchor address: {0}")]
-    InvalidRangeAddress(String),
+    InvalidAnchorAddress(String),
 
     /// Path lookup in a tree failed (§6.1 step 2).
     #[error("path not in tree: {path} at {commit}")]
@@ -254,11 +254,11 @@ pub enum Error {
     /// Mesh staged operation references a `(path, start, end)` not
     /// present in the current mesh (§6.2 step 3).
     #[error("anchor not in mesh: {path}#L{start}-L{end}")]
-    RangeNotInMesh { path: String, start: u32, end: u32 },
+    AnchorNotInMesh { path: String, start: u32, end: u32 },
 
     /// A path's `.gitattributes` resolves to a `filter=<name>` driver
     /// outside the slice-2 core-filter allowlist. The engine surfaces
-    /// this as `RangeStatus::ContentUnavailable(UnavailableReason::FilterFailed)`.
+    /// this as `AnchorStatus::ContentUnavailable(UnavailableReason::FilterFailed)`.
     /// See `docs/stale-layers-slices.md` "Standing rules" — fail loud.
     #[error("filter not implemented: {filter}")]
     FilterFailed { filter: String },
@@ -324,7 +324,7 @@ impl LayerSet {
 pub enum Scope {
     All,
     Mesh(String),
-    Range(String),
+    Anchor(String),
 }
 
 /// Layer that produced drift for a `Finding`. There is no `StagedMesh`
@@ -513,13 +513,13 @@ pub enum PendingDrift {
 pub enum PendingFinding {
     Add {
         mesh: String,
-        range_id: String,
+        anchor_id: String,
         op: crate::staging::StagedAdd,
         drift: Option<PendingDrift>,
     },
     Remove {
         mesh: String,
-        range_id: String,
+        anchor_id: String,
         op: crate::staging::StagedRemove,
         drift: Option<PendingDrift>,
     },
@@ -537,16 +537,16 @@ pub enum PendingFinding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
     pub mesh: String,
-    pub range_id: String,
-    pub status: RangeStatus,
+    pub anchor_id: String,
+    pub status: AnchorStatus,
     /// `None` when `Fresh` or when `status` is terminal.
     pub source: Option<DriftSource>,
-    /// Always populated from the pinned `Range` record.
-    pub anchored: RangeLocation,
+    /// Always populated from the pinned `Anchor` record.
+    pub anchored: AnchorLocation,
     /// `None` when `Orphaned` / `Submodule` / `ContentUnavailable`;
     /// populated with best-effort path for `MergeConflict`.
-    pub current: Option<RangeLocation>,
-    /// Staged re-anchor matched by `range_id`.
+    pub current: Option<AnchorLocation>,
+    /// Staged re-anchor matched by `anchor_id`.
     pub acknowledged_by: Option<StagedOpRef>,
     /// Only when `source == Some(Head)`.
     pub culprit: Option<Culprit>,
@@ -580,9 +580,9 @@ pub struct EngineOptions {
     pub layers: LayerSet,
     pub ignore_unavailable: bool,
     /// Slice 5 of the review plan: `--since <commit-ish>` already
-    /// resolved to a commit OID. The engine includes a range only when
-    /// `since` is an ancestor of (or equal to) the range's anchor —
-    /// i.e. the range is anchored "at or after" `since`. Orphaned
+    /// resolved to a commit OID. The engine includes a anchor only when
+    /// `since` is an ancestor of (or equal to) the anchor's anchor —
+    /// i.e. the anchor is anchored "at or after" `since`. Orphaned
     /// anchors are always included (the filter is for scoping, not
     /// hiding orphans).
     pub since: Option<gix::ObjectId>,
@@ -616,18 +616,18 @@ impl EngineOptions {
 /// the operator gets immediate feedback before sidecars are written.
 #[derive(Debug, thiserror::Error)]
 pub enum AddPrecheckError {
-    /// Line-range pin on a `.gitattributes`-declared binary path.
-    #[error("line-range pin rejected on binary path: {path}")]
+    /// Line-anchor pin on a `.gitattributes`-declared binary path.
+    #[error("line-anchor pin rejected on binary path: {path}")]
     LineRangeOnBinary { path: String },
 
-    /// Line-range pin on a symlink (filters don't run on symlinks;
+    /// Line-anchor pin on a symlink (filters don't run on symlinks;
     /// whole-file pins are allowed for retarget detection).
-    #[error("line-range pin rejected on symlink: {path}")]
+    #[error("line-anchor pin rejected on symlink: {path}")]
     LineRangeOnSymlink { path: String },
 
-    /// Line-range pin on a path inside a submodule (multi-repo content
+    /// Line-anchor pin on a path inside a submodule (multi-repo content
     /// resolution is out of scope).
-    #[error("line-range pin rejected inside submodule: {path}")]
+    #[error("line-anchor pin rejected inside submodule: {path}")]
     LineRangeInSubmodule { path: String },
 
     /// Whole-file pin on a non-gitlink path inside a submodule. The
@@ -659,7 +659,7 @@ pub enum AddPrecheckError {
 pub fn validate_add_target(
     repo: &gix::Repository,
     path: &std::path::Path,
-    extent: &RangeExtent,
+    extent: &AnchorExtent,
 ) -> std::result::Result<(), AddPrecheckError> {
     let workdir = repo
         .workdir()
@@ -681,7 +681,7 @@ pub fn validate_add_target(
     let is_lfs = filter.as_deref() == Some("lfs");
 
     match extent {
-        RangeExtent::Lines { .. } => {
+        AnchorExtent::LineRange { .. } => {
             if is_binary_attr {
                 return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
             }
@@ -697,9 +697,9 @@ pub fn validate_add_target(
             // Slice 6b: content-blind binary detection. After the
             // attribute-driven check, sniff the first 8 KiB of the
             // worktree file for a NUL byte — git's own heuristic for
-            // "binary". Reject line-range pins; whole-file pins are
+            // "binary". Reject line-anchor pins; whole-file pins are
             // still allowed (handled by the outer `match`). Default-on,
-            // no opt-in config: line-range pins on NUL-bearing content
+            // no opt-in config: line-anchor pins on NUL-bearing content
             // can never resolve cleanly anyway.
             if !is_lfs && content_sniff_binary(&abs) {
                 return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
@@ -708,7 +708,7 @@ pub fn validate_add_target(
                 return Err(AddPrecheckError::LineRangeOnBinary { path: path_str });
             }
         }
-        RangeExtent::Whole => {
+        AnchorExtent::WholeFile => {
             if matches!(submodule_kind, SubmoduleKind::Inside) {
                 return Err(AddPrecheckError::WholeFileInSubmodule { path: path_str });
             }

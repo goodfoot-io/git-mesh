@@ -19,7 +19,7 @@ pub use session::store::{LockGuard, LockTimeout};
 pub use workspace_tree::{DiffEntry, LineRange, WorkspaceTree, capture, diff_trees};
 
 pub use candidates::{
-    Candidate, CandidateInput, Density, MeshRange, MeshRangeStatus, ReasonKind,
+    Candidate, CandidateInput, Density, MeshAnchor, MeshAnchorStatus, ReasonKind,
     StagedAddr, StagingState,
     detect_delta_intersects_mesh, detect_partner_drift, detect_range_shrink,
     detect_read_intersects_mesh, detect_rename_consequence,

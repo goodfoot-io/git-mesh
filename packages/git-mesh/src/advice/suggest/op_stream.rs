@@ -14,7 +14,7 @@ use crate::advice::suggest::SuggestConfig;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpKind {
     Read,
-    /// A range-read that came from the touches.jsonl file (start/end > 0).
+    /// A anchor-read that came from the touches.jsonl file (start/end > 0).
     TouchRead,
     /// A whole-file edit (start_line == end_line == 0 in touches.jsonl).
     Edit,

@@ -525,11 +525,11 @@ fn compute_hunks_from_bytes(old_bytes: &[u8], new_bytes: &[u8]) -> Vec<(u32, u32
         |before: std::ops::Range<u32>, after: std::ops::Range<u32>| {
             // Convert 0-based imara token ranges into git's 1-based
             // unified-hunk header semantics (`@@ -os,oc +ns,nc @@`):
-            //   * for an empty (oc==0) before-range the start is the
+            //   * for an empty (oc==0) before-anchor the start is the
             //     line *before* the insertion (so 0 when inserting at
             //     line 1, matching git's `-0,0` for prepended content
             //     and `-N,0` for inserts after line N).
-            //   * the after-range follows symmetrically.
+            //   * the after-anchor follows symmetrically.
             let oc = before.end - before.start;
             let nc = after.end - after.start;
             let os = if oc == 0 {

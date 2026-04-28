@@ -27,9 +27,9 @@ pub struct ComponentScores {
 /// One scored edge between two canonical ranges.
 #[derive(Clone, Debug)]
 pub struct Edge {
-    /// Canonical id of the "lower" range (a < b).
+    /// Canonical id of the "lower" anchor (a < b).
     pub canonical_a: usize,
-    /// Canonical id of the "higher" range.
+    /// Canonical id of the "higher" anchor.
     pub canonical_b: usize,
     /// Composite score (pre-content-cohesion).
     pub score: f64,

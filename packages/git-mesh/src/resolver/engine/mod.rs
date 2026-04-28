@@ -1,8 +1,8 @@
-//! Engine orchestration: layer setup, per-range resolution, mesh-wide
+//! Engine orchestration: layer setup, per-anchor resolution, mesh-wide
 //! resolution, acknowledgment + pending wiring, concurrency guard.
 
 pub mod pending;
-pub(crate) mod range;
+pub(crate) mod anchor;
 pub(crate) mod whole_file;
 
 use super::layers::{
@@ -10,17 +10,17 @@ use super::layers::{
     read_index_trailer, read_worktree_layer,
 };
 use crate::mesh::read::{list_mesh_names, read_mesh};
-use crate::range::read_range;
+use crate::anchor::read_anchor;
 use crate::types::{
-    EngineOptions, LayerSet, MeshResolved, PendingFinding, RangeExtent, RangeLocation,
-    RangeResolved, RangeStatus,
+    EngineOptions, LayerSet, MeshResolved, PendingFinding, AnchorExtent, AnchorLocation,
+    AnchorResolved, AnchorStatus,
 };
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use pending::{apply_acknowledgment, build_pending_findings};
-use range::resolve_range_inner;
+use anchor::resolve_anchor_inner;
 
 /// Engine-level state cached for one `stale` run.
 pub(crate) struct EngineState {
@@ -76,17 +76,17 @@ impl EngineState {
     }
 }
 
-pub fn resolve_range(
+pub fn resolve_anchor(
     repo: &gix::Repository,
     mesh_name: &str,
-    range_id: &str,
+    anchor_id: &str,
     options: EngineOptions,
-) -> Result<RangeResolved> {
+) -> Result<AnchorResolved> {
     let mut state = EngineState::new(repo, options.layers)?;
     let mesh = read_mesh(repo, mesh_name)?;
-    let mut out = match read_range(repo, range_id) {
-        Ok(r) => resolve_range_inner(repo, &mut state, &mesh.config, range_id, r)?,
-        Err(Error::RangeNotFound(_)) => orphaned_placeholder(range_id),
+    let mut out = match read_anchor(repo, anchor_id) {
+        Ok(r) => resolve_anchor_inner(repo, &mut state, &mesh.config, anchor_id, r)?,
+        Err(Error::AnchorNotFound(_)) => orphaned_placeholder(anchor_id),
         Err(e) => return Err(e),
     };
     if state.layers.staged_mesh {
@@ -103,26 +103,26 @@ pub fn resolve_mesh(
 ) -> Result<MeshResolved> {
     let mut state = EngineState::new(repo, options.layers)?;
     let mesh = read_mesh(repo, name)?;
-    let mut ranges = Vec::with_capacity(mesh.ranges.len());
+    let mut anchors = Vec::with_capacity(mesh.anchors.len());
     let mut filtered_by_since: usize = 0;
-    for id in &mesh.ranges {
-        match read_range(repo, id) {
+    for id in &mesh.anchors {
+        match read_anchor(repo, id) {
             Ok(r) => {
-                // Slice 5: `--since` filter. Skip ranges whose anchor is
+                // Slice 5: `--since` filter. Skip anchors whose commit is
                 // strictly older than `since`. Orphaned anchors (whose
                 // commit is unreachable / unparseable) are always
                 // included — the filter scopes by history, it does not
                 // hide orphans.
                 if let Some(since_oid) = options.since
-                    && !range_anchor_at_or_after(repo, &r.anchor_sha, since_oid)
+                    && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
                 {
                     filtered_by_since += 1;
                     continue;
                 }
-                ranges.push(resolve_range_inner(repo, &mut state, &mesh.config, id, r)?)
+                anchors.push(resolve_anchor_inner(repo, &mut state, &mesh.config, id, r)?)
             }
-            Err(Error::RangeNotFound(_)) => {
-                ranges.push(orphaned_placeholder(id));
+            Err(Error::AnchorNotFound(_)) => {
+                anchors.push(orphaned_placeholder(id));
             }
             Err(e) => return Err(e),
         }
@@ -131,15 +131,15 @@ pub fn resolve_mesh(
         && let Some(since_oid) = options.since
     {
         state.warnings.push(format!(
-            "filtered {filtered_by_since} ranges anchored before {}",
+            "filtered {filtered_by_since} anchors anchored before {}",
             since_oid
         ));
     }
     let pending = if state.layers.staged_mesh {
-        for r in &mut ranges {
+        for r in &mut anchors {
             apply_acknowledgment(repo, name, r);
         }
-        let acked_indices: std::collections::HashSet<usize> = ranges
+        let acked_indices: std::collections::HashSet<usize> = anchors
             .iter()
             .filter_map(|r| r.acknowledged_by.as_ref().map(|s| s.index))
             .collect();
@@ -160,7 +160,7 @@ pub fn resolve_mesh(
     Ok(MeshResolved {
         name: mesh.name,
         message: mesh.message,
-        ranges,
+        anchors,
         pending,
     })
 }
@@ -173,43 +173,43 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     }
     out.sort_by(|a, b| {
         let max_a = a
-            .ranges
+            .anchors
             .iter()
             .map(|r| r.status.clone())
             .max_by(status_rank)
-            .unwrap_or(RangeStatus::Fresh);
+            .unwrap_or(AnchorStatus::Fresh);
         let max_b = b
-            .ranges
+            .anchors
             .iter()
             .map(|r| r.status.clone())
             .max_by(status_rank)
-            .unwrap_or(RangeStatus::Fresh);
+            .unwrap_or(AnchorStatus::Fresh);
         status_rank(&max_b, &max_a)
     });
     Ok(out)
 }
 
-fn status_rank(a: &RangeStatus, b: &RangeStatus) -> std::cmp::Ordering {
-    fn rank(s: &RangeStatus) -> u8 {
+fn status_rank(a: &AnchorStatus, b: &AnchorStatus) -> std::cmp::Ordering {
+    fn rank(s: &AnchorStatus) -> u8 {
         match s {
-            RangeStatus::Fresh => 0,
-            RangeStatus::Moved => 1,
-            RangeStatus::Changed => 2,
-            RangeStatus::MergeConflict => 3,
-            RangeStatus::Submodule => 4,
-            RangeStatus::ContentUnavailable(_) => 5,
-            RangeStatus::Orphaned => 6,
+            AnchorStatus::Fresh => 0,
+            AnchorStatus::Moved => 1,
+            AnchorStatus::Changed => 2,
+            AnchorStatus::MergeConflict => 3,
+            AnchorStatus::Submodule => 4,
+            AnchorStatus::ContentUnavailable(_) => 5,
+            AnchorStatus::Orphaned => 6,
         }
     }
     rank(a).cmp(&rank(b))
 }
 
-/// Slice 5: returns true when the range should pass the `--since`
+/// Slice 5: returns true when the anchor should pass the `--since`
 /// filter. The semantic is "anchored at or after `since`" — i.e.
 /// `since` is an ancestor of (or equal to) `anchor_sha`. Anchors that
 /// don't parse / aren't reachable fall through as `true` (orphans are
 /// not hidden by `--since`).
-fn range_anchor_at_or_after(
+fn anchor_at_or_after(
     repo: &gix::Repository,
     anchor_sha: &str,
     since: gix::ObjectId,
@@ -227,17 +227,17 @@ fn range_anchor_at_or_after(
     }
 }
 
-fn orphaned_placeholder(range_id: &str) -> RangeResolved {
-    RangeResolved {
-        range_id: range_id.into(),
+fn orphaned_placeholder(anchor_id: &str) -> AnchorResolved {
+    AnchorResolved {
+        anchor_id: anchor_id.into(),
         anchor_sha: String::new(),
-        anchored: RangeLocation {
+        anchored: AnchorLocation {
             path: PathBuf::new(),
-            extent: RangeExtent::Lines { start: 0, end: 0 },
+            extent: AnchorExtent::LineRange { start: 0, end: 0 },
             blob: None,
         },
         current: None,
-        status: RangeStatus::Orphaned,
+        status: AnchorStatus::Orphaned,
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,

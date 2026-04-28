@@ -32,7 +32,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-mesh",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A mesh holds the anchors — line-range or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that defines the subsystem those anchors collectively form. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in source comments, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git mesh <name>          show one mesh (anchors, why, config)"
+    after_help = "A mesh holds the anchors — line-anchor or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that defines the subsystem those anchors collectively form. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in source comments, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git mesh <name>          show one mesh (anchors, why, config)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -254,15 +254,15 @@ pub struct AddArgs {
 
     // Annotated `trailing_var_arg = false` + `allow_hyphen_values = false`
     // so a trailing `--at <commit-ish>` is parsed as the named flag,
-    // not greedily consumed into `ranges`.
+    // not greedily consumed into `anchors`.
     #[arg(
         required = true,
         trailing_var_arg = false,
         allow_hyphen_values = false,
-        help = "One or more anchors to stage (<path> for whole-file, or <path>#L<start>-L<end> for line-range)",
-        long_help = "One or more anchors to stage. Each is either:\n  <path>                       whole-file anchor\n  <path>#L<start>-L<end>       line-range anchor (1-indexed, inclusive)\n\nExample: git mesh add api-contract src/api.ts#L1-L3 tests/api.test.ts"
+        help = "One or more anchors to stage (<path> for whole-file, or <path>#L<start>-L<end> for line-anchor)",
+        long_help = "One or more anchors to stage. Each is either:\n  <path>                       whole-file anchor\n  <path>#L<start>-L<end>       line-anchor anchor (1-indexed, inclusive)\n\nExample: git mesh add api-contract src/api.ts#L1-L3 tests/api.test.ts"
     )]
-    pub ranges: Vec<String>,
+    pub anchors: Vec<String>,
 
     /// Anchor every staged anchor in this invocation at `<commit-ish>`.
     /// Default is HEAD resolved at commit time.
@@ -278,7 +278,7 @@ pub struct RmArgs {
     /// Anchor(s) to remove, as `<path>` or `<path>#L<start>-L<end>`
     /// (must match an existing anchor on the mesh).
     #[arg(required = true)]
-    pub ranges: Vec<String>,
+    pub anchors: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]

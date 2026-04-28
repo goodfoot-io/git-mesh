@@ -20,7 +20,7 @@ fn commit_happy_path_writes_ref_and_tree() -> Result<()> {
     assert!(repo.ref_exists("refs/meshes/v1/my-mesh"));
     let m = read_mesh(&gix, "my-mesh")?;
     assert_eq!(m.message.trim(), "Initial message");
-    assert_eq!(m.ranges.len(), 1);
+    assert_eq!(m.anchors.len(), 1);
     Ok(())
 }
 
@@ -35,10 +35,10 @@ fn commit_writes_ranges_sorted_by_path_start_end() -> Result<()> {
     set_why(&gix, "sort-mesh", "m")?;
     commit_mesh(&gix, "sort-mesh")?;
     // Spec §4.2: canonical order is by (path, start, end) ascending.
-    // We don't know the range ids, but we can read the mesh back and
+    // We don't know the anchor ids, but we can read the mesh back and
     // verify count.
     let m = read_mesh(&gix, "sort-mesh")?;
-    assert_eq!(m.ranges.len(), 3);
+    assert_eq!(m.anchors.len(), 3);
     Ok(())
 }
 
@@ -53,7 +53,7 @@ fn commit_dedups_duplicate_location_last_write_wins() -> Result<()> {
     // Plan §D5: commit must succeed, keeping only the later staged add.
     commit_mesh(&gix, "dup")?;
     let m = read_mesh(&gix, "dup")?;
-    assert_eq!(m.ranges.len(), 1);
+    assert_eq!(m.anchors.len(), 1);
     Ok(())
 }
 
@@ -124,7 +124,7 @@ fn remove_of_unknown_range_errors() -> Result<()> {
     commit_mesh(&gix, "m")?;
     append_remove(&gix, "m", "file1.txt", 7, 9)?;
     let err = commit_mesh(&gix, "m").unwrap_err();
-    assert!(matches!(err, git_mesh::Error::RangeNotInMesh { .. }));
+    assert!(matches!(err, git_mesh::Error::AnchorNotInMesh { .. }));
     Ok(())
 }
 
@@ -173,8 +173,8 @@ fn commit_is_atomic_on_invalid_op() -> Result<()> {
     set_why(&gix, "atomic", "m")?;
     assert!(commit_mesh(&gix, "atomic").is_err());
     assert!(!repo.ref_exists("refs/meshes/v1/atomic"));
-    // No range ref should have been created either.
-    assert!(repo.list_refs("refs/ranges/v1/")?.is_empty());
+    // No anchor ref should have been created either.
+    assert!(repo.list_refs("refs/anchors/v1/")?.is_empty());
     Ok(())
 }
 
@@ -271,11 +271,11 @@ fn commit_retries_on_cas_conflict() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Two sequential `git mesh add m f.txt#L1-L10` calls with a mid-sequence
-/// edit succeed; only one staged add survives; the resulting mesh range
+/// edit succeed; only one staged add survives; the resulting mesh anchor
 /// pins the newer content.
 #[test]
 fn add_supersedes_prior_with_post_edit_bytes_then_commits() -> Result<()> {
-    use git_mesh::range::read_range;
+    use git_mesh::anchor::read_anchor;
 
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
@@ -292,13 +292,13 @@ fn add_supersedes_prior_with_post_edit_bytes_then_commits() -> Result<()> {
 
     let gix = repo.gix_repo()?;
     let m = read_mesh(&gix, "m")?;
-    assert_eq!(m.ranges.len(), 1);
-    let r = read_range(&gix, &m.ranges[0])?;
-    // Range blob should pin the newer (post-edit) content for L1-L5.
+    assert_eq!(m.anchors.len(), 1);
+    let r = read_anchor(&gix, &m.anchors[0])?;
+    // Anchor blob should pin the newer (post-edit) content for L1-L5.
     let text = repo.git_stdout(["cat-file", "-p", &r.blob])?;
     assert!(
         text.contains("alpha"),
-        "range blob should reflect post-edit bytes; got: {text}"
+        "anchor blob should reflect post-edit bytes; got: {text}"
     );
     Ok(())
 }
@@ -320,12 +320,12 @@ fn add_supersede_survives_restore_and_readd() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Slice 1 (LFS line-range commit) regression tests.
+// Slice 1 (LFS line-anchor commit) regression tests.
 // ---------------------------------------------------------------------------
 
-/// `git mesh commit` against a `filter=lfs` line-range pin must succeed
+/// `git mesh commit` against a `filter=lfs` line-anchor pin must succeed
 /// when the worktree carries the smudged content. Pre-fix it failed with
-/// `InvalidRange` because validation re-read the raw blob (the ~3-line
+/// `InvalidAnchor` because validation re-read the raw blob (the ~3-line
 /// LFS pointer) instead of the captured filtered bytes.
 #[test]
 fn commit_lfs_line_range_uses_sidecar_line_count() -> Result<()> {
@@ -360,8 +360,8 @@ fn commit_lfs_line_range_uses_sidecar_line_count() -> Result<()> {
     Ok(())
 }
 
-/// Bounds regression: an out-of-range slice on the same 50-line LFS file
-/// still fails with `InvalidRange`. Slice 1 only changes the *source* of
+/// Bounds regression: an out-of-anchor slice on the same 50-line LFS file
+/// still fails with `InvalidAnchor`. Slice 1 only changes the *source* of
 /// the line count, not the bounds rule.
 #[test]
 fn commit_lfs_line_range_out_of_bounds_still_rejected() -> Result<()> {
@@ -387,8 +387,8 @@ fn commit_lfs_line_range_out_of_bounds_still_rejected() -> Result<()> {
     // Stage-time precheck rejects 1-200 against the 50-line worktree.
     let stage_err = append_add(&gix, "m", "data.tsv", 1, 200, None);
     assert!(
-        matches!(stage_err, Err(Error::InvalidRange { start: 1, end: 200 })),
-        "expected InvalidRange at stage time, got {stage_err:?}"
+        matches!(stage_err, Err(Error::InvalidAnchor { start: 1, end: 200 })),
+        "expected InvalidAnchor at stage time, got {stage_err:?}"
     );
     Ok(())
 }

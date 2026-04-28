@@ -8,7 +8,7 @@ use crate::advice::suggest::band::{confidence_band, viability_label};
 use crate::advice::suggest::canonical::CanonicalIndex;
 use crate::advice::suggest::composite::{passes_cohesion_gate, CandidateScore};
 use crate::advice::suggest::SuggestConfig;
-use crate::advice::candidates::MeshRange;
+use crate::advice::candidates::MeshAnchor;
 use crate::advice::suggestion::{ScoreBreakdown, Suggestion};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ fn candidate_to_suggestion(
     cfg: &SuggestConfig,
     history_available: bool,
 ) -> Suggestion {
-    use crate::advice::candidates::MeshRangeStatus;
+    use crate::advice::candidates::MeshAnchorStatus;
     use std::path::PathBuf;
 
     let band = confidence_band(&c);
@@ -152,18 +152,18 @@ fn candidate_to_suggestion(
         composite: c.composite,
     };
 
-    let participants: Vec<MeshRange> = c
+    let participants: Vec<MeshAnchor> = c
         .canon_ids
         .iter()
         .filter_map(|&id| canonical.ranges.get(id))
-        .map(|r| MeshRange {
+        .map(|r| MeshAnchor {
             name: String::new(),
             why: String::new(),
             path: PathBuf::from(&r.path),
             start: r.start,
             end: r.end,
             whole: false,
-            status: MeshRangeStatus::Stable,
+            status: MeshAnchorStatus::Stable,
         })
         .collect();
 

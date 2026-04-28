@@ -136,7 +136,7 @@ fn ls_multiline_why_renders_all_lines_indented() -> Result<()> {
 #[test]
 fn ls_whole_file_anchor_renders_whole_label() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    // Whole-file anchor (no #L range).
+    // Whole-file anchor (no #L anchor).
     commit_mesh(&repo, "wf", "file1.txt", "whole file relationship")?;
     let out = repo.mesh_stdout(["ls"])?;
     assert!(
@@ -192,7 +192,7 @@ fn ls_path_range_filter_overlaps_correctly() -> Result<()> {
 fn ls_whole_file_anchor_matches_any_range_query() -> Result<()> {
     let repo = TestRepo::seeded()?;
     commit_mesh(&repo, "wf", "file1.txt", "whole file")?;
-    // A range query on the same path should match the whole-file anchor.
+    // A anchor query on the same path should match the whole-file anchor.
     let out = repo.mesh_stdout(["ls", "file1.txt#L1-L5"])?;
     assert!(out.contains("wf:"), "expected wf: {out}");
     Ok(())

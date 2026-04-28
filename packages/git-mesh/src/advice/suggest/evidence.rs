@@ -141,7 +141,7 @@ pub fn build_pair_evidence(
                 if dist > window_ops {
                     break;
                 }
-                // Skip same exact range on same path.
+                // Skip same exact anchor on same path.
                 if a.path == b.path && a.m_start == b.m_start && a.m_end == b.m_end {
                     continue;
                 }
@@ -356,6 +356,6 @@ mod tests {
         let canonical = build_canonical_ranges(&all_parts, &cfg());
         let sessions = vec![make_session("s1", all_parts)];
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
-        assert!(pairs.is_empty(), "same path+range should not produce a pair");
+        assert!(pairs.is_empty(), "same path+anchor should not produce a pair");
     }
 }

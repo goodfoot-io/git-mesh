@@ -2,7 +2,7 @@
 //!
 //! Every test here maps 1:1 to a bullet under
 //! `docs/stale-layers-plan.md` §"Phase 1 — Acceptance tests". They all
-//! call the real public API boundary (`resolve_range`, `resolve_mesh`,
+//! call the real public API boundary (`resolve_anchor`, `resolve_mesh`,
 //! `stale_meshes`, `ContentRef::read_normalized`, or the `git-mesh` CLI)
 //! against realistic fixture state.
 //!
@@ -23,10 +23,10 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::types::{
-    ContentRef, DriftSource, EngineOptions, LayerSet, PendingDrift, RangeExtent, RangeStatus,
+    ContentRef, DriftSource, EngineOptions, LayerSet, PendingDrift, AnchorExtent, AnchorStatus,
     Scope, UnavailableReason,
 };
-use git_mesh::{append_add, commit_mesh, resolve_mesh, resolve_range, set_why, stale_meshes};
+use git_mesh::{append_add, commit_mesh, resolve_mesh, resolve_anchor, set_why, stale_meshes};
 use std::path::PathBuf;
 use support::TestRepo;
 
@@ -36,7 +36,7 @@ use support::TestRepo;
 // shape the eventual Phase 1 implementation will encounter.
 // ---------------------------------------------------------------------------
 
-/// Seed a mesh with one line-range range on `file1.txt#L1-L5` and commit it.
+/// Seed a mesh with one line-anchor anchor on `file1.txt#L1-L5` and commit it.
 fn seed_line_range_mesh(repo: &TestRepo, mesh: &str) -> Result<()> {
     let gix = repo.gix_repo()?;
     append_add(&gix, mesh, "file1.txt", 1, 5, None)?;
@@ -163,10 +163,10 @@ fn worktree_only_drift_changed_source_worktree_no_blob_exit_one() -> Result<()> 
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    let r = &mr.ranges[0];
-    assert_eq!(r.status, RangeStatus::Changed);
+    let r = &mr.anchors[0];
+    assert_eq!(r.status, AnchorStatus::Changed);
     // Source / current.blob live on the Phase 1 `Finding` shape which
-    // `resolve_mesh`'s `RangeResolved` will be widened to carry. The
+    // `resolve_mesh`'s `AnchorResolved` will be widened to carry. The
     // check below pins the observable result once the widening lands.
     assert!(r.current.is_some());
     assert!(
@@ -190,8 +190,8 @@ fn git_add_moves_drift_worktree_to_index_with_staged_oid() -> Result<()> {
     )?;
     repo.run_git(["add", "file1.txt"])?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    let r = &mr.ranges[0];
-    assert_eq!(r.status, RangeStatus::Changed);
+    let r = &mr.anchors[0];
+    assert_eq!(r.status, AnchorStatus::Changed);
     // Index-layer reads resolve to a blob.
     assert!(r.current.as_ref().and_then(|c| c.blob.as_ref()).is_some());
     let out = repo.run_mesh(["stale", "m"])?;
@@ -205,7 +205,7 @@ fn git_add_moves_drift_worktree_to_index_with_staged_oid() -> Result<()> {
 fn git_mesh_add_matching_sidecar_acknowledges_exit_zero() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
-    // Live edit in the anchored range.
+    // Live edit in the anchored anchor.
     repo.write_file(
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
@@ -242,8 +242,8 @@ fn worktree_edit_after_ack_invalidates_exit_one() -> Result<()> {
     Ok(())
 }
 
-/// Plan bullet: Ack matching survives Moved: range's extent shifts, sidecar at
-/// old extent still acknowledges via range_id.
+/// Plan bullet: Ack matching survives Moved: anchor's extent shifts, sidecar at
+/// old extent still acknowledges via anchor_id.
 #[test]
 
 fn ack_survives_moved_via_range_id() -> Result<()> {
@@ -260,9 +260,9 @@ fn ack_survives_moved_via_range_id() -> Result<()> {
     )?;
     repo.commit_all("shift")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    let r = &mr.ranges[0];
-    assert_eq!(r.status, RangeStatus::Moved);
-    // Non-zero exit only if the ack fails to match by range_id — the
+    let r = &mr.anchors[0];
+    assert_eq!(r.status, AnchorStatus::Moved);
+    // Non-zero exit only if the ack fails to match by anchor_id — the
     // point of this test.
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(0));
@@ -287,12 +287,12 @@ fn commit_reanchor_replaces_moved_range_instead_of_adding_duplicate() -> Result<
     repo.mesh_stdout(["add", "m", "file1.txt#L3-L7"])?;
     repo.mesh_stdout(["commit", "m"])?;
     let mesh = git_mesh::read_mesh(&repo.gix_repo()?, "m")?;
-    assert_eq!(mesh.ranges.len(), 1, "re-anchor must replace old range");
-    let range = git_mesh::read_range(&repo.gix_repo()?, &mesh.ranges[0])?;
-    assert_eq!(range.path, "file1.txt");
+    assert_eq!(mesh.anchors.len(), 1, "re-anchor must replace old anchor");
+    let anchor = git_mesh::read_anchor(&repo.gix_repo()?, &mesh.anchors[0])?;
+    assert_eq!(anchor.path, "file1.txt");
     assert_eq!(
-        range.extent,
-        git_mesh::types::RangeExtent::Lines { start: 3, end: 7 }
+        anchor.extent,
+        git_mesh::types::AnchorExtent::LineRange { start: 3, end: 7 }
     );
     let stale = repo.run_mesh(["stale", "m"])?;
     assert_eq!(stale.status.code(), Some(0));
@@ -320,7 +320,7 @@ fn sidecar_before_gitattributes_eol_change_still_acks() -> Result<()> {
     Ok(())
 }
 
-/// Plan bullet: `git add -p` partial staging: range straddles partial edit; both
+/// Plan bullet: `git add -p` partial staging: anchor straddles partial edit; both
 /// layers show drift with shifted locations.
 #[test]
 fn git_add_p_partial_staging_shows_both_layer_drift() -> Result<()> {
@@ -378,8 +378,8 @@ fn merge_conflict_path_surfaces_merge_conflict_no_blob() -> Result<()> {
         .args(["merge", "feature"])
         .output()?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    let r = &mr.ranges[0];
-    assert_eq!(r.status, RangeStatus::MergeConflict);
+    let r = &mr.anchors[0];
+    assert_eq!(r.status, AnchorStatus::MergeConflict);
     assert!(
         r.current.as_ref().is_none_or(|c| c.blob.is_none()),
         "MergeConflict carries path only, no blob"
@@ -399,7 +399,7 @@ fn crlf_checkout_of_lf_blob_no_false_drift() -> Result<()> {
         "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\nline9\r\nline10\r\n",
     )?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    assert_eq!(mr.ranges[0].status, RangeStatus::Fresh);
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Fresh);
     Ok(())
 }
 
@@ -420,8 +420,8 @@ fn whole_file_pin_binary_asset_re_anchor_acks() -> Result<()> {
     std::fs::write(repo.path().join("hero.png"), [9u8, 9, 9, 9])?;
     repo.commit_all("mutate binary")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
-    assert_eq!(mr.ranges[0].anchored.extent, RangeExtent::Whole);
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
+    assert_eq!(mr.anchors[0].anchored.extent, AnchorExtent::WholeFile);
     // Re-anchor acknowledges.
     let _ = repo.run_mesh(["add", "m", "hero.png"])?;
     let out = repo.run_mesh(["stale", "m"])?;
@@ -462,11 +462,11 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
         .output()?;
     repo.run_git(["add", "sub"])?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     Ok(())
 }
 
-/// Plan bullet: Whole-file pin on a symlink: retarget → Changed. Line-range pin
+/// Plan bullet: Whole-file pin on a symlink: retarget → Changed. Line-anchor pin
 /// on a symlink is rejected at `git mesh add`.
 #[test]
 
@@ -483,13 +483,13 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     std::os::unix::fs::symlink("file2.txt", repo.path().join("link"))?;
     repo.commit_all("retarget")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
-    // Line-range pin on a symlink must be rejected at add time.
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
+    // Line-anchor pin on a symlink must be rejected at add time.
     let rej = repo.run_mesh(["add", "n", "link#L1-L1"])?;
     assert_ne!(
         rej.status.code(),
         Some(0),
-        "line-range on symlink must fail"
+        "line-anchor on symlink must fail"
     );
     Ok(())
 }
@@ -514,7 +514,7 @@ fn lfs_text_content_cached_behaves_like_non_lfs() -> Result<()> {
     write_lfs_pointer(&repo, "doc.bigtxt", &oid_b, 42)?;
     repo.commit_all("mutate pointer")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     Ok(())
 }
 
@@ -540,8 +540,8 @@ fn lfs_text_content_missing_unavailable_lfs_not_fetched() -> Result<()> {
     repo.commit_all("mutate pointer")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(
-        mr.ranges[0].status,
-        RangeStatus::ContentUnavailable(UnavailableReason::LfsNotFetched)
+        mr.anchors[0].status,
+        AnchorStatus::ContentUnavailable(UnavailableReason::LfsNotFetched)
     );
     let out = repo.run_mesh(["stale", "m"])?;
     assert_eq!(out.status.code(), Some(1));
@@ -614,13 +614,13 @@ fn custom_filter_broken_smudge_surfaces_filter_failed() -> Result<()> {
     repo.commit_all("mutate")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert!(matches!(
-        mr.ranges[0].status,
-        RangeStatus::ContentUnavailable(UnavailableReason::FilterFailed { .. })
+        mr.anchors[0].status,
+        AnchorStatus::ContentUnavailable(UnavailableReason::FilterFailed { .. })
     ));
     Ok(())
 }
 
-/// Regression: a line-range pin on an LFS-tracked path must report
+/// Regression: a line-anchor pin on an LFS-tracked path must report
 /// `Fresh` immediately after the mesh commit when the worktree hasn't
 /// been edited. The previous implementation hashed the raw (smudged)
 /// worktree bytes during the `index → worktree` diff pass, which made
@@ -677,8 +677,8 @@ fn git_mv_across_pinned_file_reports_moved_new_path() -> Result<()> {
     repo.run_git(["mv", "file1.txt", "renamed.txt"])?;
     repo.commit_all("rename")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    let r = &mr.ranges[0];
-    assert_eq!(r.status, RangeStatus::Moved);
+    let r = &mr.anchors[0];
+    assert_eq!(r.status, AnchorStatus::Moved);
     // Anchored path unchanged.
     assert_eq!(r.anchored.path, PathBuf::from("file1.txt"));
     // Current path reflects the rename.
@@ -689,7 +689,7 @@ fn git_mv_across_pinned_file_reports_moved_new_path() -> Result<()> {
     Ok(())
 }
 
-/// Plan bullet: `intent-to-add` path (`git add -N`) with a pinned range: zero-OID
+/// Plan bullet: `intent-to-add` path (`git add -N`) with a pinned anchor: zero-OID
 /// index entry; resolver treats as unstaged; new-file variant (no HEAD) falls back
 /// to worktree read.
 #[test]
@@ -711,11 +711,11 @@ fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    // The pinned range itself drifts via the worktree layer; zero-OID
+    // The pinned anchor itself drifts via the worktree layer; zero-OID
     // sibling must not poison the read.
-    assert_eq!(mr.ranges[0].status, RangeStatus::Changed);
+    assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
     assert_eq!(
-        mr.ranges[0].current.as_ref().and_then(|c| c.blob.as_ref()),
+        mr.anchors[0].current.as_ref().and_then(|c| c.blob.as_ref()),
         None
     );
     Ok(())
@@ -783,17 +783,17 @@ fn content_ref_read_normalized_is_the_single_boundary() -> Result<()> {
     Ok(())
 }
 
-/// Plan bullet: `resolve_range` agrees with `resolve_mesh`. Smoke-tests the
-/// single-range entry point against the mesh-level entry point once the
+/// Plan bullet: `resolve_anchor` agrees with `resolve_mesh`. Smoke-tests the
+/// single-anchor entry point against the mesh-level entry point once the
 /// engine slice lands.
 #[test]
 fn resolve_range_agrees_with_resolve_mesh_smoke() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
-    let rid = &mr.ranges[0].range_id;
-    let r = resolve_range(&repo.gix_repo()?, "m", rid, EngineOptions::full())?;
-    assert_eq!(r.status, mr.ranges[0].status);
+    let rid = &mr.anchors[0].anchor_id;
+    let r = resolve_anchor(&repo.gix_repo()?, "m", rid, EngineOptions::full())?;
+    assert_eq!(r.status, mr.anchors[0].status);
     Ok(())
 }
 
@@ -811,7 +811,7 @@ fn stale_meshes_sorts_worst_first_smoke() -> Result<()> {
     let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
     assert!(
         all.iter()
-            .any(|m| m.ranges.iter().any(|r| r.status == RangeStatus::Changed))
+            .any(|m| m.anchors.iter().any(|r| r.status == AnchorStatus::Changed))
     );
     Ok(())
 }

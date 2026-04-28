@@ -38,7 +38,7 @@ fn whole_file_binary_re_anchor_acks_with_high_bytes() -> Result<()> {
     repo.run_git(["add", "hero.png"])?;
 
     // Re-anchor with `git mesh add`. This captures the new bytes into a
-    // fresh sidecar that should ack the now-stale range.
+    // fresh sidecar that should ack the now-stale anchor.
     let out = repo.run_mesh(["add", "m", "hero.png"])?;
     assert_eq!(out.status.code(), Some(0));
 
@@ -83,7 +83,7 @@ fn whole_file_symlink_re_anchor_acks() -> Result<()> {
 
 /// Text path with a normalization-stamp change mid-session: byte-identical
 /// content (no CRLF in either side) must NOT register as drift on the
-/// pending op. (No `(ack)` is required — there is no committed range
+/// pending op. (No `(ack)` is required — there is no committed anchor
 /// drift to acknowledge in this scenario; what we are guarding against
 /// is the stamp-change path producing a spurious sidecar mismatch.)
 #[test]

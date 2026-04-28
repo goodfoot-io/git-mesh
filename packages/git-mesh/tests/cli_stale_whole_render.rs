@@ -20,7 +20,7 @@ fn seed_whole_file_drift(repo: &TestRepo) -> Result<()> {
     Ok(())
 }
 
-/// Seed a mesh with a line-range pin and drift it (regression guard:
+/// Seed a mesh with a line-anchor pin and drift it (regression guard:
 /// line ranges must still render as `#L1-L5`).
 fn seed_line_range_drift(repo: &TestRepo) -> Result<()> {
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
@@ -131,7 +131,7 @@ fn line_range_pin_still_renders_line_address() -> Result<()> {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("file1.txt#L1-L5"),
-        "line-range pin must still render `#L1-L5`:\n{text}"
+        "line-anchor pin must still render `#L1-L5`:\n{text}"
     );
     assert!(!text.contains("(whole)"));
     Ok(())

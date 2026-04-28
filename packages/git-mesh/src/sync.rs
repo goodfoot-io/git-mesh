@@ -1,4 +1,4 @@
-//! Fetch/push for mesh and range refs (§7).
+//! Fetch/push for mesh and anchor refs (§7).
 //!
 //! Remote `fetch` and `push` are still performed via the `git` subprocess
 //! because gix 0.81 requires the `blocking-network-client` +
@@ -16,7 +16,7 @@ use std::path::Path;
 use std::process::Command;
 
 const REFSPECS: [&str; 2] = [
-    "+refs/ranges/*:refs/ranges/*",
+    "+refs/anchors/*:refs/anchors/*",
     "+refs/meshes/*:refs/meshes/*",
 ];
 
@@ -253,11 +253,11 @@ mod tests {
         let push = get_remote_multi(&repo3, "origin", "push");
         let mesh_fetch_count = fetch
             .iter()
-            .filter(|s| s.contains("refs/ranges/") || s.contains("refs/meshes/"))
+            .filter(|s| s.contains("refs/anchors/") || s.contains("refs/meshes/"))
             .count();
         let mesh_push_count = push
             .iter()
-            .filter(|s| s.contains("refs/ranges/") || s.contains("refs/meshes/"))
+            .filter(|s| s.contains("refs/anchors/") || s.contains("refs/meshes/"))
             .count();
         assert_eq!(
             mesh_fetch_count, 2,
@@ -273,8 +273,8 @@ mod tests {
         let cfg = td.path().join(".git/config");
         let mut text = std::fs::read_to_string(&cfg).unwrap();
         text.push_str(
-            "\tfetch = +refs/ranges/*:refs/ranges/*\n\
-             \tfetch = +refs/ranges/*:refs/ranges/*\n\
+            "\tfetch = +refs/anchors/*:refs/anchors/*\n\
+             \tfetch = +refs/anchors/*:refs/anchors/*\n\
              \tfetch = +refs/meshes/*:refs/meshes/*\n\
              \tpush = +refs/meshes/*:refs/meshes/*\n\
              \tpush = +refs/meshes/*:refs/meshes/*\n",
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(
             fetch
                 .iter()
-                .filter(|s| s.as_str() == "+refs/ranges/*:refs/ranges/*")
+                .filter(|s| s.as_str() == "+refs/anchors/*:refs/anchors/*")
                 .count(),
             1
         );

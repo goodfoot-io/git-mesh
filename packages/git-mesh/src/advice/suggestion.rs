@@ -1,14 +1,14 @@
 //! Suggestion types for the n-ary mesh recommendation pipeline.
 //!
 //! A `Suggestion` is the output unit of a `Detector` — a scored,
-//! confidence-banded recommendation that a set of files/ranges belong
+//! confidence-banded recommendation that a set of files/anchors belong
 //! together in a mesh. This is distinct from a `Candidate` (the
 //! pairwise, session-scoped advice type) in that suggestions are mined
 //! from history and scored across n participants.
 
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
-use crate::advice::candidates::{MeshRange, MeshRangeStatus};
+use crate::advice::candidates::{MeshAnchor, MeshAnchorStatus};
 
 // ── DriftMeta ────────────────────────────────────────────────────────────────
 
@@ -109,10 +109,10 @@ pub struct Suggestion {
     /// Score breakdown for diagnostics.
     pub score: ScoreBreakdown,
 
-    /// The set of ranges that are recommended to form a new mesh.
-    /// Each `MeshRange` carries path, line extent, and (if already
+    /// The set of anchors that are recommended to form a new mesh.
+    /// Each `MeshAnchor` carries path, line extent, and (if already
     /// anchored) mesh name and why.
-    pub participants: Vec<MeshRange>,
+    pub participants: Vec<MeshAnchor>,
 
     /// Human-readable label for the suggested mesh relationship.
     /// Empty string when the detector has no label to offer.
@@ -131,8 +131,8 @@ impl Serialize for Suggestion {
         s.serialize_field("band", &self.band)?;
         s.serialize_field("viability", &self.viability)?;
         s.serialize_field("score", &self.score)?;
-        // Serialize participants manually since MeshRange does not impl Serialize.
-        let participants: Vec<_> = self.participants.iter().map(MeshRangeView).collect();
+        // Serialize participants manually since MeshAnchor does not impl Serialize.
+        let participants: Vec<_> = self.participants.iter().map(MeshAnchorView).collect();
         s.serialize_field("participants", &participants)?;
         s.serialize_field("label", &self.label)?;
         s.serialize_field("meta", &self.meta)?;
@@ -140,13 +140,13 @@ impl Serialize for Suggestion {
     }
 }
 
-/// Serialization view for `MeshRange`.
-struct MeshRangeView<'a>(&'a MeshRange);
+/// Serialization view for `MeshAnchor`.
+struct MeshAnchorView<'a>(&'a MeshAnchor);
 
-impl Serialize for MeshRangeView<'_> {
+impl Serialize for MeshAnchorView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let r = self.0;
-        let mut s = serializer.serialize_struct("MeshRange", 7)?;
+        let mut s = serializer.serialize_struct("MeshAnchor", 7)?;
         s.serialize_field("name", &r.name)?;
         s.serialize_field("why", &r.why)?;
         s.serialize_field("path", &r.path.to_string_lossy().as_ref())?;
@@ -154,10 +154,10 @@ impl Serialize for MeshRangeView<'_> {
         s.serialize_field("end", &r.end)?;
         s.serialize_field("whole", &r.whole)?;
         let status = match r.status {
-            MeshRangeStatus::Stable => "stable",
-            MeshRangeStatus::Changed => "changed",
-            MeshRangeStatus::Moved => "moved",
-            MeshRangeStatus::Terminal => "terminal",
+            MeshAnchorStatus::Stable => "stable",
+            MeshAnchorStatus::Changed => "changed",
+            MeshAnchorStatus::Moved => "moved",
+            MeshAnchorStatus::Terminal => "terminal",
         };
         s.serialize_field("status", status)?;
         s.end()
@@ -171,7 +171,7 @@ impl Suggestion {
         band: ConfidenceBand,
         viability: Viability,
         score: ScoreBreakdown,
-        participants: Vec<MeshRange>,
+        participants: Vec<MeshAnchor>,
         label: String,
     ) -> Self {
         Self {
@@ -190,7 +190,7 @@ impl Suggestion {
         band: ConfidenceBand,
         viability: Viability,
         score: ScoreBreakdown,
-        participants: Vec<MeshRange>,
+        participants: Vec<MeshAnchor>,
         label: String,
         meta: DriftMeta,
     ) -> Self {

@@ -64,7 +64,7 @@ fn read_intersects_mesh_surfaces_partner() -> Result<()> {
     );
     assert!(
         stdout.contains("# - file1.txt#L1-L5"),
-        "trigger range must appear in the bullet list, got:\n{stdout}"
+        "trigger anchor must appear in the bullet list, got:\n{stdout}"
     );
     for line in stdout.lines() {
         assert!(line.starts_with('#'), "line not `#`-prefixed: {line:?}");

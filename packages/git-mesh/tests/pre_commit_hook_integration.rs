@@ -20,7 +20,7 @@ fn seed_line_range_mesh(repo: &TestRepo, mesh: &str) -> Result<()> {
     Ok(())
 }
 
-/// Index drift on a pinned range, no acknowledgment → exit 1.
+/// Index drift on a pinned anchor, no acknowledgment → exit 1.
 #[test]
 fn index_drift_unacked_fails_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -51,7 +51,7 @@ fn index_drift_with_ack_passes() -> Result<()> {
     )?;
     repo.run_git(["add", "file1.txt"])?;
     // Staged re-anchor matching the live (== staged) bytes acks via
-    // range_id (see `pending::apply_acknowledgment`).
+    // anchor_id (see `pending::apply_acknowledgment`).
     let _ = repo.run_mesh(["add", "m", "file1.txt#L1-L5"])?;
     let out = repo.run_mesh(["pre-commit"])?;
     assert_eq!(
@@ -111,13 +111,13 @@ fn pending_add_sidecar_mismatch_fails_commit() -> Result<()> {
     );
     assert!(
         !stdout.contains("file2.txt L1-L5"),
-        "pending add should use range-address syntax: {stdout}"
+        "pending add should use anchor-address syntax: {stdout}"
     );
     Ok(())
 }
 
-/// Pending Remove with concurrent index drift on the same range: the
-/// range's index drift drives the gate (the remove acknowledges its own
+/// Pending Remove with concurrent index drift on the same anchor: the
+/// anchor's index drift drives the gate (the remove acknowledges its own
 /// sidecar capture and is silent without independent drift).
 #[test]
 fn pending_remove_with_index_drift_fails_commit() -> Result<()> {
@@ -180,7 +180,7 @@ fn pre_existing_head_drift_on_unstaged_meshed_path_fails_commit() -> Result<()> 
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
     repo.run_git(["add", "file1.txt"])?;
-    repo.run_git(["commit", "-m", "drift the meshed range"])?;
+    repo.run_git(["commit", "-m", "drift the meshed anchor"])?;
     // In-flight commit touches a different path entirely.
     repo.write_file("file2.txt", "additional\n")?;
     repo.run_git(["add", "file2.txt"])?;

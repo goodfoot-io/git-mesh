@@ -3,7 +3,7 @@
 use crate::session::SessionToken;
 pub mod auth_core;
 
-// lines 5-40: auth logic (canonical range)
+// lines 5-40: auth logic (canonical anchor)
 pub struct AuthProvider {
     pub session_token: String,
     pub auth_secret: String,
@@ -35,4 +35,4 @@ impl AuthProvider {
         format!("token={} expiry={}", self.session_token, self.token_expiry)
     }
 }
-// end of auth range
+// end of auth anchor

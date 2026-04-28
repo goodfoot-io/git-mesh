@@ -1,6 +1,6 @@
 //! Participants stage (Section 5 of analyze-v4.mjs).
 //!
-//! Turns the op-stream into a flat list of (path, range) atoms, then merges
+//! Turns the op-stream into a flat list of (path, anchor) atoms, then merges
 //! near-touching ranges per file.
 
 use std::collections::BTreeMap;
@@ -10,9 +10,9 @@ use crate::advice::suggest::SuggestConfig;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// A (path, range) atom with provenance from one op.
+/// A (path, anchor) atom with provenance from one op.
 ///
-/// After `merge_ranges_per_file`, `m_start`/`m_end` hold the merged range
+/// After `merge_ranges_per_file`, `m_start`/`m_end` hold the merged anchor
 /// that this participant was absorbed into.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Participant {
@@ -95,7 +95,7 @@ pub fn participants(ops: &[Op], session_sid: &str) -> Vec<Participant> {
                         session_sid: session_sid.to_string(),
                     });
                 }
-                // Unanchored edits are dropped (no inferred range).
+                // Unanchored edits are dropped (no inferred anchor).
             }
             _ => {}
         }

@@ -39,11 +39,11 @@ fn since_filters_ranges_anchored_before_cutoff() -> Result<()> {
     let mr_old = resolve_mesh(&gix, "old", opts)?;
     let mr_new = resolve_mesh(&gix, "new", opts)?;
     assert!(
-        mr_old.ranges.is_empty(),
+        mr_old.anchors.is_empty(),
         "old mesh should be filtered: {:?}",
-        mr_old.ranges
+        mr_old.anchors
     );
-    assert_eq!(mr_new.ranges.len(), 1, "new mesh should pass the filter");
+    assert_eq!(mr_new.anchors.len(), 1, "new mesh should pass the filter");
     Ok(())
 }
 
@@ -61,7 +61,7 @@ fn since_head_includes_anchors_at_head() -> Result<()> {
         ..EngineOptions::full()
     };
     let mr = resolve_mesh(&gix, "m", opts)?;
-    assert_eq!(mr.ranges.len(), 1, "since == anchor should be inclusive");
+    assert_eq!(mr.anchors.len(), 1, "since == anchor should be inclusive");
     Ok(())
 }
 
@@ -92,7 +92,7 @@ fn nul_bearing_file_rejects_line_range_add() -> Result<()> {
     let out = repo.run_mesh(["add", "m", "data.bin#L1-L1"])?;
     assert!(
         !out.status.success(),
-        "line-range add on NUL file must fail"
+        "line-anchor add on NUL file must fail"
     );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -119,7 +119,7 @@ fn non_utf8_file_rejects_line_range_add() -> Result<()> {
     let out = repo.run_mesh(["add", "m", "image.bin#L1-L1"])?;
     assert!(
         !out.status.success(),
-        "line-range add on non-UTF-8 content must fail"
+        "line-anchor add on non-UTF-8 content must fail"
     );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -169,7 +169,7 @@ fn at_ordering_produces_identical_anchor() -> Result<()> {
     repo.write_file("f.txt", "X\nY\nZ\n")?;
     repo.commit_all("v2")?;
 
-    // Order A: range before --at.
+    // Order A: anchor before --at.
     repo.run_mesh(["why", "ma", "-m", "x"])?
         .status
         .success()
@@ -182,7 +182,7 @@ fn at_ordering_produces_identical_anchor() -> Result<()> {
         String::from_utf8_lossy(&out_a.stderr)
     );
 
-    // Order B: --at before range.
+    // Order B: --at before anchor.
     repo.run_mesh(["why", "mb", "-m", "x"])?
         .status
         .success()

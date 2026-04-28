@@ -5,7 +5,7 @@
 //!
 //! * [`types`]       — data shapes (spec §4).
 //! * [`git`]         — git plumbing helpers.
-//! * [`range`]       — Range blob create/read/parse/serialize (§4.1, §6.1).
+//! * [`anchor`]       — Anchor blob create/read/parse/serialize (§4.1, §6.1).
 //! * [`mesh`]        — mesh read/commit/structural (§6).
 //! * [`staging`]     — `.git/mesh/staging/` area (§6.3, §6.4).
 //! * [`file_index`]  — `.git/mesh/file-index` lookup table (§3.4).
@@ -19,26 +19,26 @@ pub mod cli;
 pub mod file_index;
 pub mod git;
 pub mod mesh;
-pub mod range;
+pub mod anchor;
 pub mod resolver;
 pub mod staging;
 pub mod sync;
 pub mod types;
 pub mod validation;
 
-pub use file_index::{IndexEntry, ls_all, ls_by_path, ls_by_path_range, read_index, rebuild_index};
+pub use file_index::{IndexEntry, ls_all, ls_by_path, ls_by_path_line_range, read_index, rebuild_index};
 pub use git::read_git_text;
 pub use mesh::{
     MeshCommitInfo, commit_mesh, delete_mesh, is_ancestor_commit, list_mesh_names,
     mesh_commit_info, mesh_commit_info_at, mesh_log, read_mesh, read_mesh_at, rename_mesh,
     resolve_commit_ish, restore_mesh, revert_mesh, show_mesh, show_mesh_at,
 };
-pub use range::{create_range, parse_range, range_ref_path, read_range, serialize_range};
-pub use resolver::{culprit_commit, resolve_mesh, resolve_range, stale_meshes};
+pub use anchor::{create_anchor, parse_anchor, anchor_ref_path, read_anchor, serialize_anchor};
+pub use resolver::{culprit_commit, resolve_mesh, resolve_anchor, stale_meshes};
 pub use staging::{
     StagedAdd, StagedConfig, StagedRemove, Staging, append_add, append_config, append_remove,
     clear_staging, list_staged_mesh_names, read_staging, set_why,
 };
 pub use sync::{default_remote, ensure_refspec_configured, fetch_mesh_refs, push_mesh_refs};
 pub use types::*;
-pub use validation::{RESERVED_MESH_NAMES, validate_mesh_name, validate_range_id};
+pub use validation::{RESERVED_MESH_NAMES, validate_mesh_name, validate_anchor_id};

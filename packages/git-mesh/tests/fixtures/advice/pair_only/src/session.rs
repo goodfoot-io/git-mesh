@@ -2,7 +2,7 @@
 // lines 1-2: preamble
 use crate::auth::AuthProvider;
 
-// lines 3-30: session logic (canonical range)
+// lines 3-30: session logic (canonical anchor)
 pub struct SessionToken {
     pub session_token: String,
     pub auth_secret: String,
@@ -30,4 +30,4 @@ impl SessionToken {
         format!("session={} expiry={}", self.session_token, self.token_expiry)
     }
 }
-// end of session range
+// end of session anchor

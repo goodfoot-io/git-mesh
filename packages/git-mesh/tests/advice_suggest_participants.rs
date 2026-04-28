@@ -1,4 +1,4 @@
-//! Integration tests for the participants + range-merge stage.
+//! Integration tests for the participants + anchor-merge stage.
 
 use git_mesh::advice::suggest::{
     build_participants, merge_ranges_per_file, Op, OpKind, SuggestConfig,
@@ -26,7 +26,7 @@ fn make_read_op(path: &str, start: u32, end: u32, idx: usize) -> Op {
 }
 
 // ---------------------------------------------------------------------------
-// per-file range merge tolerance
+// per-file anchor merge tolerance
 // ---------------------------------------------------------------------------
 
 #[test]

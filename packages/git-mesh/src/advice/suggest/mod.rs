@@ -24,7 +24,7 @@ pub use band::{confidence_band, viability_label};
 pub use canonical::{build_canonical_ranges, range_iou, CanonicalIndex, CanonicalRange};
 pub use cliques::{build_edge_adjacency, bron_kerbosch, connected_components, edges_within, Adjacency};
 pub use cohesion::{
-    build_idf, cache_range, jaccard, per_edge_cohesion, range_tokens_of, read_range,
+    build_idf, cache_range, jaccard, per_edge_cohesion, range_tokens_of, read_anchor,
     tokens_of, trigram_cohesion, trigrams_of, CanonicalId, Idf, RangeTokens, SourceCache,
 };
 pub use composite::{passes_cohesion_gate, score_candidate, CandidateScore, ComponentBreakdown};

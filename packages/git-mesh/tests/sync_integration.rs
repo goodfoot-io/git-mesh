@@ -35,7 +35,7 @@ fn ensure_refspec_configured_adds_both_refspecs() -> Result<()> {
     ensure_refspec_configured(&repo.gix_repo()?, "origin")?;
     let fetch = repo.git_stdout(["config", "--get-all", "remote.origin.fetch"])?;
     assert!(fetch.contains("refs/meshes/"));
-    assert!(fetch.contains("refs/ranges/"));
+    assert!(fetch.contains("refs/anchors/"));
     Ok(())
 }
 
@@ -88,7 +88,7 @@ fn push_bootstraps_refspec_on_first_call() -> Result<()> {
 
 fn fetch_round_trips_from_upstream() -> Result<()> {
     // Push from one clone, fetch into a second. Round-trips mesh and
-    // range refs via the configured refspecs.
+    // anchor refs via the configured refspecs.
     let upstream_bare = BareRepo::new()?;
     let writer = TestRepo::seeded()?;
     writer.add_remote("origin", upstream_bare.path())?;

@@ -1,10 +1,10 @@
-//! HEAD-history walker. Translates an anchored `(path, line-range)` from
+//! HEAD-history walker. Translates an anchored `(path, line-anchor)` from
 //! its anchor commit forward through `anchor..HEAD` by replaying each
 //! commit's name-status and hunk diffs against the tracked location.
 
 use crate::git;
-use crate::range::read_range as _read_range;
-use crate::types::{CopyDetection, Range, RangeExtent};
+use crate::anchor::read_anchor as _read_range;
+use crate::types::{CopyDetection, Anchor, AnchorExtent};
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
 use std::str::FromStr;
@@ -33,15 +33,15 @@ pub(crate) fn rename_budget() -> usize {
 
 pub(crate) fn resolve_at_head(
     repo: &gix::Repository,
-    r: &Range,
+    r: &Anchor,
     copy_detection: CopyDetection,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Tracked>> {
     let (rstart, rend) = match r.extent {
-        RangeExtent::Lines { start, end } => (start, end),
+        AnchorExtent::LineRange { start, end } => (start, end),
         // Whole-file pins do not flow through this layer-shifting walker;
         // `resolve_whole_file` handles them.
-        RangeExtent::Whole => (1, 1),
+        AnchorExtent::WholeFile => (1, 1),
     };
     let head_sha = git::head_oid(repo)?;
     let mut commits =
@@ -637,7 +637,7 @@ fn collect_changes<'a>(
 
 // Silence unused-import warning until engine module wires this through.
 #[allow(dead_code)]
-fn _keep(_: fn(&gix::Repository, &str) -> Result<crate::types::Range>) {
+fn _keep(_: fn(&gix::Repository, &str) -> Result<crate::types::Anchor>) {
     let _ = _read_range;
 }
 

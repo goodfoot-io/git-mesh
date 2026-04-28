@@ -30,9 +30,9 @@ pub type LastFlushState = BaselineState;
 pub struct ReadRecord {
     /// Repo-relative path.
     pub path: String,
-    /// Inclusive 1-based start line, if a range was supplied.
+    /// Inclusive 1-based start line, if a anchor was supplied.
     pub start_line: Option<u32>,
-    /// Inclusive 1-based end line, if a range was supplied.
+    /// Inclusive 1-based end line, if a anchor was supplied.
     pub end_line: Option<u32>,
     /// RFC-3339 timestamp of the read event.
     pub ts: String,

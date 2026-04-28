@@ -16,44 +16,44 @@
 use std::path::PathBuf;
 
 use git_mesh::advice::{
-    CandidateInput, DiffEntry, LineRange, MeshRange, MeshRangeStatus, ReasonKind, StagingState,
+    CandidateInput, DiffEntry, LineRange, MeshAnchor, MeshAnchorStatus, ReasonKind, StagingState,
     detect_delta_intersects_mesh,
 };
 
-fn line_bounded_mesh(name: &str, path: &str, start: u32, end: u32) -> MeshRange {
-    MeshRange {
+fn line_bounded_mesh(name: &str, path: &str, start: u32, end: u32) -> MeshAnchor {
+    MeshAnchor {
         name: name.to_string(),
         why: "why text".to_string(),
         path: PathBuf::from(path),
         start,
         end,
         whole: false,
-        status: MeshRangeStatus::Stable,
+        status: MeshAnchorStatus::Stable,
     }
 }
 
-fn whole_file_mesh(name: &str, path: &str) -> MeshRange {
-    MeshRange {
+fn whole_file_mesh(name: &str, path: &str) -> MeshAnchor {
+    MeshAnchor {
         name: name.to_string(),
         why: "why text".to_string(),
         path: PathBuf::from(path),
         start: 0,
         end: u32::MAX,
         whole: true,
-        status: MeshRangeStatus::Stable,
+        status: MeshAnchorStatus::Stable,
     }
 }
 
 fn input_with_delta<'a>(
     delta: &'a [DiffEntry],
-    ranges: &'a [MeshRange],
+    anchors: &'a [MeshAnchor],
 ) -> CandidateInput<'a> {
     CandidateInput {
         session_delta: &[],
         incr_delta: delta,
         new_reads: &[],
         touch_intervals: &[],
-        mesh_ranges: ranges,
+        mesh_anchors: anchors,
         internal_path_prefixes: &[],
         staging: StagingState { adds: &[], removes: &[] },
     }
@@ -64,7 +64,7 @@ fn input_with_delta<'a>(
 #[test]
 #[ignore = "slice-1: contract pinned, body stubbed"]
 fn write_inside_mesh_range_fires_partner() {
-    let ranges = [
+    let anchors = [
         line_bounded_mesh("net-mesh", "src/net.rs", 100, 150),
         line_bounded_mesh("net-mesh", "src/caller.rs", 1, 10),
     ];
@@ -74,7 +74,7 @@ fn write_inside_mesh_range_fires_partner() {
         new_oid: None,
         hunks: Some(vec![LineRange { start: 110, end: 120 }]),
     }];
-    let input = input_with_delta(&delta, &ranges);
+    let input = input_with_delta(&delta, &anchors);
     let result = detect_delta_intersects_mesh(&input);
     assert!(
         result.iter().any(|c| c.reason_kind == ReasonKind::Partner
@@ -88,7 +88,7 @@ fn write_inside_mesh_range_fires_partner() {
 #[test]
 #[ignore = "slice-1: contract pinned, body stubbed"]
 fn write_outside_mesh_range_suppresses_partner() {
-    let ranges = [
+    let anchors = [
         line_bounded_mesh("net-mesh", "src/net.rs", 100, 150),
         line_bounded_mesh("net-mesh", "src/caller.rs", 1, 10),
     ];
@@ -98,20 +98,20 @@ fn write_outside_mesh_range_suppresses_partner() {
         new_oid: None,
         hunks: Some(vec![LineRange { start: 200, end: 210 }]),
     }];
-    let input = input_with_delta(&delta, &ranges);
+    let input = input_with_delta(&delta, &anchors);
     let result = detect_delta_intersects_mesh(&input);
     assert!(
         result.is_empty(),
-        "expected no candidates for out-of-range edit, got {result:?}"
+        "expected no candidates for out-of-anchor edit, got {result:?}"
     );
 }
 
-/// A whole-file mesh range fires the partner candidate regardless of the
+/// A whole-file mesh anchor fires the partner candidate regardless of the
 /// edit's hunks.
 #[test]
 #[ignore = "slice-1: contract pinned, body stubbed"]
 fn whole_file_mesh_always_fires() {
-    let ranges = [
+    let anchors = [
         whole_file_mesh("link", "src/foo.ts"),
         whole_file_mesh("link", "src/uses.ts"),
     ];
@@ -121,7 +121,7 @@ fn whole_file_mesh_always_fires() {
         new_oid: None,
         hunks: Some(vec![LineRange { start: 9999, end: 10000 }]),
     }];
-    let input = input_with_delta(&delta, &ranges);
+    let input = input_with_delta(&delta, &anchors);
     let result = detect_delta_intersects_mesh(&input);
     assert!(
         result
@@ -136,7 +136,7 @@ fn whole_file_mesh_always_fires() {
 #[test]
 #[ignore = "slice-1: contract pinned, body stubbed"]
 fn unknown_hunks_fall_back_to_fire() {
-    let ranges = [
+    let anchors = [
         line_bounded_mesh("net-mesh", "src/net.rs", 100, 150),
         line_bounded_mesh("net-mesh", "src/caller.rs", 1, 10),
     ];
@@ -146,7 +146,7 @@ fn unknown_hunks_fall_back_to_fire() {
         new_oid: None,
         hunks: None,
     }];
-    let input = input_with_delta(&delta, &ranges);
+    let input = input_with_delta(&delta, &anchors);
     let result = detect_delta_intersects_mesh(&input);
     assert!(
         result

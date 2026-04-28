@@ -159,7 +159,7 @@ fn human_oneline_emits_status_path_range_per_line() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale", "m", "--oneline"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Should contain a line starting with `CHANGED` and the range.
+    // Should contain a line starting with `CHANGED` and the anchor.
     assert!(
         stdout
             .lines()

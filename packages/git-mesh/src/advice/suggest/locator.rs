@@ -2,14 +2,14 @@
 //!
 //! For each Edit op, find the ranged Read of the same path within
 //! `locator_window` positions that minimises (op_distance + dir_penalty),
-//! then annotate the Edit with the inferred range.
+//! then annotate the Edit with the inferred anchor.
 
 use crate::advice::suggest::op_stream::{Op, OpKind};
 use crate::advice::suggest::SuggestConfig;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// A prior-context atom: a (path, range) pair from an op before the current
+/// A prior-context atom: a (path, anchor) pair from an op before the current
 /// edit, used by the `locator-edit-context` evidence channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Atom {

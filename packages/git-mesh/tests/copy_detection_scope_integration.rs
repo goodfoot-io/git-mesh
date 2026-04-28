@@ -18,7 +18,7 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::StagedConfig;
-use git_mesh::types::{CopyDetection, EngineOptions, RangeStatus};
+use git_mesh::types::{CopyDetection, EngineOptions, AnchorStatus};
 use git_mesh::{append_add, append_config, commit_mesh, resolve_mesh, set_why};
 use support::TestRepo;
 
@@ -27,7 +27,7 @@ fn lines20() -> String {
     (1..=20).map(|i| format!("content_line_{i}\n")).collect()
 }
 
-/// Create a mesh with `copy_detection` mode set, add a range on `path`
+/// Create a mesh with `copy_detection` mode set, add a anchor on `path`
 /// at the *current* HEAD, and commit the mesh.  Returns the anchor sha.
 fn setup_mesh(
     repo: &TestRepo,
@@ -77,9 +77,9 @@ fn same_commit_all_modes_detect_move() -> Result<()> {
 
         let gix = repo.gix_repo()?;
         let mr = resolve_mesh(&gix, mesh, EngineOptions::committed_only())?;
-        let status = &mr.ranges[0].status;
+        let status = &mr.anchors[0].status;
         assert!(
-            matches!(status, RangeStatus::Moved | RangeStatus::Fresh),
+            matches!(status, AnchorStatus::Moved | AnchorStatus::Fresh),
             "mode={mode:?}: expected Moved (or Fresh when lines unchanged), got {status:?}"
         );
     }
@@ -93,15 +93,15 @@ fn same_commit_all_modes_detect_move() -> Result<()> {
 /// The commit adds `b.ts` whose content is copied from `a.ts`, but `a.ts`
 /// is NOT modified by the commit. `SameCommit` sees no source (the copy
 /// source isn't in the diff pair); `AnyFileInCommit` and `AnyFileInRepo`
-/// detect the copy and should emit Moved (range now lives in b.ts).
+/// detect the copy and should emit Moved (anchor now lives in b.ts).
 ///
-/// We track a range on `a.ts` and expect it to either be MOVED to `b.ts`
+/// We track a anchor on `a.ts` and expect it to either be MOVED to `b.ts`
 /// (detected) or remain FRESH/CHANGED in `a.ts` (not detected, because
 /// `a.ts` itself is still present and unchanged).
 ///
 /// Concretely:
-/// - `SameCommit`: `a.ts` is unchanged → range stays fresh on `a.ts`.
-/// - `AnyFileInCommit`/`AnyFileInRepo`: copy detected → range follows to `b.ts`.
+/// - `SameCommit`: `a.ts` is unchanged → anchor stays fresh on `a.ts`.
+/// - `AnyFileInCommit`/`AnyFileInRepo`: copy detected → anchor follows to `b.ts`.
 ///
 /// We verify that SameCommit and the wider modes give different results.
 #[test]
@@ -120,7 +120,7 @@ fn any_file_in_commit_diverges_from_same_commit() -> Result<()> {
 
     let gix_sc = repo_sc.gix_repo()?;
     let mr_sc = resolve_mesh(&gix_sc, "m", EngineOptions::committed_only())?;
-    let status_sc = mr_sc.ranges[0].status.clone();
+    let status_sc = mr_sc.anchors[0].status.clone();
 
     // --- AnyFileInCommit: should detect the copy ---
     let repo_afic = TestRepo::new()?;
@@ -141,7 +141,7 @@ fn any_file_in_commit_diverges_from_same_commit() -> Result<()> {
 
     let gix_afic = repo_afic.gix_repo()?;
     let mr_afic = resolve_mesh(&gix_afic, "m", EngineOptions::committed_only())?;
-    let status_afic = mr_afic.ranges[0].status.clone();
+    let status_afic = mr_afic.anchors[0].status.clone();
 
     // AnyFileInRepo should also detect (same pool shape as AnyFileInCommit here)
     let repo_afir = TestRepo::new()?;
@@ -155,23 +155,23 @@ fn any_file_in_commit_diverges_from_same_commit() -> Result<()> {
 
     let gix_afir = repo_afir.gix_repo()?;
     let mr_afir = resolve_mesh(&gix_afir, "m", EngineOptions::committed_only())?;
-    let status_afir = mr_afir.ranges[0].status.clone();
+    let status_afir = mr_afir.anchors[0].status.clone();
 
-    // SameCommit: a.ts is unchanged, range is Fresh (or Changed).
+    // SameCommit: a.ts is unchanged, anchor is Fresh (or Changed).
     // It must NOT be Moved.
     assert!(
-        !matches!(status_sc, RangeStatus::Moved),
+        !matches!(status_sc, AnchorStatus::Moved),
         "SameCommit should NOT detect copy from unchanged a.ts; got {status_sc:?}"
     );
 
     // AnyFileInCommit: should detect the copy → Moved.
     assert!(
-        matches!(status_afic, RangeStatus::Moved | RangeStatus::Fresh),
+        matches!(status_afic, AnchorStatus::Moved | AnchorStatus::Fresh),
         "AnyFileInCommit should detect copy (Moved or Fresh); got {status_afic:?}"
     );
     // AnyFileInRepo should also detect.
     assert!(
-        matches!(status_afir, RangeStatus::Moved | RangeStatus::Fresh),
+        matches!(status_afir, AnchorStatus::Moved | AnchorStatus::Fresh),
         "AnyFileInRepo should detect copy (Moved or Fresh); got {status_afir:?}"
     );
 
@@ -215,8 +215,8 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     repo.write_file("seed.ts", "seed\n")?;
     repo.commit_all("topic: seed")?;
 
-    // Anchor a range on seed.ts (which we'll pretend is the tracked file).
-    // Actually we track b.ts after it's created — so let's set up a range
+    // Anchor a anchor on seed.ts (which we'll pretend is the tracked file).
+    // Actually we track b.ts after it's created — so let's set up a anchor
     // on seed.ts first, then the next commit adds b.ts copying shared.ts.
     //
     // But the walker tracks anchor→HEAD. We need: anchor on topic at seed
@@ -229,11 +229,11 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     // the next commit. The walker should see b.ts as Added. With
     // AnyFileInRepo it can find shared.ts as the source across branches.
     //
-    // But the range tracks seed.ts, not b.ts. To test cross-ref detection
-    // we need the range to follow b.ts. The simplest fixture:
+    // But the anchor tracks seed.ts, not b.ts. To test cross-ref detection
+    // we need the anchor to follow b.ts. The simplest fixture:
     // anchor b.ts AFTER it's created (using a second commit) and make the
     // SECOND commit be empty or a modification. That way walker has nothing
-    // to do and the range is just Fresh.
+    // to do and the anchor is just Fresh.
     //
     // Better: anchor on shared.ts (on main), switch to topic, create b.ts
     // that has the same content. The walker walks main→topic commits.
@@ -241,10 +241,10 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     //
     // Simplest approach that exercises the cross-ref pool:
     // Both main and topic share the same git object database. We anchor
-    // a range on `b.ts` *before* b.ts exists on topic (so we anchor on a
+    // a anchor on `b.ts` *before* b.ts exists on topic (so we anchor on a
     // virtual empty state). That's not valid.
     //
-    // Clean approach: stay on main. Create shared.ts (anchor range here).
+    // Clean approach: stay on main. Create shared.ts (anchor anchor here).
     // Next commit: delete shared.ts, create b.ts (copies from shared.ts).
     // For AnyFileInRepo, even if shared.ts is gone from the diff's deleted
     // side as a pair, the cross-ref pool might pick it up. But actually
@@ -254,7 +254,7 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     // a *different branch* and NOT in the diff. Let's construct it properly:
     //
     // Step 1 (main): seed.ts only.
-    // Step 2 (main): We anchor range on seed.ts.
+    // Step 2 (main): We anchor anchor on seed.ts.
     // Step 3 (main): We create b.ts that copies content from a blob that
     //   only exists as a blob reachable from another ref (e.g. the init
     //   commit on main also has the content of shared.ts via a tag).
@@ -286,7 +286,7 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     repo_sc.write_file("b.ts", &shared_content)?;
     repo_sc.commit_all("add b.ts")?;
     let mr_sc = resolve_mesh(&repo_sc.gix_repo()?, "m", EngineOptions::committed_only())?;
-    let status_sc = mr_sc.ranges[0].status.clone();
+    let status_sc = mr_sc.anchors[0].status.clone();
 
     // For AnyFileInRepo: the "shared" content is reachable via main branch.
     // We set up a second repo where main has shared.ts as a blob accessible
@@ -324,12 +324,12 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     repo_afir.commit_all("topic: add b.ts (copies shared.ts from main)")?;
 
     let mr_afir = resolve_mesh(&repo_afir.gix_repo()?, "m", EngineOptions::committed_only())?;
-    let status_afir = mr_afir.ranges[0].status.clone();
+    let status_afir = mr_afir.anchors[0].status.clone();
 
     // Both are tracking seed.ts L1 which is unchanged — so both should be Fresh
     // unless the walker is confused. The real test of scope is whether b.ts is
     // emitted as a Copied entry (but since we're tracking seed.ts, not b.ts,
-    // the range stays on seed.ts). The scope test needs us to track a.ts which
+    // the anchor stays on seed.ts). The scope test needs us to track a.ts which
     // then gets deleted, forcing the walker to look for a copy.
     //
     // Revised approach: anchor on a.ts that gets DELETED and b.ts appears.
@@ -346,7 +346,7 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     // copied from `shared.ts` on main. SameCommit only sees the diff pair
     // (unrelated.ts deleted, b.ts added) — it would pair them as a rename
     // if similarity >= 50%. But `unrelated.ts` has content "unrelated" (low
-    // similarity to shared.ts). So SameCommit fails to pair, range is Deleted.
+    // similarity to shared.ts). So SameCommit fails to pair, anchor is Deleted.
     // AnyFileInRepo: pool includes shared.ts → high similarity → Copied → Moved.
 
     let repo_final = TestRepo::new()?;
@@ -396,17 +396,17 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     let mr_sc_final = resolve_mesh(&gix_final, "sc", EngineOptions::committed_only())?;
     let mr_afir_final = resolve_mesh(&gix_final, "afir", EngineOptions::committed_only())?;
 
-    let status_sc_final = &mr_sc_final.ranges[0].status;
-    let _status_afir_final = &mr_afir_final.ranges[0].status;
+    let status_sc_final = &mr_sc_final.anchors[0].status;
+    let _status_afir_final = &mr_afir_final.anchors[0].status;
 
     // SameCommit: unrelated.ts vs b.ts have low similarity → Deleted (or Changed).
     assert!(
-        !matches!(status_sc_final, RangeStatus::Moved),
+        !matches!(status_sc_final, AnchorStatus::Moved),
         "SameCommit should NOT detect cross-ref copy; got {status_sc_final:?}"
     );
 
     // AnyFileInRepo: shared.ts from main is in pool → b.ts is Copied from shared.ts
-    // → unrelated.ts range is Deleted (not Moved, since unrelated.ts not copied to b.ts)
+    // → unrelated.ts anchor is Deleted (not Moved, since unrelated.ts not copied to b.ts)
     // Wait: we're tracking unrelated.ts L1-L5. After deletion, the walker
     // looks for a rename/copy from unrelated.ts. The pool includes shared.ts
     // but we're looking for WHERE unrelated.ts content went, not WHERE b.ts
@@ -427,7 +427,7 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     // Let's use a simpler but valid scenario:
     // On a single branch:
     // C1: a.ts (20 lines), shared_blob.ts (same 20 lines, different name).
-    //   Anchor range on shared_blob.ts L1-L20.
+    //   Anchor anchor on shared_blob.ts L1-L20.
     // C2: delete shared_blob.ts, add b.ts copying content from a.ts
     //   (a.ts is NOT in the diff — still present, unmodified).
     //   With SameCommit: only (shared_blob.ts deleted, b.ts added) in diff pair.
@@ -483,9 +483,9 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
     // The widened detection emits NS::Copied{from="a.ts", to="b.ts"}.
     // advance() sees NS::Copied{from="a.ts", to="b.ts"} with loc.path="a.ts"
     //   → next_path = Some("b.ts"), modified=true.
-    // Final: range is on b.ts → Moved.
+    // Final: anchor is on b.ts → Moved.
     // SameCommit: no Copied entry (a.ts not in diff) → a.ts is still unchanged
-    //   → no change detected → range stays on a.ts → Fresh.
+    //   → no change detected → anchor stays on a.ts → Fresh.
     //
     // This is the correct test! And it's already what `any_file_in_commit_diverges`
     // tests above. The cross-ref AnyFileInRepo test just needs the source to be
@@ -535,7 +535,7 @@ fn any_file_in_repo_detects_cross_branch_copy() -> Result<()> {
 /// C2: delete source.ts. Anchor seed.ts L1 here.
 /// C3: keep seed.ts, add b.ts copying source.ts content.
 ///   SameCommit: diff pair = {b.ts added} only. No source in pair → b.ts
-///     just added, range on seed.ts is Fresh.
+///     just added, anchor on seed.ts is Fresh.
 ///   AnyFileInCommit: pool = {seed.ts, b.ts} minus b.ts = {seed.ts}.
 ///     seed.ts vs b.ts: low similarity → no copy detected → Fresh.
 ///   AnyFileInRepo: pool includes source.ts blob (from C1, reachable from
@@ -587,7 +587,7 @@ fn any_file_in_repo_sees_source_on_other_ref() -> Result<()> {
 
         let gix = repo.gix_repo()?;
         let mr = resolve_mesh(&gix, "m", EngineOptions::committed_only())?;
-        let status = &mr.ranges[0].status;
+        let status = &mr.anchors[0].status;
 
         if expect_moved {
             // AnyFileInRepo: source.ts (from keep-source ref) is in pool →
@@ -621,13 +621,13 @@ fn any_file_in_repo_sees_source_on_other_ref() -> Result<()> {
             // (we anchor on source.ts which must exist at anchor time).
             //
             // This reveals: AnyFileInRepo uniquely helps when you anchor b.ts's CONTENT
-            // source, and the source is on a ref but NOT in the current tree. The range
+            // source, and the source is on a ref but NOT in the current tree. The anchor
             // tracks a file that gets "discovered" as the origin of a copy.
             //
             // Given the walker's logic (it tracks paths, not blobs), the AnyFileInRepo
             // pool matters for detecting: "this added file b.ts came from source.ts on
             // another ref" and IF we had anchored source.ts, the walker could follow
-            // the range to b.ts. But we can't anchor source.ts on another branch while
+            // the anchor to b.ts. But we can't anchor source.ts on another branch while
             // being on this branch.
             //
             // CONCLUSION: AnyFileInRepo provides additional pool members for finding
@@ -677,13 +677,13 @@ fn any_file_in_repo_sees_source_on_other_ref() -> Result<()> {
             assert!(
                 matches!(
                     status,
-                    RangeStatus::Fresh | RangeStatus::Moved | RangeStatus::Changed
+                    AnchorStatus::Fresh | AnchorStatus::Moved | AnchorStatus::Changed
                 ),
                 "AnyFileInRepo mode={mode:?}: unexpected status {status:?}"
             );
         } else {
             assert!(
-                matches!(status, RangeStatus::Fresh | RangeStatus::Changed),
+                matches!(status, AnchorStatus::Fresh | AnchorStatus::Changed),
                 "mode={mode:?}: expected Fresh or Changed, got {status:?}"
             );
         }

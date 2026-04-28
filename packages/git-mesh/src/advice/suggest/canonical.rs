@@ -10,7 +10,7 @@ use crate::advice::suggest::SuggestConfig;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// A canonical range: the bounding box of a connected component of
+/// A canonical anchor: the bounding box of a connected component of
 /// cross-session participants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanonicalRange {
@@ -19,7 +19,7 @@ pub struct CanonicalRange {
     pub end: u32,
 }
 
-/// Maps each participant's key to a canonical range id (index into
+/// Maps each participant's key to a canonical anchor id (index into
 /// `CanonicalIndex::ranges`).
 ///
 /// The key is `partKey(p)` = `"{path}#{m_start}-{m_end}#{session_sid}#{op_index}"`.
@@ -59,7 +59,7 @@ pub fn range_iou(a: &Participant, b: &Participant) -> f64 {
     inter / (a_len + b_len - inter)
 }
 
-/// Build the canonical range index from all (merged) participants across all
+/// Build the canonical anchor index from all (merged) participants across all
 /// sessions.
 ///
 /// Ports `buildCanonicalRanges` from `docs/analyze-v4.mjs` line 313.

@@ -1,15 +1,15 @@
-//! Per-range layered resolution: HEAD walk + index/worktree hunk
+//! Per-anchor layered resolution: HEAD walk + index/worktree hunk
 //! application + LFS short-circuit + slice comparison.
 
 use super::super::layers::{
-    filter_short_circuit, is_lfs_path, read_worktree_normalized, resolve_lfs_range,
+    filter_short_circuit, is_lfs_path, read_worktree_normalized, resolve_lfs_anchor,
 };
 use super::super::walker::{Tracked, apply_hunks_to_range, resolve_at_head};
 use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
 use crate::types::{
-    DriftSource, MeshConfig, Range, RangeExtent, RangeLocation, RangeResolved, RangeStatus,
+    DriftSource, MeshConfig, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
     UnavailableReason,
 };
 use crate::{Error, Result};
@@ -81,32 +81,32 @@ fn slice_differs(
     !lines_equal(a_slice, c_slice, ignore_ws)
 }
 
-pub(crate) fn resolve_range_inner(
+pub(crate) fn resolve_anchor_inner(
     repo: &gix::Repository,
     state: &mut EngineState,
     cfg: &MeshConfig,
-    range_id: &str,
-    r: Range,
-) -> Result<RangeResolved> {
-    if matches!(r.extent, RangeExtent::Whole) {
-        return resolve_whole_file(repo, state, cfg, range_id, r);
+    anchor_id: &str,
+    r: Anchor,
+) -> Result<AnchorResolved> {
+    if matches!(r.extent, AnchorExtent::WholeFile) {
+        return resolve_whole_file(repo, state, cfg, anchor_id, r);
     }
     let (anchored_start, anchored_end) = match r.extent {
-        RangeExtent::Lines { start, end } => (start, end),
-        RangeExtent::Whole => unreachable!(),
+        AnchorExtent::LineRange { start, end } => (start, end),
+        AnchorExtent::WholeFile => unreachable!(),
     };
-    let anchored = RangeLocation {
+    let anchored = AnchorLocation {
         path: PathBuf::from(&r.path),
         extent: r.extent,
         blob: oid_from_hex(&r.blob).ok(),
     };
     if !is_commit_reachable(repo, &r.anchor_sha)? {
-        return Ok(RangeResolved {
-            range_id: range_id.into(),
+        return Ok(AnchorResolved {
+            anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
             anchored,
             current: None,
-            status: RangeStatus::Orphaned,
+            status: AnchorStatus::Orphaned,
             source: None,
             layer_sources: vec![],
             acknowledged_by: None,
@@ -120,19 +120,19 @@ pub(crate) fn resolve_range_inner(
     if state.layers.index || state.layers.worktree {
         let p = head_path.as_deref().unwrap_or(r.path.as_str());
         if state.conflicted_paths.contains(p) {
-            return Ok(RangeResolved {
-                range_id: range_id.into(),
+            return Ok(AnchorResolved {
+                anchor_id: anchor_id.into(),
                 anchor_sha: r.anchor_sha,
                 anchored,
-                current: Some(RangeLocation {
+                current: Some(AnchorLocation {
                     path: PathBuf::from(p),
-                    extent: RangeExtent::Lines {
+                    extent: AnchorExtent::LineRange {
                         start: anchored_start,
                         end: anchored_end,
                     },
                     blob: None,
                 }),
-                status: RangeStatus::MergeConflict,
+                status: AnchorStatus::MergeConflict,
                 source: None,
                 layer_sources: vec![],
                 acknowledged_by: None,
@@ -204,10 +204,10 @@ pub(crate) fn resolve_range_inner(
     if let Some(t) = tracked
         && is_lfs_path(repo, &t.path)
     {
-        return Ok(resolve_lfs_range(
+        return Ok(resolve_lfs_anchor(
             repo,
             &mut state.lfs,
-            range_id,
+            anchor_id,
             &r,
             anchored,
             t,
@@ -227,7 +227,7 @@ pub(crate) fn resolve_range_inner(
                         Ok(bytes) => (string_from_utf8_lossy(&bytes), None),
                         Err(Error::FilterFailed { filter }) => {
                             return Ok(unavailable(
-                                range_id,
+                                anchor_id,
                                 &r,
                                 anchored,
                                 UnavailableReason::FilterFailed { filter },
@@ -239,7 +239,7 @@ pub(crate) fn resolve_range_inner(
                 DriftSource::Index => {
                     if let Some(filter) = filter_short_circuit(repo, &t.path)? {
                         return Ok(unavailable(
-                            range_id,
+                            anchor_id,
                             &r,
                             anchored,
                             UnavailableReason::FilterFailed { filter },
@@ -259,7 +259,7 @@ pub(crate) fn resolve_range_inner(
                 DriftSource::Head => {
                     if let Some(filter) = filter_short_circuit(repo, &t.path)? {
                         return Ok(unavailable(
-                            range_id,
+                            anchor_id,
                             &r,
                             anchored,
                             UnavailableReason::FilterFailed { filter },
@@ -277,14 +277,14 @@ pub(crate) fn resolve_range_inner(
         }
     };
 
-    let status: RangeStatus;
+    let status: AnchorStatus;
     let source: Option<DriftSource>;
-    let current_loc: Option<RangeLocation>;
+    let current_loc: Option<AnchorLocation>;
     let layer_sources: Vec<DriftSource>;
 
     match current {
         None => {
-            status = RangeStatus::Changed;
+            status = AnchorStatus::Changed;
             source = Some(deepest_layer);
             current_loc = None;
             layer_sources = vec![deepest_layer];
@@ -332,11 +332,11 @@ pub(crate) fn resolve_range_inner(
 
             if equal {
                 if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
-                    status = RangeStatus::Fresh;
+                    status = AnchorStatus::Fresh;
                     source = None;
                     layer_sources = vec![];
                 } else {
-                    status = RangeStatus::Moved;
+                    status = AnchorStatus::Moved;
                     source = inferred_source;
                     // MOVED means bytes are equal; per design requirement 4,
                     // keep the single-row shape (source=first drifting layer).
@@ -347,7 +347,7 @@ pub(crate) fn resolve_range_inner(
                     };
                 }
             } else {
-                status = RangeStatus::Changed;
+                status = AnchorStatus::Changed;
                 source = inferred_source.or(Some(deepest_layer));
                 layer_sources = if computed_layer_sources.is_empty() {
                     vec![deepest_layer]
@@ -355,9 +355,9 @@ pub(crate) fn resolve_range_inner(
                     computed_layer_sources
                 };
             }
-            current_loc = Some(RangeLocation {
+            current_loc = Some(AnchorLocation {
                 path: PathBuf::from(t.path.clone()),
-                extent: RangeExtent::Lines {
+                extent: AnchorExtent::LineRange {
                     start: t.start,
                     end: t.end,
                 },
@@ -372,8 +372,8 @@ pub(crate) fn resolve_range_inner(
         }
     }
 
-    Ok(RangeResolved {
-        range_id: range_id.into(),
+    Ok(AnchorResolved {
+        anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha,
         anchored,
         current: current_loc,
@@ -386,17 +386,17 @@ pub(crate) fn resolve_range_inner(
 }
 
 fn unavailable(
-    range_id: &str,
-    r: &Range,
-    anchored: RangeLocation,
+    anchor_id: &str,
+    r: &Anchor,
+    anchored: AnchorLocation,
     reason: UnavailableReason,
-) -> RangeResolved {
-    RangeResolved {
-        range_id: range_id.into(),
+) -> AnchorResolved {
+    AnchorResolved {
+        anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
         anchored,
         current: None,
-        status: RangeStatus::ContentUnavailable(reason),
+        status: AnchorStatus::ContentUnavailable(reason),
         source: None,
         layer_sources: vec![],
         acknowledged_by: None,
@@ -419,7 +419,7 @@ fn unavailable(
 #[allow(clippy::too_many_arguments)]
 fn compute_layer_sources(
     repo: &gix::Repository,
-    _r: &Range,
+    _r: &Anchor,
     head_tracked: &Option<Tracked>,
     index_tracked: &Option<Tracked>,
     worktree_tracked: &Option<Tracked>,

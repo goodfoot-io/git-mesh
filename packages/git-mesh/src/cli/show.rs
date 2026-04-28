@@ -1,9 +1,9 @@
 //! `git mesh` list / `git mesh <name>` show / `git mesh ls` — §10.4, §3.4.
 
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
-use crate::range::read_range;
+use crate::anchor::read_anchor;
 use crate::staging::{list_staged_mesh_names, read_staging};
-use crate::types::{Range, RangeExtent};
+use crate::types::{Anchor, AnchorExtent};
 use crate::{
     MeshCommitInfo, list_mesh_names, mesh_commit_info, mesh_commit_info_at, mesh_log, read_mesh,
     read_mesh_at,
@@ -20,7 +20,7 @@ pub(crate) enum FormatToken {
     Literal(String),
     Newline,
     Commit(CommitField),
-    Range(RangeField),
+    Anchor(AnchorField),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -42,12 +42,12 @@ pub(crate) enum CommitField {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum RangeField {
-    /// `%p` — range path
+pub(crate) enum AnchorField {
+    /// `%p` — anchor path
     Path,
-    /// `%r` — range extent specifier (`#L<s>-L<e>` or empty for whole-file)
+    /// `%r` — anchor extent specifier (`#L<s>-L<e>` or empty for whole-file)
     RangeSpec,
-    /// `%P` — path + range spec
+    /// `%P` — path + anchor spec
     PathWithSpec,
     /// `%a` — anchor SHA (full)
     AnchorFull,
@@ -110,21 +110,21 @@ pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
                 if !literal.is_empty() {
                     tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
                 }
-                tokens.push(FormatToken::Range(RangeField::Path));
+                tokens.push(FormatToken::Anchor(AnchorField::Path));
             }
             'r' => {
                 chars.next();
                 if !literal.is_empty() {
                     tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
                 }
-                tokens.push(FormatToken::Range(RangeField::RangeSpec));
+                tokens.push(FormatToken::Anchor(AnchorField::RangeSpec));
             }
             'P' => {
                 chars.next();
                 if !literal.is_empty() {
                     tokens.push(FormatToken::Literal(std::mem::take(&mut literal)));
                 }
-                tokens.push(FormatToken::Range(RangeField::PathWithSpec));
+                tokens.push(FormatToken::Anchor(AnchorField::PathWithSpec));
             }
             'a' => {
                 // Could be `%an`, `%ae`, `%ad`, `%ar`, or `%a` (anchor full).
@@ -163,7 +163,7 @@ pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
                     None | Some(_) => {
                         // peek was already consumed for 'a'; we need to check if
                         // the next char could form a known two-char token.
-                        // Only emit Range::AnchorFull if next char is NOT 'n','e','d','r'
+                        // Only emit Anchor::AnchorFull if next char is NOT 'n','e','d','r'
                         // (those were handled above). Since we've already peeked and those
                         // cases didn't match, this is `%a` with something unrecognized after it
                         // OR end of string. Treat standalone `%a` as anchor full.
@@ -182,7 +182,7 @@ pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
                                 "unknown format placeholder \"%{tok}\"; supported: {SUPPORTED}"
                             ));
                         }
-                        tokens.push(FormatToken::Range(RangeField::AnchorFull));
+                        tokens.push(FormatToken::Anchor(AnchorField::AnchorFull));
                     }
                 }
             }
@@ -209,16 +209,16 @@ pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
 fn has_range_token(tokens: &[FormatToken]) -> bool {
     tokens
         .iter()
-        .any(|t| matches!(t, FormatToken::Range(_)))
+        .any(|t| matches!(t, FormatToken::Anchor(_)))
 }
 
 /// Render a single line from the token vector against the mesh commit info and
-/// an optional range context. Range tokens require `range` to be `Some`.
+/// an optional anchor context. Anchor tokens require `anchor` to be `Some`.
 pub(crate) fn render_tokens(
     tokens: &[FormatToken],
     info: &MeshCommitInfo,
     meta: &crate::git::CommitMeta,
-    range: Option<&Range>,
+    anchor: Option<&Anchor>,
 ) -> String {
     let mut out = String::new();
     for tok in tokens {
@@ -238,23 +238,23 @@ pub(crate) fn render_tokens(
                 ),
                 CommitField::Subject => out.push_str(&meta.summary),
             },
-            FormatToken::Range(f) => {
-                let r = range.expect("range token present but no range context — invariant violated");
+            FormatToken::Anchor(f) => {
+                let r = anchor.expect("anchor token present but no anchor context — invariant violated");
                 match f {
-                    RangeField::Path => out.push_str(&r.path),
-                    RangeField::RangeSpec => {
-                        if let RangeExtent::Lines { start, end } = r.extent {
+                    AnchorField::Path => out.push_str(&r.path),
+                    AnchorField::RangeSpec => {
+                        if let AnchorExtent::LineRange { start, end } = r.extent {
                             out.push_str(&format!("#L{start}-L{end}"));
                         }
                         // Whole-file → empty string (no push)
                     }
-                    RangeField::PathWithSpec => {
+                    AnchorField::PathWithSpec => {
                         out.push_str(&r.path);
-                        if let RangeExtent::Lines { start, end } = r.extent {
+                        if let AnchorExtent::LineRange { start, end } = r.extent {
                             out.push_str(&format!("#L{start}-L{end}"));
                         }
                     }
-                    RangeField::AnchorFull => out.push_str(&r.anchor_sha),
+                    AnchorField::AnchorFull => out.push_str(&r.anchor_sha),
                 }
             }
         }
@@ -275,7 +275,7 @@ enum MeshState {
 
 struct AnchorEntry {
     path: String,
-    extent: RangeExtent,
+    extent: AnchorExtent,
 }
 
 struct MeshListing {
@@ -295,8 +295,8 @@ fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
     for name in &committed_names {
         let mesh = read_mesh(repo, name)?;
         let mut anchors = Vec::new();
-        for range_id in &mesh.ranges {
-            let r = read_range(repo, range_id)?;
+        for anchor_id in &mesh.anchors {
+            let r = read_anchor(repo, anchor_id)?;
             anchors.push(AnchorEntry {
                 path: r.path,
                 extent: r.extent,
@@ -361,8 +361,8 @@ fn apply_path_filter(listings: &mut Vec<MeshListing>, target: &str) -> Result<()
                     return false;
                 }
                 match a.extent {
-                    RangeExtent::Whole => true,
-                    RangeExtent::Lines { start, end } => start <= e && end >= s,
+                    AnchorExtent::WholeFile => true,
+                    AnchorExtent::LineRange { start, end } => start <= e && end >= s,
                 }
             })
         });
@@ -423,11 +423,11 @@ fn render_blocks(page: &[MeshListing]) {
 fn render_porcelain(page: &[MeshListing]) {
     for listing in page {
         for a in &listing.anchors {
-            let range_str = match a.extent {
-                RangeExtent::Lines { start, end } => format!("{start}-{end}"),
-                RangeExtent::Whole => "0-0".to_string(),
+            let extent_str = match a.extent {
+                AnchorExtent::LineRange { start, end } => format!("{start}-{end}"),
+                AnchorExtent::WholeFile => "0-0".to_string(),
             };
-            println!("{}\t{}\t{}", listing.name, a.path, range_str);
+            println!("{}\t{}\t{}", listing.name, a.path, extent_str);
         }
     }
 }
@@ -473,8 +473,8 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
             .map_err(|e| anyhow::anyhow!("commit meta: {e}"))?;
 
         if has_range_token(&tokens) {
-            for id in &mesh.ranges {
-                let r = read_range(repo, id)?;
+            for id in &mesh.anchors {
+                let r = read_anchor(repo, id)?;
                 let line = render_tokens(&tokens, &info, &meta, Some(&r));
                 println!("{line}");
             }
@@ -486,8 +486,8 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     }
 
     if args.oneline {
-        for id in &mesh.ranges {
-            let r = read_range(repo, id)?;
+        for id in &mesh.anchors {
+            let r = read_anchor(repo, id)?;
             println!("{}", render_range_address(&r.path, r.extent));
         }
         return Ok(0);
@@ -502,9 +502,9 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         println!("    {line}");
     }
     println!();
-    println!("Anchors ({}):", mesh.ranges.len());
-    for id in &mesh.ranges {
-        let r = read_range(repo, id)?;
+    println!("Anchors ({}):", mesh.anchors.len());
+    for id in &mesh.anchors {
+        let r = read_anchor(repo, id)?;
         println!("    {}", render_range_address(&r.path, r.extent));
     }
 
@@ -552,10 +552,10 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn render_range_address(path: &str, extent: RangeExtent) -> String {
+fn render_range_address(path: &str, extent: AnchorExtent) -> String {
     match extent {
-        RangeExtent::Lines { start, end } => format!("{path}#L{start}-L{end}"),
-        RangeExtent::Whole => format!("{path}  (whole)"),
+        AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
+        AnchorExtent::WholeFile => format!("{path}  (whole)"),
     }
 }
 
@@ -571,7 +571,7 @@ fn short(sha: &str) -> &str {
 mod tests {
     use super::*;
     use crate::git::CommitMeta;
-    use crate::types::RangeExtent;
+    use crate::types::AnchorExtent;
 
     fn fake_info() -> MeshCommitInfo {
         MeshCommitInfo {
@@ -595,22 +595,22 @@ mod tests {
         }
     }
 
-    fn fake_range_lines() -> Range {
-        Range {
+    fn fake_range_lines() -> Anchor {
+        Anchor {
             anchor_sha: "deadbeef1234567890abcdef1234567890abcdef".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             path: "src/foo.rs".to_string(),
-            extent: RangeExtent::Lines { start: 10, end: 20 },
+            extent: AnchorExtent::LineRange { start: 10, end: 20 },
             blob: "bloboid1".to_string(),
         }
     }
 
-    fn fake_range_whole() -> Range {
-        Range {
+    fn fake_range_whole() -> Anchor {
+        Anchor {
             anchor_sha: "cafebabe1234567890abcdef1234567890abcdef".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             path: "docs/guide.md".to_string(),
-            extent: RangeExtent::Whole,
+            extent: AnchorExtent::WholeFile,
             blob: "bloboid2".to_string(),
         }
     }
@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn range_placeholder_p_lines() {
+    fn anchor_placeholder_p_lines() {
         let tokens = parse_format("%p").unwrap();
         let r = fake_range_lines();
         let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn range_placeholder_r_lines() {
+    fn anchor_placeholder_r_lines() {
         let tokens = parse_format("%r").unwrap();
         let r = fake_range_lines();
         let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn range_placeholder_r_whole_is_empty() {
+    fn anchor_placeholder_r_whole_is_empty() {
         let tokens = parse_format("%r").unwrap();
         let r = fake_range_whole();
         let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn range_placeholder_big_p_lines() {
+    fn anchor_placeholder_big_p_lines() {
         let tokens = parse_format("%P").unwrap();
         let r = fake_range_lines();
         let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn range_placeholder_big_p_whole_is_just_path() {
+    fn anchor_placeholder_big_p_whole_is_just_path() {
         let tokens = parse_format("%P").unwrap();
         let r = fake_range_whole();
         let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
@@ -706,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn range_placeholder_a_full() {
+    fn anchor_placeholder_a_full() {
         let tokens = parse_format("%a").unwrap();
         let r = fake_range_lines();
         let out = render_tokens(&tokens, &fake_info(), &fake_meta(), Some(&r));
@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn has_range_token_true_for_range_placeholders() {
+    fn has_anchor_token_true_for_anchor_placeholders() {
         assert!(has_range_token(&parse_format("%p").unwrap()));
         assert!(has_range_token(&parse_format("%r").unwrap()));
         assert!(has_range_token(&parse_format("%P").unwrap()));

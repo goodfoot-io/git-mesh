@@ -2,7 +2,7 @@
 
 use crate::cli::{AddArgs, CommitArgs, ConfigArgs, RmArgs, WhyArgs};
 use crate::staging::{StagedConfig, append_prepared_add, parse_address, prepare_add};
-use crate::types::{CopyDetection, EngineOptions, RangeExtent, validate_add_target};
+use crate::types::{CopyDetection, EngineOptions, AnchorExtent, validate_add_target};
 use crate::{append_config, append_remove, commit_mesh, read_mesh, set_why};
 use anyhow::{Context, Result, anyhow};
 
@@ -10,8 +10,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
     // Parse every address first; fail-closed with no partial staging.
-    let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
-    for addr in &args.ranges {
+    let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
+    for addr in &args.anchors {
         let p = parse_address(addr)
             .ok_or_else(|| anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]"))?;
         parsed.push(p);
@@ -22,12 +22,12 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // occurrence, drop earlier ones. Cross-invocation supersede is
     // handled by `append_prepared_add` (which strips + renumbers).
     {
-        let mut last_idx: std::collections::HashMap<(String, RangeExtent), usize> =
+        let mut last_idx: std::collections::HashMap<(String, AnchorExtent), usize> =
             std::collections::HashMap::new();
         for (i, a) in parsed.iter().enumerate() {
             last_idx.insert(a.clone(), i);
         }
-        let coalesced: Vec<(String, RangeExtent)> = parsed
+        let coalesced: Vec<(String, AnchorExtent)> = parsed
             .iter()
             .enumerate()
             .filter(|(i, a)| last_idx.get(*a) == Some(i))
@@ -52,10 +52,10 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
             .map_err(|err| anyhow!("{err}"))?;
     }
 
-    // Resolve the existing range_id for this `(path, extent)` in the
+    // Resolve the existing anchor_id for this `(path, extent)` in the
     // mesh. Include resolved current locations so `git mesh add` over a
-    // moved range's new address re-anchors the existing range instead of
-    // creating a second range.
+    // moved anchor's new address re-anchors the existing anchor instead of
+    // creating a second anchor.
     let mut mesh_ranges_lookup = mesh_current_range_id_lookup(repo, &args.name);
     mesh_ranges_lookup.extend(mesh_range_id_lookup(repo, &args.name));
 
@@ -64,8 +64,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
         prepared.push(prepare_add(repo, path, *extent, anchor_oid.as_deref())?);
     }
     for (add, (path, extent)) in prepared.iter().zip(parsed.iter()) {
-        let range_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();
-        append_prepared_add(repo, &args.name, add, range_id)?;
+        let anchor_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();
+        append_prepared_add(repo, &args.name, add, anchor_id)?;
     }
     Ok(0)
 }
@@ -73,13 +73,13 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
 fn mesh_range_id_lookup(
     repo: &gix::Repository,
     mesh_name: &str,
-) -> std::collections::HashMap<(String, RangeExtent), String> {
+) -> std::collections::HashMap<(String, AnchorExtent), String> {
     let mut out = std::collections::HashMap::new();
     let Ok(mesh) = read_mesh(repo, mesh_name) else {
         return out;
     };
-    for id in &mesh.ranges {
-        if let Ok(r) = crate::range::read_range(repo, id) {
+    for id in &mesh.anchors {
+        if let Ok(r) = crate::anchor::read_anchor(repo, id) {
             out.insert((r.path, r.extent), id.clone());
         }
     }
@@ -89,16 +89,16 @@ fn mesh_range_id_lookup(
 fn mesh_current_range_id_lookup(
     repo: &gix::Repository,
     mesh_name: &str,
-) -> std::collections::HashMap<(String, RangeExtent), String> {
+) -> std::collections::HashMap<(String, AnchorExtent), String> {
     let mut out = std::collections::HashMap::new();
     let Ok(resolved) = crate::resolver::resolve_mesh(repo, mesh_name, EngineOptions::full()) else {
         return out;
     };
-    for r in resolved.ranges {
+    for r in resolved.anchors {
         let Some(current) = r.current else { continue };
         out.insert(
             (current.path.to_string_lossy().into_owned(), current.extent),
-            r.range_id,
+            r.anchor_id,
         );
     }
     out
@@ -107,18 +107,18 @@ fn mesh_current_range_id_lookup(
 pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
-    let mut parsed: Vec<(String, RangeExtent)> = Vec::with_capacity(args.ranges.len());
-    for addr in &args.ranges {
+    let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
+    for addr in &args.anchors {
         let p = parse_address(addr)
             .ok_or_else(|| anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]"))?;
         parsed.push(p);
     }
 
-    let mut present: Vec<(String, RangeExtent)> = Vec::new();
+    let mut present: Vec<(String, AnchorExtent)> = Vec::new();
     match read_mesh(repo, &args.name) {
         Ok(mesh) => {
-            for id in &mesh.ranges {
-                let r = crate::range::read_range(repo, id)?;
+            for id in &mesh.anchors {
+                let r = crate::anchor::read_anchor(repo, id)?;
                 present.push((r.path, r.extent));
             }
         }
@@ -147,10 +147,10 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
             }
             None => {
                 let addr = match extent {
-                    RangeExtent::Lines { start, end } => {
+                    AnchorExtent::LineRange { start, end } => {
                         format!("{path}#L{start}-L{end}")
                     }
-                    RangeExtent::Whole => path.clone(),
+                    AnchorExtent::WholeFile => path.clone(),
                 };
                 return Err(anyhow!("anchor not in mesh {}: {addr}", args.name));
             }
@@ -159,10 +159,10 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
 
     for (path, extent) in &parsed {
         match extent {
-            RangeExtent::Lines { start, end } => {
+            AnchorExtent::LineRange { start, end } => {
                 append_remove(repo, &args.name, path, *start, *end)?;
             }
-            RangeExtent::Whole => {
+            AnchorExtent::WholeFile => {
                 crate::staging::append_remove_whole(repo, &args.name, path)?;
             }
         }

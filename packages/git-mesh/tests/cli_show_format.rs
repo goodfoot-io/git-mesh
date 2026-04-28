@@ -1,6 +1,6 @@
 //! Integration tests for `git mesh show --format`.
 //!
-//! Exercises per-range expansion, commit-level placeholders, and
+//! Exercises per-anchor expansion, commit-level placeholders, and
 //! unknown-placeholder rejection (exit 2).
 
 mod support;
@@ -23,8 +23,8 @@ fn format_big_p_produces_one_line_per_range() -> Result<()> {
     seed_multi_range(&repo)?;
     let out = repo.mesh_stdout(["show", "m", "--format", "%P"])?;
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2, "expected one line per range, got: {out:?}");
-    // One line for the line-range path, one for the whole-file path.
+    assert_eq!(lines.len(), 2, "expected one line per anchor, got: {out:?}");
+    // One line for the line-anchor path, one for the whole-file path.
     assert!(
         lines.iter().any(|l| l.contains("file1.txt#L")),
         "expected file1.txt line range in output: {out:?}"
@@ -59,7 +59,7 @@ fn format_anchor_and_path_matches_oneline_shape() -> Result<()> {
 fn format_subject_is_per_commit_not_per_range() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_multi_range(&repo)?;
-    // %s has no range token → one line total
+    // %s has no anchor token → one line total
     let out = repo.mesh_stdout(["show", "m", "--format", "%s"])?;
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 1, "commit-only format should give one line: {out:?}");

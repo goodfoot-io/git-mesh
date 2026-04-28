@@ -451,7 +451,7 @@ fn truncate_line_plain(line: &str) -> String {
 // suite asserts the literal text fragments.
 const TOPIC_BASELINE: &str = "\
 A mesh is a lightweight contract for an agreement that no schema, type,
-or test already enforces. It binds anchors — line-range anchors
+or test already enforces. It binds anchors — line-anchor anchors
 (`path#L<s>-L<e>`) or whole-file anchors — across the repo and carries
 a durable `why` that defines the subsystem those anchors collectively
 form.
@@ -498,7 +498,7 @@ Update the literal, or move the mesh to the new path:
 ";
 
 const TOPIC_T4: &str = "\
-The edit reduced a line-range anchor to far fewer lines than were
+The edit reduced a line-anchor anchor to far fewer lines than were
 recorded. The mesh now pins less code than the relationship was about.
 When the line span changes, remove the old anchor first, then add the
 new one:

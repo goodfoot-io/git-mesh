@@ -48,7 +48,7 @@ fn t8_staging_cross_cut_surfaces() -> Result<()> {
 
     // Mesh-A owns file1#L1-L5.
     append_add(&gix, "mesh-a", "file1.txt", 1, 5, None)?;
-    set_why(&gix, "mesh-a", "owner of file1 range")?;
+    set_why(&gix, "mesh-a", "owner of file1 anchor")?;
     commit_mesh(&gix, "mesh-a")?;
 
     // Mesh-B exists; stages an overlapping add on mesh-a's file.
@@ -75,10 +75,10 @@ fn t9_empty_mesh_risk_when_remove_empties_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     append_add(&gix, "soon-empty", "file1.txt", 1, 5, None)?;
-    set_why(&gix, "soon-empty", "single range")?;
+    set_why(&gix, "soon-empty", "single anchor")?;
     commit_mesh(&gix, "soon-empty")?;
 
-    // Stage removal of the only range.
+    // Stage removal of the only anchor.
     append_remove(&gix, "soon-empty", "file1.txt", 1, 5)?;
 
     let s = sid("t9");

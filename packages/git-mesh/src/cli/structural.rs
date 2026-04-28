@@ -1,7 +1,7 @@
 //! Structural handlers (restore, revert, delete, mv) + doctor — §6.6, §6.7, §6.8.
 
 use crate::cli::{DeleteArgs, MvArgs, RestoreArgs, RevertArgs};
-use crate::range::range_ref_path;
+use crate::anchor::anchor_ref_path;
 use crate::sync::default_remote;
 use crate::{
     delete_mesh, file_index, list_mesh_names, read_mesh, rename_mesh, restore_mesh, revert_mesh,
@@ -140,7 +140,7 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
     // ---- Sidecar integrity (Slice 4) --------------------------------
     check_sidecar_integrity(repo, &mut out);
 
-    // ---- Orphan range references + dangling range refs --------------
+    // ---- Orphan anchor references + dangling anchor refs --------------
     check_range_reachability(repo, &remote, &mut out);
 
     // ---- File index self-heal ---------------------------------------
@@ -333,15 +333,15 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
     let Ok(names) = list_mesh_names(repo) else {
         return;
     };
-    // Build set of all referenced range ids.
+    // Build set of all referenced anchor ids.
     let mut referenced: BTreeSet<String> = BTreeSet::new();
     for name in &names {
         let Ok(mesh) = read_mesh(repo, name) else {
             continue;
         };
-        for id in &mesh.ranges {
+        for id in &mesh.anchors {
             referenced.insert(id.clone());
-            let ref_path = range_ref_path(id);
+            let ref_path = anchor_ref_path(id);
             let exists = crate::git::resolve_ref_oid_optional(wd, &ref_path)
                 .ok()
                 .flatten()
@@ -364,21 +364,21 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
         }
     }
 
-    // Dangling: every refs/ranges/v1/* not in `referenced`.
-    let Ok(range_refs) = crate::git::list_refs_stripped(repo, "refs/ranges/v1") else {
+    // Dangling: every refs/anchors/v1/* not in `referenced`.
+    let Ok(anchor_refs) = crate::git::list_refs_stripped(repo, "refs/anchors/v1") else {
         return;
     };
     let _ = wd;
-    for id in range_refs.iter().filter(|s| !s.is_empty()) {
+    for id in anchor_refs.iter().filter(|s| !s.is_empty()) {
         if !referenced.contains(id) {
             let descriptor = match read_range_safe(repo, id) {
                 Some(r) => match r.extent {
-                    crate::types::RangeExtent::Lines { start, end } => {
+                    crate::types::AnchorExtent::LineRange { start, end } => {
                         format!("`{}#L{}-L{}`", r.path, start, end)
                     }
-                    crate::types::RangeExtent::Whole => format!("`{}` (whole)", r.path),
+                    crate::types::AnchorExtent::WholeFile => format!("`{}` (whole)", r.path),
                 },
-                None => format!("`{}`", range_ref_path(id)),
+                None => format!("`{}`", anchor_ref_path(id)),
             };
             out.push(DoctorFinding {
                 code: DoctorCode::DanglingRangeRef,
@@ -392,13 +392,13 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
     }
 }
 
-/// Return the parsed `Range` for a ref whose object is a blob and parses
-/// as the range record format. Returns `None` for non-blob targets (e.g.
+/// Return the parsed `Anchor` for a ref whose object is a blob and parses
+/// as the anchor record format. Returns `None` for non-blob targets (e.g.
 /// a stray ref pointing at a commit) or unparseable contents — those
 /// callers fall back to the raw ref name.
-fn read_range_safe(repo: &gix::Repository, range_id: &str) -> Option<crate::types::Range> {
+fn read_range_safe(repo: &gix::Repository, anchor_id: &str) -> Option<crate::types::Anchor> {
     let wd = crate::git::work_dir(repo).ok()?;
-    let oid_hex = crate::git::resolve_ref_oid_optional(wd, &range_ref_path(range_id))
+    let oid_hex = crate::git::resolve_ref_oid_optional(wd, &anchor_ref_path(anchor_id))
         .ok()
         .flatten()?;
     let oid = gix::ObjectId::from_hex(oid_hex.as_bytes()).ok()?;
@@ -407,7 +407,7 @@ fn read_range_safe(repo: &gix::Repository, range_id: &str) -> Option<crate::type
         return None;
     }
     let text = std::str::from_utf8(&obj.data).ok()?.to_string();
-    crate::range::parse_range(&text).ok()
+    crate::anchor::parse_anchor(&text).ok()
 }
 
 /// Slice 4: walk each staging mesh, verify every staged-add sidecar

@@ -263,10 +263,10 @@ fn doctor_flags_dangling_range_ref() -> Result<()> {
     let repo = TestRepo::seeded()?;
     install_hooks(&repo)?;
     seed(&repo, "m")?;
-    // Write a dummy range ref pointing at an existing blob so the ref is
+    // Write a dummy anchor ref pointing at an existing blob so the ref is
     // syntactically valid. Easiest: reuse the commit sha of HEAD as the value.
     let head = repo.head_sha()?;
-    repo.run_git(["update-ref", "refs/ranges/v1/dangling-test-id", &head])?;
+    repo.run_git(["update-ref", "refs/anchors/v1/dangling-test-id", &head])?;
     let out = repo.run_mesh(["doctor"])?;
     let s = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(s.contains("DanglingRangeRef"), "stdout={s}");

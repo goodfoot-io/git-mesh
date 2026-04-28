@@ -5,7 +5,7 @@
 use super::EngineState;
 use crate::git;
 use crate::types::{
-    DriftSource, MeshConfig, Range, RangeExtent, RangeLocation, RangeResolved, RangeStatus,
+    DriftSource, MeshConfig, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
 };
 use crate::{Error, Result};
 use std::path::PathBuf;
@@ -23,21 +23,21 @@ pub(crate) fn resolve_whole_file(
     repo: &gix::Repository,
     state: &mut EngineState,
     cfg: &MeshConfig,
-    range_id: &str,
-    r: Range,
-) -> Result<RangeResolved> {
-    let anchored = RangeLocation {
+    anchor_id: &str,
+    r: Anchor,
+) -> Result<AnchorResolved> {
+    let anchored = AnchorLocation {
         path: PathBuf::from(&r.path),
-        extent: RangeExtent::Whole,
+        extent: AnchorExtent::WholeFile,
         blob: oid_from_hex(&r.blob).ok(),
     };
     if !is_commit_reachable(repo, &r.anchor_sha)? {
-        return Ok(RangeResolved {
-            range_id: range_id.into(),
+        return Ok(AnchorResolved {
+            anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
             anchored,
             current: None,
-            status: RangeStatus::Orphaned,
+            status: AnchorStatus::Orphaned,
             source: None,
             layer_sources: vec![],
             acknowledged_by: None,
@@ -100,7 +100,7 @@ pub(crate) fn resolve_whole_file(
     };
 
     let _ = cfg;
-    let status: RangeStatus;
+    let status: AnchorStatus;
     let source: Option<DriftSource>;
     let layer_sources: Vec<DriftSource>;
 
@@ -122,30 +122,30 @@ pub(crate) fn resolve_whole_file(
     };
 
     let cur_blob_oid = current_blob.as_deref().and_then(|s| oid_from_hex(s).ok());
-    let current_loc = Some(RangeLocation {
+    let current_loc = Some(AnchorLocation {
         path: PathBuf::from(&current_path),
-        extent: RangeExtent::Whole,
+        extent: AnchorExtent::WholeFile,
         blob: cur_blob_oid,
     });
     match current_blob.as_deref() {
         None => {
-            status = RangeStatus::Changed;
+            status = AnchorStatus::Changed;
             source = Some(deepest);
             layer_sources = vec![deepest];
         }
         Some(cur) if cur == r.blob && moved => {
-            status = RangeStatus::Moved;
+            status = AnchorStatus::Moved;
             source = Some(deepest);
             // MOVED: single row per design requirement 4.
             layer_sources = vec![deepest];
         }
         Some(cur) if cur == r.blob => {
-            status = RangeStatus::Fresh;
+            status = AnchorStatus::Fresh;
             source = None;
             layer_sources = vec![];
         }
         Some(_) => {
-            status = RangeStatus::Changed;
+            status = AnchorStatus::Changed;
             source = Some(deepest);
             // Collect all drifting layers in I → W → H order.
             let mut ls: Vec<DriftSource> = Vec::new();
@@ -162,8 +162,8 @@ pub(crate) fn resolve_whole_file(
         }
     }
 
-    Ok(RangeResolved {
-        range_id: range_id.into(),
+    Ok(AnchorResolved {
+        anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha,
         anchored,
         current: current_loc,

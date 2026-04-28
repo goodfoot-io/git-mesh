@@ -1,58 +1,58 @@
-//! Range blob I/O (v1) — see §3.1, §4.1, §6.1.
+//! Anchor blob I/O (v1) — see §3.1, §4.1, §6.1.
 //!
-//! A Range is an immutable blob at `refs/ranges/v1/<rangeId>` with a
+//! An Anchor is an immutable blob at `refs/anchors/v1/<anchorId>` with a
 //! commit-object-style text format:
 //!
 //! ```text
-//! anchor <sha>
+//! commit <sha>
 //! created <iso-8601>
-//! range <start> <end> <blob>\t<path>
+//! extent <start> <end> <blob>\t<path>
 //! ```
 
 use crate::git::{self, work_dir};
-use crate::types::{Range, RangeExtent};
+use crate::types::{Anchor, AnchorExtent};
 use crate::{Error, Result};
 use chrono::Utc;
 use uuid::Uuid;
 
-/// Canonical ref path for a range id.
-pub fn range_ref_path(range_id: &str) -> String {
-    format!("refs/ranges/v1/{range_id}")
+/// Canonical ref path for an anchor id.
+pub fn anchor_ref_path(anchor_id: &str) -> String {
+    format!("refs/anchors/v1/{anchor_id}")
 }
 
 fn validate_path(path: &str) -> Result<()> {
     if path.is_empty() {
-        return Err(Error::Parse("range path must not be empty".into()));
+        return Err(Error::Parse("anchor path must not be empty".into()));
     }
     if let Some(bad) = path.chars().find(|c| matches!(c, '\t' | '\n' | '\0')) {
         return Err(Error::Parse(format!(
-            "range path contains unsupported control character `{}`",
+            "anchor path contains unsupported control character `{}`",
             bad.escape_debug()
         )));
     }
     Ok(())
 }
 
-/// Create a Range record (line-range), write the blob, and create
-/// `refs/ranges/v1/<uuid>`.
-pub fn create_range(
+/// Create an Anchor record (line-anchor), write the blob, and create
+/// `refs/anchors/v1/<uuid>`.
+pub fn create_anchor(
     repo: &gix::Repository,
     anchor_sha: &str,
     path: &str,
     start: u32,
     end: u32,
 ) -> Result<String> {
-    create_range_with_extent(repo, anchor_sha, path, RangeExtent::Lines { start, end })
+    create_anchor_with_extent(repo, anchor_sha, path, AnchorExtent::LineRange { start, end })
 }
 
-/// Create a Range record at the given extent (line-range or whole-file).
-pub fn create_range_with_extent(
+/// Create an Anchor record at the given extent (line-anchor or whole-file).
+pub fn create_anchor_with_extent(
     repo: &gix::Repository,
     anchor_sha: &str,
     path: &str,
-    extent: RangeExtent,
+    extent: AnchorExtent,
 ) -> Result<String> {
-    create_range_with_extent_inner(repo, anchor_sha, path, extent, true)
+    create_anchor_with_extent_inner(repo, anchor_sha, path, extent, true)
 }
 
 /// Variant used by the mesh commit pipeline (Slice 1). The pipeline has
@@ -61,27 +61,27 @@ pub fn create_range_with_extent(
 /// `filter=lfs` paths. Re-checking against the raw blob here would
 /// re-introduce the bug fixed in `mesh/commit.rs` (the LFS pointer is
 /// only ~3 lines).
-pub(crate) fn create_range_with_extent_skipping_blob_bounds(
+pub(crate) fn create_anchor_with_extent_skipping_blob_bounds(
     repo: &gix::Repository,
     anchor_sha: &str,
     path: &str,
-    extent: RangeExtent,
+    extent: AnchorExtent,
 ) -> Result<String> {
-    create_range_with_extent_inner(repo, anchor_sha, path, extent, false)
+    create_anchor_with_extent_inner(repo, anchor_sha, path, extent, false)
 }
 
-fn create_range_with_extent_inner(
+fn create_anchor_with_extent_inner(
     repo: &gix::Repository,
     anchor_sha: &str,
     path: &str,
-    extent: RangeExtent,
+    extent: AnchorExtent,
     check_blob_bounds: bool,
 ) -> Result<String> {
     validate_path(path)?;
-    if let RangeExtent::Lines { start, end } = extent
+    if let AnchorExtent::LineRange { start, end } = extent
         && (start < 1 || end < start)
     {
-        return Err(Error::InvalidRange { start, end });
+        return Err(Error::InvalidAnchor { start, end });
     }
     let _wd = work_dir(repo)?;
     if repo.rev_parse_single(anchor_sha).is_err() {
@@ -94,30 +94,30 @@ fn create_range_with_extent_inner(
     // and store the gitlink SHA via `git ls-tree` instead.
     let blob = match git::path_blob_at(repo, anchor_sha, path) {
         Ok(b) => b,
-        Err(_) if matches!(extent, RangeExtent::Whole) => {
+        Err(_) if matches!(extent, AnchorExtent::WholeFile) => {
             gitlink_sha_at(repo, anchor_sha, path).unwrap_or_default()
         }
         Err(e) => return Err(e),
     };
     if check_blob_bounds
-        && let RangeExtent::Lines { start, end } = extent
+        && let AnchorExtent::LineRange { start, end } = extent
         && !blob.is_empty()
     {
         let line_count = git::blob_line_count(repo, &blob)?;
         if end > line_count {
-            return Err(Error::InvalidRange { start, end });
+            return Err(Error::InvalidAnchor { start, end });
         }
     }
-    let range = Range {
+    let anchor = Anchor {
         anchor_sha: anchor_sha.to_string(),
         created_at: Utc::now().to_rfc3339(),
         path: path.to_string(),
         extent,
         blob,
     };
-    let blob_oid = git::write_blob_bytes(repo, serialize_range(&range).as_bytes())?;
+    let blob_oid = git::write_blob_bytes(repo, serialize_anchor(&anchor).as_bytes())?;
     let id = Uuid::new_v4().to_string();
-    git::update_ref_cas(repo, &range_ref_path(&id), &blob_oid, None)?;
+    git::update_ref_cas(repo, &anchor_ref_path(&id), &blob_oid, None)?;
     Ok(id)
 }
 
@@ -126,39 +126,39 @@ fn gitlink_sha_at(repo: &gix::Repository, commit_sha: &str, path: &str) -> Optio
     Some(oid.to_string())
 }
 
-pub fn read_range(repo: &gix::Repository, range_id: &str) -> Result<Range> {
+pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
     let wd = work_dir(repo)?;
-    let oid = crate::git::resolve_ref_oid_optional(wd, &range_ref_path(range_id))?
-        .ok_or_else(|| Error::RangeNotFound(range_id.to_string()))?;
+    let oid = crate::git::resolve_ref_oid_optional(wd, &anchor_ref_path(anchor_id))?
+        .ok_or_else(|| Error::AnchorNotFound(anchor_id.to_string()))?;
     let raw = crate::git::read_git_text(repo, &oid)?;
-    parse_range(&raw)
+    parse_anchor(&raw)
 }
 
-pub fn parse_range(text: &str) -> Result<Range> {
+pub fn parse_anchor(text: &str) -> Result<Anchor> {
     if text.is_empty() || !text.ends_with('\n') {
         return Err(Error::Parse(
-            "range blob must end with a trailing newline".into(),
+            "anchor blob must end with a trailing newline".into(),
         ));
     }
-    let mut anchor: Option<String> = None;
+    let mut commit: Option<String> = None;
     let mut created: Option<String> = None;
-    let mut range_line: Option<(u32, u32, String, String)> = None;
+    let mut extent_line: Option<(u32, u32, String, String)> = None;
 
     for (idx, line) in text.lines().enumerate() {
         if line.is_empty() {
             return Err(Error::Parse(format!(
-                "blank line in range blob (line {})",
+                "blank line in anchor blob (line {})",
                 idx + 1
             )));
         }
-        if let Some(rest) = line.strip_prefix("anchor ") {
-            if anchor.is_some() {
-                return Err(Error::Parse("duplicate `anchor` header".into()));
+        if let Some(rest) = line.strip_prefix("commit ") {
+            if commit.is_some() {
+                return Err(Error::Parse("duplicate `commit` header".into()));
             }
             if rest.is_empty() {
-                return Err(Error::Parse("empty `anchor` value".into()));
+                return Err(Error::Parse("empty `commit` value".into()));
             }
-            anchor = Some(rest.to_string());
+            commit = Some(rest.to_string());
             continue;
         }
         if let Some(rest) = line.strip_prefix("created ") {
@@ -171,37 +171,37 @@ pub fn parse_range(text: &str) -> Result<Range> {
             created = Some(rest.to_string());
             continue;
         }
-        if let Some(rest) = line.strip_prefix("range ") {
-            if range_line.is_some() {
-                return Err(Error::Parse("duplicate `range` line".into()));
+        if let Some(rest) = line.strip_prefix("extent ") {
+            if extent_line.is_some() {
+                return Err(Error::Parse("duplicate `extent` line".into()));
             }
             let (meta, path) = rest.split_once('\t').ok_or_else(|| {
                 Error::Parse(format!(
-                    "`range` line missing TAB before path (line {})",
+                    "`extent` line missing TAB before path (line {})",
                     idx + 1
                 ))
             })?;
             if path.is_empty() {
-                return Err(Error::Parse("`range` path is empty".into()));
+                return Err(Error::Parse("`extent` path is empty".into()));
             }
             let fields: Vec<&str> = meta.split(' ').collect();
-            // Whole-file form: `range whole <blob>\t<path>` (blob may be
+            // Whole-file form: `extent whole <blob>\t<path>` (blob may be
             // empty when the underlying tree entry is a gitlink with no
             // file content).
             if fields.first().copied() == Some("whole") {
                 if fields.len() != 2 {
                     return Err(Error::Parse(format!(
-                        "`range whole` requires 1 field after `whole` (line {})",
+                        "`extent whole` requires 1 field after `whole` (line {})",
                         idx + 1
                     )));
                 }
                 let blob = fields[1].to_string();
-                range_line = Some((0, 0, blob, path.to_string()));
+                extent_line = Some((0, 0, blob, path.to_string()));
                 continue;
             }
             if fields.len() != 3 {
                 return Err(Error::Parse(format!(
-                    "`range` line must have 3 fields before TAB (line {})",
+                    "`extent` line must have 3 fields before TAB (line {})",
                     idx + 1
                 )));
             }
@@ -213,29 +213,29 @@ pub fn parse_range(text: &str) -> Result<Range> {
                 .map_err(|_| Error::Parse(format!("invalid end `{}`", fields[1])))?;
             let blob = fields[2].to_string();
             if blob.is_empty() {
-                return Err(Error::Parse("`range` has empty blob".into()));
+                return Err(Error::Parse("`extent` has empty blob".into()));
             }
-            range_line = Some((start, end, blob, path.to_string()));
+            extent_line = Some((start, end, blob, path.to_string()));
             continue;
         }
         // Additive-extension tolerance: unknown `key value` lines pass.
         if line.split_once(' ').is_none_or(|(k, _)| k.is_empty()) {
             return Err(Error::Parse(format!(
-                "malformed line `{}` in range blob",
+                "malformed line `{}` in anchor blob",
                 line
             )));
         }
     }
 
-    let (start, end, blob, path) =
-        range_line.ok_or_else(|| Error::Parse("range blob missing `range` line".to_string()))?;
+    let (start, end, blob, path) = extent_line
+        .ok_or_else(|| Error::Parse("anchor blob missing `extent` line".to_string()))?;
     let extent = if start == 0 && end == 0 {
-        RangeExtent::Whole
+        AnchorExtent::WholeFile
     } else {
-        RangeExtent::Lines { start, end }
+        AnchorExtent::LineRange { start, end }
     };
-    Ok(Range {
-        anchor_sha: anchor.ok_or_else(|| Error::Parse("missing `anchor` header".into()))?,
+    Ok(Anchor {
+        anchor_sha: commit.ok_or_else(|| Error::Parse("missing `commit` header".into()))?,
         created_at: created.ok_or_else(|| Error::Parse("missing `created` header".into()))?,
         path,
         extent,
@@ -243,15 +243,15 @@ pub fn parse_range(text: &str) -> Result<Range> {
     })
 }
 
-pub fn serialize_range(range: &Range) -> String {
-    match range.extent {
-        RangeExtent::Lines { start, end } => format!(
-            "anchor {}\ncreated {}\nrange {} {} {}\t{}\n",
-            range.anchor_sha, range.created_at, start, end, range.blob, range.path
+pub fn serialize_anchor(anchor: &Anchor) -> String {
+    match anchor.extent {
+        AnchorExtent::LineRange { start, end } => format!(
+            "commit {}\ncreated {}\nextent {} {} {}\t{}\n",
+            anchor.anchor_sha, anchor.created_at, start, end, anchor.blob, anchor.path
         ),
-        RangeExtent::Whole => format!(
-            "anchor {}\ncreated {}\nrange whole {}\t{}\n",
-            range.anchor_sha, range.created_at, range.blob, range.path
+        AnchorExtent::WholeFile => format!(
+            "commit {}\ncreated {}\nextent whole {}\t{}\n",
+            anchor.anchor_sha, anchor.created_at, anchor.blob, anchor.path
         ),
     }
 }

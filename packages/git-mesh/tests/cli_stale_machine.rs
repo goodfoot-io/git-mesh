@@ -73,7 +73,7 @@ fn json_range_entries_have_lsp_shape() -> Result<()> {
     let v: Value = serde_json::from_slice(&out.stdout)?;
     let first = &v["ranges"][0];
     assert!(first["severity"].is_string() || first["severity"].is_number());
-    assert!(first["range"].is_object());
+    assert!(first["anchor"].is_object());
     assert!(first["message"].is_string());
     Ok(())
 }
@@ -102,10 +102,10 @@ fn json_range_entries_use_zero_based_lsp_range() -> Result<()> {
     let v: Value = serde_json::from_slice(&out.stdout)?;
     let first = &v["ranges"][0];
     // LSP 0-based lines: start.line = 0 (for L1), end.line = 4 (for L5).
-    assert_eq!(first["range"]["start"]["line"], 0);
-    assert_eq!(first["range"]["start"]["character"], 0);
-    assert_eq!(first["range"]["end"]["line"], 4);
-    assert_eq!(first["range"]["end"]["character"], 0);
+    assert_eq!(first["anchor"]["start"]["line"], 0);
+    assert_eq!(first["anchor"]["start"]["character"], 0);
+    assert_eq!(first["anchor"]["end"]["line"], 4);
+    assert_eq!(first["anchor"]["end"]["character"], 0);
     // Severity + code shape.
     assert_eq!(first["severity"], "error");
     assert_eq!(first["code"], "CHANGED");
@@ -172,15 +172,15 @@ fn since_filters_by_anchor_age() -> Result<()> {
     // Move HEAD forward so --since has something to exclude.
     repo.commit_file("other.txt", "x\n", "mid")?;
     let mid = repo.head_sha()?;
-    // Stage range anchored at mid, not early.
+    // Stage anchor anchored at mid, not early.
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "--at", &mid])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
     repo.mesh_stdout(["commit", "m"])?;
     drift(&repo)?;
-    // --since mid => our range is in scope; exit 1.
+    // --since mid => our anchor is in scope; exit 1.
     let inc = repo.run_mesh(["stale", "m", "--since", &mid, "--format=porcelain"])?;
     assert_eq!(inc.status.code(), Some(1));
-    // --since HEAD (now past mid) — range anchor is before HEAD, and
+    // --since HEAD (now past mid) — anchor anchor is before HEAD, and
     // --since filters to anchors in <since>..HEAD, so older anchors
     // drop out. Use early_anchor to be explicit about scope.
     let _ = early_anchor;

@@ -40,8 +40,8 @@ pub fn validate_mesh_name(name: &str) -> Result<()> {
     validate_mesh_name_shape(name)
 }
 
-/// Validate a range id (UUID, ref-legal).
-pub fn validate_range_id(id: &str) -> Result<()> {
+/// Validate a anchor id (UUID, ref-legal).
+pub fn validate_anchor_id(id: &str) -> Result<()> {
     validate_ref_component(id)
 }
 

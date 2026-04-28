@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 /// A 1-based, inclusive `[start, end]` line interval. Matches the convention
-/// used by [`crate::advice::candidates::MeshRange`] (`start..=end`) and by
+/// used by [`crate::advice::candidates::MeshAnchor`] (`start..=end`) and by
 /// [`crate::advice::session::state::TouchInterval`] so write-side hunks and
 /// read-side intervals can be compared directly without any rebasing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub struct LineRange {
 /// touched on the *new* side. `None` means the producer did not compute hunks
 /// and the caller must treat the entry as whole-file (no false negatives).
 /// `Some(vec![])` is reserved for "computed, no content hunks" (e.g. a
-/// mode-only change) — for the line-range filter callers treat it the same as
+/// mode-only change) — for the line-anchor filter callers treat it the same as
 /// `None` (i.e. fall back to firing).
 #[derive(Debug, Clone)]
 pub enum DiffEntry {

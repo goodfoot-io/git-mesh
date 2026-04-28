@@ -77,7 +77,7 @@ pub fn fingerprint(c: &Candidate) -> String {
 /// 2. for each participant in order: path, start, end, whole-flag (`"1"`/`"0"`)
 ///
 /// `score`, `band`, `viability`, and `label` are intentionally excluded —
-/// the same set of (path, range) participants must dedup across runs even
+/// the same set of (path, anchor) participants must dedup across runs even
 /// when scoring drifts. Drift-detector suggestions (`meta.is_some()`) are
 /// fingerprinted via `fingerprint(&Candidate)` upstream and never reach
 /// this helper.
@@ -171,7 +171,7 @@ mod tests {
     }
 
     /// Changing trigger extents must change the fingerprint so a later
-    /// whole-file edit is not suppressed by an earlier range read.
+    /// whole-file edit is not suppressed by an earlier anchor read.
     #[test]
     fn different_trigger_range_yields_different_fingerprint() {
         let mut a = make_candidate();

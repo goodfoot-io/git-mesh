@@ -107,7 +107,7 @@ fn snapshot_resets_prior_session_state() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// cli: read <path> validates path/range, appends to reads.jsonl, exits 0 silently
+// cli: read <path> validates path/anchor, appends to reads.jsonl, exits 0 silently
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -152,7 +152,7 @@ fn read_before_snapshot_nonzero_with_message() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// cli: read invalid path/range → non-zero, no append
+// cli: read invalid path/anchor → non-zero, no append
 // ---------------------------------------------------------------------------
 
 #[test]

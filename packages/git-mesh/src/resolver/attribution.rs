@@ -4,7 +4,7 @@
 
 use crate::Result;
 use crate::git;
-use crate::types::{DriftSource, RangeResolved};
+use crate::types::{DriftSource, AnchorResolved};
 
 /// Blame the commit in `anchor..HEAD` that produced `current.blob`, when
 /// the drift `source` is HEAD (plan §B2). For non-HEAD drift sources or
@@ -17,7 +17,7 @@ use crate::types::{DriftSource, RangeResolved};
 /// `path` — so we walk newest-first and stop at the first commit whose
 /// tree-vs-first-parent diff mentions the path. This matches `git log`'s
 /// default path-filter semantics (no `--follow`) used at the call site.
-pub fn culprit_commit(repo: &gix::Repository, resolved: &RangeResolved) -> Result<Option<String>> {
+pub fn culprit_commit(repo: &gix::Repository, resolved: &AnchorResolved) -> Result<Option<String>> {
     if resolved.source != Some(DriftSource::Head) {
         return Ok(None);
     }

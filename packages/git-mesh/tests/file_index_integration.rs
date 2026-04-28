@@ -4,7 +4,7 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::{
-    append_add, commit_mesh, ls_all, ls_by_path, ls_by_path_range, read_index, rebuild_index,
+    append_add, commit_mesh, ls_all, ls_by_path, ls_by_path_line_range, read_index, rebuild_index,
     set_why,
 };
 use support::TestRepo;
@@ -74,9 +74,9 @@ fn ls_by_path_range_overlap_inclusive() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_two_meshes(&repo)?;
     // file1.txt has ranges 1..5 and 8..10.
-    let r = ls_by_path_range(&repo.gix_repo()?, "file1.txt", 4, 9)?;
+    let r = ls_by_path_line_range(&repo.gix_repo()?, "file1.txt", 4, 9)?;
     assert_eq!(r.len(), 2, "4..9 overlaps both 1..5 and 8..10");
-    let r2 = ls_by_path_range(&repo.gix_repo()?, "file1.txt", 6, 7)?;
+    let r2 = ls_by_path_line_range(&repo.gix_repo()?, "file1.txt", 6, 7)?;
     assert!(r2.is_empty(), "6..7 overlaps neither");
     Ok(())
 }
@@ -86,8 +86,8 @@ fn ls_by_path_range_overlap_inclusive() -> Result<()> {
 fn ls_by_path_range_boundary_is_inclusive() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_two_meshes(&repo)?;
-    let r = ls_by_path_range(&repo.gix_repo()?, "file1.txt", 5, 5)?;
-    assert_eq!(r.len(), 1, "end==start of existing range counts");
+    let r = ls_by_path_line_range(&repo.gix_repo()?, "file1.txt", 5, 5)?;
+    assert_eq!(r.len(), 1, "end==start of existing anchor counts");
     Ok(())
 }
 

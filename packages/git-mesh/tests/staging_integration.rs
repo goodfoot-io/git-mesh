@@ -60,7 +60,7 @@ fn append_add_rejects_end_past_eof() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
     let err = append_add(&gix, "m", "file1.txt", 1, 999, None).unwrap_err();
-    assert!(matches!(err, git_mesh::Error::InvalidRange { .. }));
+    assert!(matches!(err, git_mesh::Error::InvalidAnchor { .. }));
     Ok(())
 }
 

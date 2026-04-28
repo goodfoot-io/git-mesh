@@ -3,7 +3,7 @@
 //! Slice 8 of the layered-stale rewrite (see
 //! `docs/stale-layers-plan.md` §"Renderers"). Renderers consume
 //! `Finding` / `PendingFinding` end-to-end via a thin adapter that maps
-//! the engine's `RangeResolved` + `MeshResolved.pending` into the
+//! the engine's `AnchorResolved` + `MeshResolved.pending` into the
 //! plan's "Key types" shape.
 
 #![allow(dead_code)]
@@ -13,7 +13,7 @@ use crate::resolver::{build_pending_findings, resolve_mesh, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
     DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
-    RangeExtent, RangeLocation, RangeStatus, StagedOpRef, UnavailableReason,
+    AnchorExtent, AnchorLocation, AnchorStatus, StagedOpRef, UnavailableReason,
 };
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -55,7 +55,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                 vec![MeshResolved {
                     name: n.clone(),
                     message: String::new(),
-                    ranges: Vec::new(),
+                    anchors: Vec::new(),
                     pending,
                 }]
             }
@@ -73,7 +73,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                         meshes.push(MeshResolved {
                             name,
                             message: String::new(),
-                            ranges: Vec::new(),
+                            anchors: Vec::new(),
                             pending,
                         });
                     }
@@ -87,7 +87,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // (`Finding` / `PendingFinding`). The adapter is a pure data shape
     // transform; semantics live in the engine.
     //
-    // Per-layer expansion: each non-Fresh range emits one `Finding` per
+    // Per-layer expansion: each non-Fresh anchor emits one `Finding` per
     // drifting layer in `layer_sources` (shallow-to-deep: I → W → H).
     // Terminal statuses (Orphaned, MergeConflict, Submodule,
     // ContentUnavailable) have an empty `layer_sources` and emit exactly
@@ -95,9 +95,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     let findings: Vec<Finding> = meshes
         .iter()
         .flat_map(|m| {
-            m.ranges
+            m.anchors
                 .iter()
-                .filter(|r| r.status != RangeStatus::Fresh)
+                .filter(|r| r.status != AnchorStatus::Fresh)
                 .flat_map(|r| {
                     let ack = r.acknowledged_by.clone();
                     if r.layer_sources.is_empty() {
@@ -105,7 +105,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                         // emit one row with the stored source.
                         vec![Finding {
                             mesh: m.name.clone(),
-                            range_id: r.range_id.clone(),
+                            anchor_id: r.anchor_id.clone(),
                             status: r.status.clone(),
                             source: r.source,
                             anchored: r.anchored.clone(),
@@ -119,7 +119,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                             .iter()
                             .map(|&src| Finding {
                                 mesh: m.name.clone(),
-                                range_id: r.range_id.clone(),
+                                anchor_id: r.anchor_id.clone(),
                                 status: r.status.clone(),
                                 source: Some(src),
                                 anchored: r.anchored.clone(),
@@ -149,7 +149,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             if f.acknowledged_by.is_some() {
                 return false;
             }
-            if args.ignore_unavailable && matches!(f.status, RangeStatus::ContentUnavailable(_)) {
+            if args.ignore_unavailable && matches!(f.status, AnchorStatus::ContentUnavailable(_)) {
                 return false;
             }
             true
@@ -217,22 +217,22 @@ fn staging_only_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
 // Shared formatting helpers.
 // ---------------------------------------------------------------------------
 
-fn extent_lines(extent: RangeExtent) -> (u32, u32) {
+fn extent_lines(extent: AnchorExtent) -> (u32, u32) {
     match extent {
-        RangeExtent::Lines { start, end } => (start, end),
-        RangeExtent::Whole => (0, 0),
+        AnchorExtent::LineRange { start, end } => (start, end),
+        AnchorExtent::WholeFile => (0, 0),
     }
 }
 
-fn status_str(s: &RangeStatus) -> &'static str {
+fn status_str(s: &AnchorStatus) -> &'static str {
     match s {
-        RangeStatus::Fresh => "FRESH",
-        RangeStatus::Moved => "MOVED",
-        RangeStatus::Changed => "CHANGED",
-        RangeStatus::Orphaned => "ORPHANED",
-        RangeStatus::MergeConflict => "MERGE_CONFLICT",
-        RangeStatus::Submodule => "SUBMODULE",
-        RangeStatus::ContentUnavailable(reason) => match reason {
+        AnchorStatus::Fresh => "FRESH",
+        AnchorStatus::Moved => "MOVED",
+        AnchorStatus::Changed => "CHANGED",
+        AnchorStatus::Orphaned => "ORPHANED",
+        AnchorStatus::MergeConflict => "MERGE_CONFLICT",
+        AnchorStatus::Submodule => "SUBMODULE",
+        AnchorStatus::ContentUnavailable(reason) => match reason {
             UnavailableReason::LfsNotFetched => "LFS_NOT_FETCHED",
             UnavailableReason::LfsNotInstalled => "LFS_NOT_INSTALLED",
             UnavailableReason::PromisorMissing => "PROMISOR_MISSING",
@@ -254,20 +254,20 @@ fn source_marker(src: Option<DriftSource>) -> &'static str {
 
 /// Human-facing `(path, extent)` render. Whole-file pins read
 /// `hero.png  (whole)`; line ranges read `src/foo.rs#L1-L10`.
-fn render_path_extent_human(path: &std::path::Path, extent: RangeExtent) -> String {
+fn render_path_extent_human(path: &std::path::Path, extent: AnchorExtent) -> String {
     match extent {
-        RangeExtent::Whole => format!("{}  (whole)", path.display()),
-        RangeExtent::Lines { start, end } => {
+        AnchorExtent::WholeFile => format!("{}  (whole)", path.display()),
+        AnchorExtent::LineRange { start, end } => {
             format!("{}#L{}-L{}", path.display(), start, end)
         }
     }
 }
 
-fn render_pending_range_id(range_id: &str) -> String {
-    if range_id.is_empty() {
+fn render_pending_range_id(anchor_id: &str) -> String {
+    if anchor_id.is_empty() {
         String::new()
     } else {
-        format!(" ({range_id})")
+        format!(" ({anchor_id})")
     }
 }
 
@@ -291,19 +291,19 @@ fn render_human(
     options: HumanRenderOptions,
 ) -> Result<()> {
     for m in meshes {
-        // Include every tracked range — Fresh ones synthesized as
+        // Include every tracked anchor — Fresh ones synthesized as
         // `Finding`s so default/oneline/stat/patch all list the full
-        // mesh. Order follows the mesh's stored range order, with
-        // per-layer expansions inlined for non-Fresh ranges.
+        // mesh. Order follows the mesh's stored anchor order, with
+        // per-layer expansions inlined for non-Fresh anchors.
         let mesh_findings_owned: Vec<Finding> = m
-            .ranges
+            .anchors
             .iter()
             .flat_map(|r| {
-                if r.status == RangeStatus::Fresh {
+                if r.status == AnchorStatus::Fresh {
                     vec![Finding {
                         mesh: m.name.clone(),
-                        range_id: r.range_id.clone(),
-                        status: RangeStatus::Fresh,
+                        anchor_id: r.anchor_id.clone(),
+                        status: AnchorStatus::Fresh,
                         source: None,
                         anchored: r.anchored.clone(),
                         current: r.current.clone(),
@@ -313,7 +313,7 @@ fn render_human(
                 } else {
                     findings
                         .iter()
-                        .filter(|f| f.mesh == m.name && f.range_id == r.range_id)
+                        .filter(|f| f.mesh == m.name && f.anchor_id == r.anchor_id)
                         .cloned()
                         .collect()
                 }
@@ -336,10 +336,10 @@ fn render_human(
             continue;
         }
 
-        let mesh_total = m.ranges.len();
+        let mesh_total = m.anchors.len();
         let mesh_stale = mesh_findings
             .iter()
-            .filter(|f| f.status != RangeStatus::Fresh)
+            .filter(|f| f.status != AnchorStatus::Fresh)
             .count();
         println!("mesh {}", m.name);
         println!();
@@ -396,7 +396,7 @@ fn render_human(
             for p in &pending_drift_section {
                 match p {
                     PendingFinding::Add {
-                        range_id,
+                        anchor_id,
                         op,
                         drift,
                         ..
@@ -405,12 +405,12 @@ fn render_human(
                         println!(
                             "  ADD    {}{}{}",
                             render_path_extent_human(std::path::Path::new(&op.path), op.extent),
-                            render_pending_range_id(range_id),
+                            render_pending_range_id(anchor_id),
                             drift_note,
                         );
                     }
                     PendingFinding::Remove {
-                        range_id,
+                        anchor_id,
                         op,
                         drift,
                         ..
@@ -419,7 +419,7 @@ fn render_human(
                         println!(
                             "  REMOVE {}{}{}",
                             render_path_extent_human(std::path::Path::new(&op.path), op.extent),
-                            render_pending_range_id(range_id),
+                            render_pending_range_id(anchor_id),
                             drift_note,
                         );
                     }
@@ -499,7 +499,7 @@ fn finding_text_pair(repo: &gix::Repository, finding: &Finding) -> (String, Stri
     (old, new)
 }
 
-fn read_location_text(repo: &gix::Repository, location: &RangeLocation) -> String {
+fn read_location_text(repo: &gix::Repository, location: &AnchorLocation) -> String {
     let bytes = if let Some(blob) = location.blob {
         read_blob_bytes(repo, blob).unwrap_or_default()
     } else {
@@ -510,8 +510,8 @@ fn read_location_text(repo: &gix::Repository, location: &RangeLocation) -> Strin
     };
     let text = String::from_utf8_lossy(&bytes);
     match location.extent {
-        RangeExtent::Whole => text.into_owned(),
-        RangeExtent::Lines { start, end } => slice_lines(&text, start, end),
+        AnchorExtent::WholeFile => text.into_owned(),
+        AnchorExtent::LineRange { start, end } => slice_lines(&text, start, end),
     }
 }
 
@@ -573,8 +573,8 @@ fn render_porcelain(findings: &[Finding], show_src: bool) {
         // Whole-file pins emit `(whole)\t-` in place of the two line
         // columns, keeping the column count stable for parsers.
         let (start_col, end_col) = match f.anchored.extent {
-            RangeExtent::Whole => ("(whole)".to_string(), "-".to_string()),
-            RangeExtent::Lines { start, end } => (start.to_string(), end.to_string()),
+            AnchorExtent::WholeFile => ("(whole)".to_string(), "-".to_string()),
+            AnchorExtent::LineRange { start, end } => (start.to_string(), end.to_string()),
         };
         if show_src {
             let mut src = source_marker(f.source).to_string();
@@ -622,7 +622,7 @@ fn render_json(
     Ok(())
 }
 
-fn location_json(loc: &RangeLocation) -> Value {
+fn location_json(loc: &AnchorLocation) -> Value {
     json!({
         "path": loc.path.display().to_string(),
         "extent": extent_json(loc.extent),
@@ -630,10 +630,10 @@ fn location_json(loc: &RangeLocation) -> Value {
     })
 }
 
-fn extent_json(e: RangeExtent) -> Value {
+fn extent_json(e: AnchorExtent) -> Value {
     match e {
-        RangeExtent::Whole => json!({ "kind": "whole" }),
-        RangeExtent::Lines { start, end } => json!({
+        AnchorExtent::WholeFile => json!({ "kind": "whole" }),
+        AnchorExtent::LineRange { start, end } => json!({
             "kind": "lines",
             "start": start,
             "end": end,
@@ -641,9 +641,9 @@ fn extent_json(e: RangeExtent) -> Value {
     }
 }
 
-fn status_json(s: &RangeStatus) -> Value {
+fn status_json(s: &AnchorStatus) -> Value {
     match s {
-        RangeStatus::ContentUnavailable(reason) => json!({
+        AnchorStatus::ContentUnavailable(reason) => json!({
             "code": "CONTENT_UNAVAILABLE",
             "reason": status_str(s),
             "detail": match reason {
@@ -721,25 +721,25 @@ fn pending_json(p: &PendingFinding) -> Value {
     match p {
         PendingFinding::Add {
             mesh,
-            range_id,
+            anchor_id,
             op,
             drift,
         } => json!({
             "kind": "add",
             "mesh": mesh,
-            "range_id": range_id,
+            "anchor_id": anchor_id,
             "op": staged_add_json(op),
             "drift": drift_json(drift.as_ref()),
         }),
         PendingFinding::Remove {
             mesh,
-            range_id,
+            anchor_id,
             op,
             drift,
         } => json!({
             "kind": "remove",
             "mesh": mesh,
-            "range_id": range_id,
+            "anchor_id": anchor_id,
             "op": staged_remove_json(op),
             "drift": drift_json(drift.as_ref()),
         }),
@@ -789,7 +789,7 @@ fn render_junit(findings: &[Finding]) {
 fn render_github(findings: &[Finding]) {
     for f in findings {
         let level = match f.status {
-            RangeStatus::Moved => "warning",
+            AnchorStatus::Moved => "warning",
             _ => "error",
         };
         let src = source_marker(f.source);
@@ -800,8 +800,8 @@ fn render_github(findings: &[Finding]) {
         };
         // Whole-file pins omit `,line=N`; line ranges emit the start line.
         let loc = match f.anchored.extent {
-            RangeExtent::Whole => format!("file={}", f.anchored.path.display()),
-            RangeExtent::Lines { start, .. } => {
+            AnchorExtent::WholeFile => format!("file={}", f.anchored.path.display()),
+            AnchorExtent::LineRange { start, .. } => {
                 format!("file={},line={}", f.anchored.path.display(), start)
             }
         };
