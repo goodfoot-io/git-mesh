@@ -1645,10 +1645,403 @@ fn run_advice_milestone(repo: &gix::Repository, session_id: String) -> Result<i3
 }
 
 /// Flush the session and emit a final reconciliation sweep for any
-/// touched-and-stale meshes not yet announced. Phase 3 will implement the
-/// structured-English spec rules; for now this is a stub.
-fn run_advice_stop(_repo: &gix::Repository, _session_id: String) -> Result<i32> {
-    bail!("not implemented")
+/// touched-and-stale meshes not yet announced, followed by a creation sweep
+/// for high-confidence related-anchor suggestions.
+///
+/// Internally performs the same EDIT+CREATE flush as `milestone` (with the
+/// same dedup rules) before the stop-specific Block A and Block B sweeps.
+/// All four passes share a single store session so their seen/candidate sets
+/// compose correctly without creating duplicate JSONL entries.
+fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
+    use crate::advice::session::SessionStore;
+    use crate::advice::structured::{
+        Action, BasicOutput, Status, creation_instructions, edit_overlaps, format_anchor_resolved,
+        mesh_is_stale, reconciliation_instructions,
+    };
+    use crate::advice::workspace_tree::{self, DiffEntry};
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let store = SessionStore::open(wd, &gd, &session_id)?;
+
+    // Require baseline.state — fail closed.
+    if !store.dir().join("baseline.state").exists() {
+        bail!(
+            "no baseline for session `{session_id}`; run snapshot first \
+             (`git mesh advice {session_id} snapshot`)"
+        );
+    }
+    let baseline = store.read_baseline()?;
+
+    // Step 3: capture current workspace tree for session_delta.
+    let cur_uuid = uuid::Uuid::new_v4();
+    let current_objects = store.dir().join(format!("current.objects-{cur_uuid}"));
+    std::fs::create_dir_all(&current_objects)
+        .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", current_objects.display()))?;
+
+    struct StopDirGuard(std::path::PathBuf);
+    impl Drop for StopDirGuard {
+        fn drop(&mut self) {
+            if self.0.exists() {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    let _current_objects_guard = StopDirGuard(current_objects.clone());
+    let current = workspace_tree::capture(repo, &current_objects)?;
+
+    // Step 4: diff_trees(baseline → current) for FILES_MODIFIED_DURING_SESSION.
+    let baseline_objects = store.baseline_objects_dir();
+    let session_delta = workspace_tree::diff_trees(
+        repo,
+        &baseline.tree_sha,
+        &current.tree_sha,
+        &baseline_objects,
+        &current_objects,
+    )?;
+
+    // Step 4b: last-flush state and incr_delta for the milestone-equivalent pass.
+    let last_flush_state_path = store.dir().join("last-flush.state");
+    let last_flush_objects_path = store.last_flush_objects_dir();
+    let (last_flush_state, last_flush_objects_for_diff) = if last_flush_state_path.exists() {
+        let st = store.read_last_flush()?;
+        let consistent = last_flush_objects_path.exists()
+            && tree_resolves_in(repo, &st.tree_sha, &last_flush_objects_path);
+        if consistent {
+            (st, last_flush_objects_path.clone())
+        } else {
+            (baseline.clone(), baseline_objects.clone())
+        }
+    } else {
+        (baseline.clone(), baseline_objects.clone())
+    };
+    let last_flush_objects = last_flush_objects_path;
+    let incr_delta = workspace_tree::diff_trees(
+        repo,
+        &last_flush_state.tree_sha,
+        &current.tree_sha,
+        &last_flush_objects_for_diff,
+        &current_objects,
+    )?;
+
+    let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
+
+    // Step 5: load mesh state.
+    let meshes = crate::resolver::stale_meshes(repo, default_engine_options()).unwrap_or_default();
+
+    // Step 6: load per-session dedup sets.
+    let meshes_seen = store.meshes_seen_set()?;
+    let mesh_candidates = store.mesh_candidates_set()?;
+
+    // Step 7: load SessionFlags.
+    let mut flags = store.read_flags()?;
+
+    let mut output = String::new();
+    let mut new_meshes_seen: Vec<String> = Vec::new();
+    let mut new_mesh_candidates: Vec<String> = Vec::new();
+
+    // ── Milestone-equivalent flush pass ──────────────────────────────────────
+    // Same EDIT rule as `milestone`, but running inside stop's single store
+    // session so the seen/candidate sets compose without creating JSONL dupes.
+    // Unlike the standalone `milestone`, we also skip meshes already in
+    // mesh_candidates (the session is ending; re-announcing a known candidate
+    // adds no value and creates duplicate JSONL entries).
+    for entry in &incr_delta {
+        let path = match entry {
+            DiffEntry::Modified { path, .. } => path.clone(),
+            DiffEntry::ModeChange { path, .. } => path.clone(),
+            DiffEntry::Renamed { to, .. } => to.clone(),
+            DiffEntry::Added { .. } => continue,
+            DiffEntry::Deleted { .. } => continue,
+        };
+        if advice_path_is_internal(&path, &internal_path_prefixes) {
+            continue;
+        }
+        let action = Action::WholeFile { path };
+
+        for mesh in &meshes {
+            let already_seen =
+                meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name);
+            let already_candidate =
+                mesh_candidates.contains(&mesh.name) || new_mesh_candidates.contains(&mesh.name);
+            // Skip: already announced and already a candidate.
+            if already_seen && already_candidate {
+                continue;
+            }
+            // Skip: not stale and already announced (same as milestone EDIT rule 1).
+            if !mesh_is_stale(mesh) && already_seen {
+                continue;
+            }
+            if !mesh.anchors.iter().any(|a| edit_overlaps(&action, a)) {
+                continue;
+            }
+
+            let active_anchor_resolved = mesh.anchors.iter().find(|a| edit_overlaps(&action, a));
+            let Some(active) = active_anchor_resolved else {
+                continue;
+            };
+
+            let active_anchor_str = format_anchor_resolved(active);
+            let status_if_not_fresh = if matches!(active.status, crate::types::AnchorStatus::Fresh)
+            {
+                None
+            } else {
+                Some(Status::from_anchor_status(&active.status))
+            };
+            let non_active_anchors: Vec<String> = mesh
+                .anchors
+                .iter()
+                .filter(|a| a.anchor_id != active.anchor_id)
+                .map(format_anchor_resolved)
+                .collect();
+            let block = BasicOutput {
+                active_anchor: active_anchor_str,
+                mesh_name: mesh.name.clone(),
+                why: mesh.message.clone(),
+                status_if_not_fresh,
+                non_active_anchors,
+            };
+            output.push_str(&block.to_string());
+
+            if !already_seen {
+                new_meshes_seen.push(mesh.name.clone());
+            }
+            if !already_candidate {
+                new_mesh_candidates.push(mesh.name.clone());
+            }
+            if !flags.has_printed_reconciliation_instructions {
+                output.push_str(&reconciliation_instructions(mesh));
+                flags.has_printed_reconciliation_instructions = true;
+            }
+        }
+    }
+
+    // Advance last-flush state (same as milestone Step 5).
+    if last_flush_objects.exists() {
+        std::fs::remove_dir_all(&last_flush_objects)
+            .map_err(|e| anyhow::anyhow!("remove `{}`: {e}", last_flush_objects.display()))?;
+    }
+    // current_objects is still alive here (guard not yet dropped).
+    std::fs::rename(&current_objects, &last_flush_objects).map_err(|e| {
+        anyhow::anyhow!(
+            "rename `{}` -> `{}`: {e}",
+            current_objects.display(),
+            last_flush_objects.display()
+        )
+    })?;
+    // Disarm the guard since rename succeeded.
+    std::mem::forget(_current_objects_guard);
+
+    let new_cursor = store.reads_byte_len()?;
+    let new_last_flush = crate::advice::session::state::BaselineState {
+        schema_version: crate::advice::session::SCHEMA_VERSION,
+        tree_sha: current.tree_sha.clone(),
+        index_sha: baseline.index_sha.clone(),
+        captured_at: chrono::Utc::now().to_rfc3339(),
+        read_cursor: new_cursor,
+    };
+    store.write_last_flush(&new_last_flush)?;
+
+    // Build and persist touch intervals from incr_delta.
+    let touch_ts = chrono::Utc::now().to_rfc3339();
+    let touch_intervals = build_touch_intervals(
+        incr_delta.as_slice(),
+        &[],
+        &touch_ts,
+        &internal_path_prefixes,
+    );
+    for interval in &touch_intervals {
+        store.append_touch(interval)?;
+    }
+
+    // ── Block A — touched-and-stale reconciliation sweep ─────────────────────
+    // Collect meshes that overlap FILES_MODIFIED_DURING_SESSION, are not already
+    // in meshes-seen or mesh-candidates, and are stale.
+    let mut reconcile_meshes: Vec<&crate::types::MeshResolved> = Vec::new();
+
+    for entry in &session_delta {
+        let path = match entry {
+            DiffEntry::Modified { path, .. } => path.clone(),
+            DiffEntry::ModeChange { path, .. } => path.clone(),
+            DiffEntry::Renamed { to, .. } => to.clone(),
+            DiffEntry::Added { .. } => continue,
+            DiffEntry::Deleted { .. } => continue,
+        };
+        if advice_path_is_internal(&path, &internal_path_prefixes) {
+            continue;
+        }
+        let action = Action::WholeFile { path };
+
+        for mesh in &meshes {
+            // Already collected this mesh in this sweep.
+            if reconcile_meshes.iter().any(|m| m.name == mesh.name) {
+                continue;
+            }
+            // Already in meshes-seen.
+            if meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name) {
+                continue;
+            }
+            // Already in mesh-candidates.
+            if mesh_candidates.contains(&mesh.name) || new_mesh_candidates.contains(&mesh.name) {
+                continue;
+            }
+            // Must overlap the touched file.
+            if !mesh.anchors.iter().any(|a| edit_overlaps(&action, a)) {
+                continue;
+            }
+            // Must be stale.
+            if !mesh_is_stale(mesh) {
+                continue;
+            }
+            reconcile_meshes.push(mesh);
+        }
+    }
+
+    if !reconcile_meshes.is_empty() {
+        output.push_str("# Reconcile the following meshes:\n");
+        for mesh in &reconcile_meshes {
+            // Emit BasicOutput for the first stale anchor as the active anchor.
+            let active_anchor_resolved = mesh
+                .anchors
+                .iter()
+                .find(|a| !matches!(a.status, crate::types::AnchorStatus::Fresh))
+                .or_else(|| mesh.anchors.first());
+            if let Some(active) = active_anchor_resolved {
+                let active_anchor_str = format_anchor_resolved(active);
+                let status_if_not_fresh =
+                    if matches!(active.status, crate::types::AnchorStatus::Fresh) {
+                        None
+                    } else {
+                        Some(Status::from_anchor_status(&active.status))
+                    };
+                let non_active_anchors: Vec<String> = mesh
+                    .anchors
+                    .iter()
+                    .filter(|a| a.anchor_id != active.anchor_id)
+                    .map(format_anchor_resolved)
+                    .collect();
+                let block = BasicOutput {
+                    active_anchor: active_anchor_str,
+                    mesh_name: mesh.name.clone(),
+                    why: mesh.message.clone(),
+                    status_if_not_fresh,
+                    non_active_anchors,
+                };
+                output.push_str(&block.to_string());
+            }
+
+            new_meshes_seen.push(mesh.name.clone());
+            new_mesh_candidates.push(mesh.name.clone());
+        }
+
+        // Reconciliation instructions: at most once per session.
+        if !flags.has_printed_reconciliation_instructions
+            && let Some(first) = reconcile_meshes.first()
+        {
+            output.push_str(&reconciliation_instructions(first));
+            flags.has_printed_reconciliation_instructions = true;
+        }
+    }
+
+    // ── Block B — related-anchors creation sweep ─────────────────────────────
+    {
+        use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
+
+        let advice_dir = match std::env::var("GIT_MESH_ADVICE_DIR") {
+            Ok(s) if !s.is_empty() => std::path::PathBuf::from(s),
+            _ => store
+                .dir()
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
+        };
+        let sessions = if advice_dir.as_os_str().is_empty() {
+            Vec::new()
+        } else {
+            load_all_sessions(&advice_dir).unwrap_or_default()
+        };
+
+        if !sessions.is_empty() {
+            let cfg = SuggestConfig::from_env();
+            let suggestions = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg);
+            let advice_seen = store.advice_seen_set()?;
+
+            let mut new_fps: Vec<String> = Vec::new();
+            let mut anchor_lines: Vec<String> = Vec::new();
+
+            for sug in &suggestions {
+                use crate::advice::suggestion::ConfidenceBand;
+                if !matches!(sug.band, ConfidenceBand::High | ConfidenceBand::HighPlus) {
+                    continue;
+                }
+                let fp = crate::advice::fingerprint::fingerprint_suggestion(sug);
+                // Always append to advice-seen (flip suggested → true) before any early return.
+                if advice_seen.contains(&fp) || new_fps.contains(&fp) {
+                    continue;
+                }
+                new_fps.push(fp);
+
+                for p in &sug.participants {
+                    let anchor = if p.whole {
+                        p.path.to_string_lossy().into_owned()
+                    } else {
+                        format!("{}#L{}-L{}", p.path.to_string_lossy(), p.start, p.end)
+                    };
+                    anchor_lines.push(anchor);
+                }
+            }
+
+            if !new_fps.is_empty() {
+                store.append_advice_seen(&new_fps)?;
+
+                output.push_str(
+                    "# Use `git mesh` to document implicit semantic dependencies. Potential candidates:\n",
+                );
+                for line in &anchor_lines {
+                    output.push_str(&format!("# - {line}\n"));
+                }
+
+                if !flags.has_printed_creation_instructions {
+                    let creation_text = creation_instructions(&[]);
+                    output.push_str(&creation_text);
+                    flags.has_printed_creation_instructions = true;
+                }
+            }
+        }
+    }
+
+    // ── Write output ──────────────────────────────────────────────────────────
+    use std::io::Write;
+    let stdout_result = if output.is_empty() {
+        Ok(())
+    } else {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        handle
+            .write_all(output.as_bytes())
+            .and_then(|()| handle.flush())
+    };
+    match stdout_result {
+        Ok(()) => {}
+        Err(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context("write advice to stdout"));
+        }
+    }
+
+    // Persist seen sets and flags only after successful output.
+    if !new_meshes_seen.is_empty() {
+        store.append_meshes_seen(&new_meshes_seen)?;
+    }
+    if !new_mesh_candidates.is_empty() {
+        store.append_mesh_candidates(&new_mesh_candidates)?;
+    }
+
+    // Step 8: persist SessionFlags.
+    store.write_flags(&flags)?;
+
+    Ok(0)
 }
 
 /// Reject session ids that would silently collide on disk or escape the

@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 
-use super::{run_advice_milestone, run_advice_read, run_advice_snapshot};
+use super::{run_advice_milestone, run_advice_read, run_advice_snapshot, run_advice_stop};
 
 // ---------------------------------------------------------------------------
 // Shared fixture helper used by the Phase 3 tests below.
@@ -278,12 +278,41 @@ fn creation_instructions_print_at_most_once_per_session() -> Result<()> {
 /// `stop` emits a combined "Reconcile the following meshes:" block for all
 /// touched-and-stale meshes that have not yet been announced this session.
 #[test]
-#[ignore] // Phase 3
 fn stop_emits_combined_reconcile_block_for_touched_stale_meshes() -> Result<()> {
-    // TODO Phase 3: Repo with mesh m1 (file1.txt). Snapshot. Edit file1.txt
-    // to make anchor CHANGED. Do NOT run milestone. Run stop. Assert stdout
-    // contains a reconciliation block for m1 (it was touched and stale but
-    // never announced).
+    let repo = FixtureRepo::new()?;
+    // Whole-file anchor so Action::WholeFile from session_delta matches.
+    repo.commit_mesh_whole_file("wf-stop", "stop sweep mesh")?;
+    let s = FixtureRepo::sid("stop-reconcile");
+
+    let gix = repo.gix_repo()?;
+    run_advice_snapshot(&gix, s.clone())?;
+
+    // Edit file1.txt to make the anchor stale (CHANGED) but do NOT run milestone.
+    std::fs::write(
+        repo.path().join("file1.txt"),
+        "changed-content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    let gix2 = repo.gix_repo()?;
+
+    // Capture stdout: run stop and verify Block A fires.
+    let sdir = repo.session_dir(&s);
+    run_advice_stop(&gix2, s.clone())?;
+
+    // mesh-candidates must contain wf-stop (Block A appended it).
+    let candidates = repo.read_jsonl_strings(&sdir, "mesh-candidates.jsonl");
+    assert!(
+        candidates.contains(&"wf-stop".to_string()),
+        "wf-stop must appear in mesh-candidates after stop reconcile sweep, got: {candidates:?}"
+    );
+
+    // meshes-seen must contain wf-stop.
+    let seen = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    assert!(
+        seen.contains(&"wf-stop".to_string()),
+        "wf-stop must appear in meshes-seen after stop reconcile sweep, got: {seen:?}"
+    );
+
     Ok(())
 }
 
@@ -435,11 +464,54 @@ fn bash_driven_edit_observed_by_milestone_via_snapshot_diff() -> Result<()> {
 /// Meshes that were announced during the session (present in
 /// `meshes-seen.jsonl`) must NOT appear in `stop`'s reconciliation sweep.
 #[test]
-#[ignore] // Phase 3
 fn stop_does_not_re_announce_already_reconciled_meshes() -> Result<()> {
-    // TODO Phase 3: Repo with mesh m1 (file1.txt). Snapshot. Edit file1.txt
-    // (makes anchor CHANGED). Run milestone → announces m1, appends to
-    // meshes-seen.jsonl. Run stop. Assert stop's stdout does NOT contain
-    // another m1 block (already seen → skip in sweep step 2).
+    let repo = FixtureRepo::new()?;
+    repo.commit_mesh_whole_file("wf-already", "already-reconciled mesh")?;
+    let s = FixtureRepo::sid("stop-no-dup");
+
+    let gix = repo.gix_repo()?;
+    run_advice_snapshot(&gix, s.clone())?;
+
+    // Edit file1.txt so the anchor becomes stale.
+    std::fs::write(
+        repo.path().join("file1.txt"),
+        "changed-content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    // Run milestone first → announces wf-already, appends to meshes-seen.
+    let gix2 = repo.gix_repo()?;
+    let code = run_advice_milestone(&gix2, s.clone())?;
+    assert_eq!(code, 0, "milestone must return 0");
+
+    let sdir = repo.session_dir(&s);
+    let seen_after_milestone = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    assert!(
+        seen_after_milestone.contains(&"wf-already".to_string()),
+        "wf-already must be in meshes-seen after milestone, got: {seen_after_milestone:?}"
+    );
+
+    // Count entries before stop.
+    let candidates_before = repo.read_jsonl_strings(&sdir, "mesh-candidates.jsonl");
+    let count_before = candidates_before
+        .iter()
+        .filter(|n| n.as_str() == "wf-already")
+        .count();
+
+    // Run stop: wf-already is in meshes-seen → Block A skips it.
+    let gix3 = repo.gix_repo()?;
+    run_advice_stop(&gix3, s.clone())?;
+
+    let candidates_after = repo.read_jsonl_strings(&sdir, "mesh-candidates.jsonl");
+    let count_after = candidates_after
+        .iter()
+        .filter(|n| n.as_str() == "wf-already")
+        .count();
+
+    assert_eq!(
+        count_after, count_before,
+        "stop must not add wf-already to mesh-candidates again (already in meshes-seen), \
+         before={count_before}, after={count_after}"
+    );
+
     Ok(())
 }
