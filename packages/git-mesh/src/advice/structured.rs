@@ -216,7 +216,7 @@ pub fn reconciliation_instructions(mesh: &MeshResolved) -> String {
         .anchors
         .iter()
         .filter(|a| !matches!(a.status, AnchorStatus::Fresh))
-        .map(|a| format!("  {}", format_anchor_addr(a)))
+        .map(|a| format!("  {}", format_anchor_resolved(a)))
         .collect();
 
     let mut out = String::new();
@@ -247,7 +247,7 @@ pub fn creation_instructions(anchors: &[&AnchorResolved]) -> String {
     out.push_str("# Use `git mesh` to document implicit semantic dependencies.\n");
     out.push_str("# Potential candidates:\n");
     for a in anchors {
-        out.push_str(&format!("# - {}\n", format_anchor_addr(a)));
+        out.push_str(&format!("# - {}\n", format_anchor_resolved(a)));
     }
     out.push_str("#\n");
     out.push_str("# To record a candidate mesh, run:\n");
@@ -259,7 +259,8 @@ pub fn creation_instructions(anchors: &[&AnchorResolved]) -> String {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-fn format_anchor_addr(a: &AnchorResolved) -> String {
+/// Format an `AnchorResolved` as `path#L<start>-L<end>` (range) or `path` (whole-file).
+pub fn format_anchor_resolved(a: &AnchorResolved) -> String {
     let path = a.anchored.path.to_string_lossy();
     match &a.anchored.extent {
         AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),

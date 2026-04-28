@@ -1149,11 +1149,15 @@ fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32
 }
 
 /// Record a single read event (one anchor or whole-file path) in the
-/// file-backed session store.
+/// file-backed session store. Emits `BasicOutput` for each first-time matching
+/// mesh, appends the mesh name to `meshes-seen.jsonl` and `mesh-candidates.jsonl`.
 fn run_advice_read(repo: &gix::Repository, session_id: String, anchor: String) -> Result<i32> {
     use crate::advice::session::SessionStore;
     use crate::advice::session::state::ReadRecord;
     use crate::advice::session::store::LockTimeout;
+    use crate::advice::structured::{
+        BasicOutput, Status, action_from_spec, format_anchor_resolved, read_overlaps,
+    };
 
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
@@ -1194,6 +1198,89 @@ fn run_advice_read(repo: &gix::Repository, session_id: String, anchor: String) -
         &rec,
         LockTimeout::Bounded(std::time::Duration::from_secs(30)),
     )?;
+
+    // Build the Action for overlap checking.
+    let action = action_from_spec(&anchor).ok_or_else(|| {
+        anyhow::anyhow!("internal: action_from_spec returned None for `{anchor}`")
+    })?;
+
+    // Load mesh state. Treat any error as empty (greenfield).
+    let meshes = crate::resolver::stale_meshes(repo, default_engine_options()).unwrap_or_default();
+
+    // Load per-session dedup sets.
+    let meshes_seen = store.meshes_seen_set()?;
+
+    let mut new_meshes_seen: Vec<String> = Vec::new();
+    let mut new_mesh_candidates: Vec<String> = Vec::new();
+    let mut output = String::new();
+
+    for mesh in &meshes {
+        // Check if any anchor in this mesh overlaps the action.
+        let matching_anchor = mesh.anchors.iter().find(|a| read_overlaps(&action, a));
+        let Some(active_anchor_resolved) = matching_anchor else {
+            continue;
+        };
+
+        // Rule 1: skip if already in meshes-seen.
+        if meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name) {
+            continue;
+        }
+
+        // Build BasicOutput.
+        let active_anchor_str = format_anchor_resolved(active_anchor_resolved);
+        let status_if_not_fresh = if matches!(
+            active_anchor_resolved.status,
+            crate::types::AnchorStatus::Fresh
+        ) {
+            None
+        } else {
+            Some(Status::from_anchor_status(&active_anchor_resolved.status))
+        };
+        let non_active_anchors: Vec<String> = mesh
+            .anchors
+            .iter()
+            .filter(|a| a.anchor_id != active_anchor_resolved.anchor_id)
+            .map(format_anchor_resolved)
+            .collect();
+
+        let block = BasicOutput {
+            active_anchor: active_anchor_str,
+            mesh_name: mesh.name.clone(),
+            why: mesh.message.clone(),
+            status_if_not_fresh,
+            non_active_anchors,
+        };
+        output.push_str(&block.to_string());
+
+        // Rule 3 & 4: record mesh as seen and as candidate.
+        new_meshes_seen.push(mesh.name.clone());
+        new_mesh_candidates.push(mesh.name.clone());
+    }
+
+    // Write output before persisting state (fail-open: if stdout fails,
+    // do not advance seen sets so the mesh resurfaces).
+    use std::io::Write;
+    if !output.is_empty() {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        let result = handle
+            .write_all(output.as_bytes())
+            .and_then(|()| handle.flush());
+        match result {
+            Ok(()) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => {
+                return Err(anyhow::Error::from(e).context("write advice to stdout"));
+            }
+        }
+    }
+
+    if !new_meshes_seen.is_empty() {
+        store.append_meshes_seen(&new_meshes_seen)?;
+    }
+    if !new_mesh_candidates.is_empty() {
+        store.append_mesh_candidates(&new_mesh_candidates)?;
+    }
 
     Ok(0)
 }

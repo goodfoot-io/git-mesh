@@ -87,26 +87,90 @@ fn stop_emits_combined_reconcile_block_for_touched_stale_meshes() -> Result<()> 
 /// the same path with overlapping line spans. It must NOT match a whole-file
 /// anchor on the same path.
 #[test]
-#[ignore] // Phase 3
 fn read_anchor_only_matches_range_anchors() -> Result<()> {
-    // TODO Phase 3: Repo with mesh m_range (file1.txt#L1-L5) and mesh
-    // m_whole (file1.txt, whole-file). Run snapshot. Run read
-    // file1.txt#L1-L5 (range anchor). Run milestone. Assert m_range is
-    // announced; assert m_whole is NOT announced (range action does not
-    // overlap whole-file anchor).
+    use crate::advice::structured::{Action, read_overlaps};
+    use crate::types::{AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus};
+    use std::path::PathBuf;
+
+    fn make_anchor(extent: AnchorExtent) -> AnchorResolved {
+        AnchorResolved {
+            anchor_id: "id".into(),
+            anchor_sha: "sha".into(),
+            anchored: AnchorLocation {
+                path: PathBuf::from("file1.txt"),
+                extent,
+                blob: None,
+            },
+            current: None,
+            status: AnchorStatus::Fresh,
+            source: None,
+            layer_sources: Vec::new(),
+            acknowledged_by: None,
+            culprit: None,
+        }
+    }
+
+    let range_action = Action::Range {
+        path: "file1.txt".into(),
+        start: 1,
+        end: 5,
+    };
+
+    let range_anchor = make_anchor(AnchorExtent::LineRange { start: 1, end: 5 });
+    let whole_anchor = make_anchor(AnchorExtent::WholeFile);
+
+    assert!(
+        read_overlaps(&range_action, &range_anchor),
+        "range action must match overlapping range anchor"
+    );
+    assert!(
+        !read_overlaps(&range_action, &whole_anchor),
+        "range action must NOT match whole-file anchor"
+    );
     Ok(())
 }
 
 /// `read <path>` (whole-file anchor) matches only whole-file anchors on
 /// the same path. It must NOT match a range anchor on the same path.
 #[test]
-#[ignore] // Phase 3
 fn read_whole_file_only_matches_whole_file_anchors() -> Result<()> {
-    // TODO Phase 3: Repo with mesh m_range (file1.txt#L1-L5) and mesh
-    // m_whole (file1.txt, whole-file). Run snapshot. Run read file1.txt
-    // (whole-file anchor). Run milestone. Assert m_whole is announced;
-    // assert m_range is NOT announced (whole-file action does not overlap
-    // range anchor).
+    use crate::advice::structured::{Action, read_overlaps};
+    use crate::types::{AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus};
+    use std::path::PathBuf;
+
+    fn make_anchor(extent: AnchorExtent) -> AnchorResolved {
+        AnchorResolved {
+            anchor_id: "id".into(),
+            anchor_sha: "sha".into(),
+            anchored: AnchorLocation {
+                path: PathBuf::from("file1.txt"),
+                extent,
+                blob: None,
+            },
+            current: None,
+            status: AnchorStatus::Fresh,
+            source: None,
+            layer_sources: Vec::new(),
+            acknowledged_by: None,
+            culprit: None,
+        }
+    }
+
+    let whole_action = Action::WholeFile {
+        path: "file1.txt".into(),
+    };
+
+    let range_anchor = make_anchor(AnchorExtent::LineRange { start: 1, end: 5 });
+    let whole_anchor = make_anchor(AnchorExtent::WholeFile);
+
+    assert!(
+        read_overlaps(&whole_action, &whole_anchor),
+        "whole-file action must match whole-file anchor"
+    );
+    assert!(
+        !read_overlaps(&whole_action, &range_anchor),
+        "whole-file action must NOT match range anchor"
+    );
     Ok(())
 }
 

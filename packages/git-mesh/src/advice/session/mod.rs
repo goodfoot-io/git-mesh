@@ -42,13 +42,14 @@ use store::{LockGuard, LockTimeout};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// Names of the four JSONL files reset on snapshot.
+/// Names of the JSONL files reset on snapshot.
 const JSONL_FILES: &[&str] = &[
     "reads.jsonl",
     "touches.jsonl",
     "advice-seen.jsonl",
     "docs-seen.jsonl",
     "meshes-seen.jsonl",
+    "mesh-candidates.jsonl",
 ];
 
 /// Facade over the per-session directory.
@@ -325,6 +326,44 @@ impl SessionStore {
             let s: String = serde_json::from_str(&line).map_err(|e| {
                 anyhow::anyhow!(
                     "parse `meshes-seen.jsonl` at `{}` line {}: {e}",
+                    path.display(),
+                    idx + 1
+                )
+            })?;
+            out.insert(s);
+        }
+        Ok(out)
+    }
+
+    /// Append mesh names to `mesh-candidates.jsonl` (one per line, JSON string).
+    /// Tracks meshes that may need modification based on activity this session.
+    pub fn append_mesh_candidates(&self, names: &[String]) -> Result<()> {
+        for n in names {
+            let line = serde_json::to_string(n).with_context(|| "serialize mesh candidate name")?;
+            store::append_jsonl_line(&self.dir.join("mesh-candidates.jsonl"), &self.lock, &line)?;
+        }
+        Ok(())
+    }
+
+    /// Load all mesh names previously appended to `mesh-candidates.jsonl`.
+    pub fn mesh_candidates_set(&self) -> Result<std::collections::HashSet<String>> {
+        let path = self.dir.join("mesh-candidates.jsonl");
+        let f = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(std::collections::HashSet::new());
+            }
+            Err(e) => return Err(e).with_context(|| format!("open `{}`", path.display())),
+        };
+        let mut out = std::collections::HashSet::new();
+        for (idx, line) in BufReader::new(f).lines().enumerate() {
+            let line = line.with_context(|| format!("read `{}`", path.display()))?;
+            if line.is_empty() {
+                continue;
+            }
+            let s: String = serde_json::from_str(&line).map_err(|e| {
+                anyhow::anyhow!(
+                    "parse `mesh-candidates.jsonl` at `{}` line {}: {e}",
                     path.display(),
                     idx + 1
                 )
