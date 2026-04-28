@@ -37,7 +37,7 @@ pub fn enabled() -> bool {
 /// newlines backslash-escaped, so a downstream split-on-whitespace parser can
 /// reliably tokenise the output.
 fn escape_value(v: &str) -> Cow<'_, str> {
-    if v.bytes().any(|b| matches!(b, b' ' | b'\t' | b'"' | b'\\' | b'\n')) {
+    if v.bytes().any(|b| matches!(b, b' ' | b'\t' | b'\r' | b'"' | b'\\' | b'\n')) {
         let mut out = String::with_capacity(v.len() + 2);
         out.push('"');
         for c in v.chars() {
@@ -45,6 +45,8 @@ fn escape_value(v: &str) -> Cow<'_, str> {
                 '"' => out.push_str("\\\""),
                 '\\' => out.push_str("\\\\"),
                 '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\r' => out.push_str("\\r"),
                 _ => out.push(c),
             }
         }
@@ -158,5 +160,21 @@ mod tests {
             ("reason", "advice-seen"),
         ]);
         assert!(line.contains("reason=advice-seen"), "got: {line:?}");
+    }
+
+    #[test]
+    fn escape_value_tab() {
+        // A value containing a tab must be wrapped in double quotes with \t escaped.
+        let v = "has\ttab";
+        let got = escape_value(v);
+        assert_eq!(got, "\"has\\ttab\"");
+    }
+
+    #[test]
+    fn escape_value_carriage_return() {
+        // A value containing a carriage return must be wrapped in double quotes with \r escaped.
+        let v = "has\rreturn";
+        let got = escape_value(v);
+        assert_eq!(got, "\"has\\rreturn\"");
     }
 }
