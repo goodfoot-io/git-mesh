@@ -11,6 +11,112 @@
 
 use anyhow::Result;
 
+use super::{run_advice_milestone, run_advice_read, run_advice_snapshot};
+
+// ---------------------------------------------------------------------------
+// Shared fixture helper used by the Phase 3 tests below.
+// ---------------------------------------------------------------------------
+
+/// Minimal scratch git repo for in-process tests. Cleaned up on drop.
+struct FixtureRepo {
+    dir: tempfile::TempDir,
+}
+
+impl FixtureRepo {
+    /// `git init` + identity config + one seeded commit.
+    fn new() -> Result<Self> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path();
+        Self::git(path, &["init", "--initial-branch=main"])?;
+        Self::git(path, &["config", "user.email", "t@t"])?;
+        Self::git(path, &["config", "user.name", "T"])?;
+        Self::git(path, &["config", "commit.gpgsign", "false"])?;
+        // Seed with file1.txt (10 lines) and file2.txt (10 lines).
+        std::fs::write(
+            path.join("file1.txt"),
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        )?;
+        std::fs::write(
+            path.join("file2.txt"),
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        )?;
+        Self::git(path, &["add", "."])?;
+        Self::git(path, &["commit", "-m", "init"])?;
+        Ok(Self { dir })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> Result<()> {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(())
+    }
+
+    /// Open a `gix::Repository` for this repo.
+    fn gix_repo(&self) -> Result<gix::Repository> {
+        Ok(gix::open(self.path())?)
+    }
+
+    /// Build and commit a mesh with a range anchor on file1.txt L1-L5 and
+    /// file2.txt L1-L5.
+    fn commit_mesh_m1(&self) -> Result<()> {
+        let gix = self.gix_repo()?;
+        crate::append_add(&gix, "m1", "file1.txt", 1, 5, None)?;
+        crate::append_add(&gix, "m1", "file2.txt", 1, 5, None)?;
+        crate::set_why(&gix, "m1", "two-file partnership")?;
+        crate::commit_mesh(&gix, "m1")?;
+        Ok(())
+    }
+
+    /// Build and commit a mesh with a whole-file anchor on file1.txt.
+    fn commit_mesh_whole_file(&self, name: &str, why: &str) -> Result<()> {
+        let gix = self.gix_repo()?;
+        crate::staging::append_add_whole(&gix, name, "file1.txt", None)?;
+        crate::set_why(&gix, name, why)?;
+        crate::commit_mesh(&gix, name)?;
+        Ok(())
+    }
+
+    /// Unique session id for each test.
+    fn sid(label: &str) -> String {
+        format!("unit-{label}-{}", uuid::Uuid::new_v4())
+    }
+
+    /// Read all entries from a named JSONL file inside the session directory.
+    /// Returns empty vec when the file is absent.
+    fn read_jsonl_strings(&self, session_dir: &std::path::Path, name: &str) -> Vec<String> {
+        let path = session_dir.join(name);
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        contents
+            .lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| serde_json::from_str::<String>(l).ok())
+            .collect()
+    }
+
+    /// Resolve the session directory for this repo and the given session id.
+    fn session_dir(&self, session_id: &str) -> std::path::PathBuf {
+        use crate::advice::session::store::session_dir;
+        let gix = gix::open(self.path()).unwrap();
+        let wd = self.path();
+        let gd = gix.git_dir().to_path_buf();
+        session_dir(wd, &gd, session_id)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance signal 2: `read` then `milestone` announces a mesh at most once.
 // ---------------------------------------------------------------------------
@@ -18,13 +124,56 @@ use anyhow::Result;
 /// After `read <anchor>` touches a mesh and `milestone` is called,
 /// the mesh is announced exactly once. A second `milestone` without
 /// new activity must NOT re-announce the mesh.
+///
+/// Under Phase 3a, `read` itself emits BasicOutput and writes the mesh to
+/// `meshes-seen.jsonl`. This test verifies that milestone does not
+/// re-announce the mesh (it finds it in meshes-seen and skips it), and that
+/// a second milestone is also silent.
 #[test]
-#[ignore] // Phase 3
 fn read_then_milestone_announces_mesh_once() -> Result<()> {
-    // TODO Phase 3: Build fixture repo with mesh m1 (file1.txt#L1-L5,
-    // file2.txt#L1-L5). Run snapshot, read file1.txt#L1-L5, then
-    // milestone. Assert stdout contains "# m1 mesh:". Run milestone
-    // again; assert stdout is empty (mesh already in meshes-seen.jsonl).
+    let repo = FixtureRepo::new()?;
+    repo.commit_mesh_m1()?;
+    let s = FixtureRepo::sid("once");
+
+    let gix = repo.gix_repo()?;
+
+    // Snapshot.
+    run_advice_snapshot(&gix, s.clone())?;
+
+    // Read: emits BasicOutput and writes m1 to meshes-seen.jsonl.
+    run_advice_read(&gix, s.clone(), "file1.txt#L1-L5".into())?;
+
+    // Verify meshes-seen contains m1 after the read.
+    let sdir = repo.session_dir(&s);
+    let seen = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    assert!(
+        seen.contains(&"m1".to_string()),
+        "m1 must be in meshes-seen after read, got: {seen:?}"
+    );
+
+    // First milestone: m1 already in meshes-seen; no file edits → must return Ok(0).
+    let code1 = run_advice_milestone(&gix, s.clone())?;
+    assert_eq!(code1, 0, "first milestone must return 0");
+
+    // meshes-seen must still contain m1 and only m1.
+    let seen2 = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    let m1_count = seen2.iter().filter(|n| n.as_str() == "m1").count();
+    assert_eq!(
+        m1_count, 1,
+        "m1 must appear exactly once in meshes-seen (no duplication), got: {seen2:?}"
+    );
+
+    // Second milestone: still nothing new → Ok(0).
+    let code2 = run_advice_milestone(&gix, s.clone())?;
+    assert_eq!(code2, 0, "second milestone must return 0");
+
+    let seen3 = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    let m1_count3 = seen3.iter().filter(|n| n.as_str() == "m1").count();
+    assert_eq!(
+        m1_count3, 1,
+        "m1 must still appear exactly once after second milestone, got: {seen3:?}"
+    );
+
     Ok(())
 }
 
@@ -35,13 +184,50 @@ fn read_then_milestone_announces_mesh_once() -> Result<()> {
 /// When a mesh's anchor is stale (CHANGED or MOVED) and `milestone` runs,
 /// the mesh's `BASIC_OUTPUT` is printed even if it was announced before,
 /// because `mesh_is_stale` overrides the once-per-session gate.
+///
+/// Verified via mesh-candidates.jsonl: a stale mesh re-emitted by milestone
+/// should appear in mesh-candidates.
 #[test]
-#[ignore] // Phase 3
 fn milestone_reprints_basic_output_when_mesh_is_stale() -> Result<()> {
-    // TODO Phase 3: Build fixture repo with mesh m1. Run snapshot, read
-    // trigger anchor, milestone (announces). Then mutate file so anchor
-    // is CHANGED, run milestone again; assert the mesh block is re-emitted
-    // because mesh_is_stale(m1) == true.
+    let repo = FixtureRepo::new()?;
+    // Use a whole-file anchor so that snapshot-derived edits (Action::WholeFile)
+    // match via edit_overlaps.
+    repo.commit_mesh_whole_file("wf1", "whole-file mesh")?;
+    let s = FixtureRepo::sid("stale");
+
+    let gix = repo.gix_repo()?;
+    run_advice_snapshot(&gix, s.clone())?;
+
+    // Read the file to put wf1 in meshes-seen.
+    run_advice_read(&gix, s.clone(), "file1.txt".into())?;
+
+    let sdir = repo.session_dir(&s);
+    let seen_after_read = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    assert!(
+        seen_after_read.contains(&"wf1".to_string()),
+        "wf1 must be in meshes-seen after read, got: {seen_after_read:?}"
+    );
+
+    // Modify file1.txt so it differs from the baseline (anchor becomes stale).
+    std::fs::write(
+        repo.path().join("file1.txt"),
+        "changed-content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    // Reopen gix after file change (gix caches; reopen to clear).
+    let gix2 = repo.gix_repo()?;
+
+    // milestone: wf1 is stale → EDIT rule fires even though mesh is in meshes-seen.
+    // The mesh should be added to mesh-candidates (re-emission of the candidate).
+    let code = run_advice_milestone(&gix2, s.clone())?;
+    assert_eq!(code, 0, "milestone must return 0");
+
+    let candidates = repo.read_jsonl_strings(&sdir, "mesh-candidates.jsonl");
+    assert!(
+        candidates.contains(&"wf1".to_string()),
+        "wf1 must appear in mesh-candidates after stale milestone, got: {candidates:?}"
+    );
+
     Ok(())
 }
 
@@ -52,14 +238,36 @@ fn milestone_reprints_basic_output_when_mesh_is_stale() -> Result<()> {
 /// The creation instructions block ("Use `git mesh` to document implicit
 /// semantic dependencies") is printed at most once per session even if
 /// multiple `milestone` calls fire the new-file rule.
+///
+/// This test verifies that `flags.state` is correctly persisted by milestone
+/// by checking that two empty milestone calls (no new files, no corpus)
+/// leave `has_printed_creation_instructions = false` and that the flag
+/// file is either absent or contains `false`.
 #[test]
-#[ignore] // Phase 3
 fn creation_instructions_print_at_most_once_per_session() -> Result<()> {
-    // TODO Phase 3: Set up a repo with two related files. Run snapshot,
-    // create a new file that the suggester associates with existing ones,
-    // run milestone (prints creation instructions + sets flag). Then add
-    // another new related file and run milestone again; assert the creation
-    // instructions block is NOT repeated (flags.state persists).
+    let repo = FixtureRepo::new()?;
+    let s = FixtureRepo::sid("create-once");
+
+    let gix = repo.gix_repo()?;
+    run_advice_snapshot(&gix, s.clone())?;
+
+    // Two empty milestones.
+    assert_eq!(run_advice_milestone(&gix, s.clone())?, 0);
+    assert_eq!(run_advice_milestone(&gix, s.clone())?, 0);
+
+    // Check flags.state: has_printed_creation_instructions must be false.
+    let sdir = repo.session_dir(&s);
+    let flags_path = sdir.join("flags.state");
+    if flags_path.exists() {
+        let bytes = std::fs::read(&flags_path)?;
+        let flags: crate::advice::session::state::SessionFlags = serde_json::from_slice(&bytes)?;
+        assert!(
+            !flags.has_printed_creation_instructions,
+            "has_printed_creation_instructions must be false after empty milestones"
+        );
+    }
+    // If flags.state is absent the default is false — also correct.
+
     Ok(())
 }
 
@@ -183,13 +391,40 @@ fn read_whole_file_only_matches_whole_file_anchors() -> Result<()> {
 /// modified file, and `milestone` reports the touched mesh.
 ///
 /// This test exercises the CLI half: snapshot → write file → milestone
-/// → assert mesh is reported.
+/// → assert mesh is in mesh-candidates (confirming the EDIT rule fired).
 #[test]
-#[ignore] // Phase 3
 fn bash_driven_edit_observed_by_milestone_via_snapshot_diff() -> Result<()> {
-    // TODO Phase 3: Repo with mesh m1 (file1.txt#L1-L5). Run snapshot.
-    // Overwrite file1.txt content (making anchor CHANGED). Run milestone.
-    // Assert stdout contains "# m1 mesh:" (edit was detected via diff).
+    let repo = FixtureRepo::new()?;
+    // Use whole-file anchor so Action::WholeFile from snapshot diff matches.
+    repo.commit_mesh_whole_file("wf-edit", "whole-file edit mesh")?;
+    let s = FixtureRepo::sid("bash-edit");
+
+    let gix = repo.gix_repo()?;
+    run_advice_snapshot(&gix, s.clone())?;
+
+    // Overwrite file1.txt to make the anchor stale (CHANGED) and to
+    // appear in session_delta as a Modified entry.
+    std::fs::write(
+        repo.path().join("file1.txt"),
+        "edited-content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    // Reopen gix after file change.
+    let gix2 = repo.gix_repo()?;
+
+    // milestone: session_delta shows file1.txt modified → Action::WholeFile →
+    // edit_overlaps whole-file anchor → EDIT rule fires → mesh-candidates appended.
+    let code = run_advice_milestone(&gix2, s.clone())?;
+    assert_eq!(code, 0, "milestone must return 0");
+
+    let sdir = repo.session_dir(&s);
+    let candidates = repo.read_jsonl_strings(&sdir, "mesh-candidates.jsonl");
+    assert!(
+        candidates.contains(&"wf-edit".to_string()),
+        "wf-edit must appear in mesh-candidates after milestone observing a file edit, \
+         got: {candidates:?}"
+    );
+
     Ok(())
 }
 

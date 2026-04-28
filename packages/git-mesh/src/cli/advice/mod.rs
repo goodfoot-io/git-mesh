@@ -1286,10 +1286,362 @@ fn run_advice_read(repo: &gix::Repository, session_id: String, anchor: String) -
 }
 
 /// Flush the current session delta: emit advice for every implicit dependency
-/// crossed since the last milestone or snapshot. Phase 3 will implement the
-/// structured-English spec rules; for now this is a stub.
-fn run_advice_milestone(_repo: &gix::Repository, _session_id: String) -> Result<i32> {
-    bail!("not implemented")
+/// crossed since the last milestone or snapshot.
+///
+/// Implements the structured-English EDIT rule (§"EDIT — …") and the CREATE
+/// rule (§"CREATE — new file matching a RELATED_ANCHORS entry …") for the
+/// `milestone` verb. Session flags gate instruction blocks to at most one
+/// emission per session.
+fn run_advice_milestone(repo: &gix::Repository, session_id: String) -> Result<i32> {
+    use crate::advice::session::SessionStore;
+    use crate::advice::structured::{
+        Action, BasicOutput, Status, creation_instructions, edit_overlaps, format_anchor_resolved,
+        mesh_is_stale, reconciliation_instructions,
+    };
+    use crate::advice::workspace_tree::{self, DiffEntry};
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let store = SessionStore::open(wd, &gd, &session_id)?;
+
+    // Step 1a: require baseline.state.
+    if !store.dir().join("baseline.state").exists() {
+        bail!(
+            "no baseline for session `{session_id}`; run snapshot first \
+             (`git mesh advice {session_id} snapshot`)"
+        );
+    }
+    let baseline = store.read_baseline()?;
+
+    // Step 1b: load SessionFlags.
+    let mut flags = store.read_flags()?;
+
+    // Step 2: capture current workspace tree.
+    let cur_uuid = uuid::Uuid::new_v4();
+    let current_objects = store.dir().join(format!("current.objects-{cur_uuid}"));
+    std::fs::create_dir_all(&current_objects)
+        .map_err(|e| anyhow::anyhow!("mkdir `{}`: {e}", current_objects.display()))?;
+
+    struct DirGuard {
+        path: Option<std::path::PathBuf>,
+    }
+    impl DirGuard {
+        fn new(path: std::path::PathBuf) -> Self {
+            Self { path: Some(path) }
+        }
+        fn disarm(mut self) {
+            self.path = None;
+        }
+    }
+    impl Drop for DirGuard {
+        fn drop(&mut self) {
+            if let Some(p) = self.path.take()
+                && p.exists()
+            {
+                let _ = std::fs::remove_dir_all(&p);
+            }
+        }
+    }
+
+    let current_objects_guard = DirGuard::new(current_objects.clone());
+    let current = workspace_tree::capture(repo, &current_objects)?;
+
+    // Step 3: diff_trees(baseline → current) for FILES_MODIFIED_DURING_SESSION.
+    let baseline_objects = store.baseline_objects_dir();
+    let session_delta = workspace_tree::diff_trees(
+        repo,
+        &baseline.tree_sha,
+        &current.tree_sha,
+        &baseline_objects,
+        &current_objects,
+    )?;
+
+    // Step 4: last-flush state and objects for the incremental delta.
+    let last_flush_state_path = store.dir().join("last-flush.state");
+    let last_flush_objects_path = store.last_flush_objects_dir();
+    let (last_flush_state, last_flush_objects_for_diff) = if last_flush_state_path.exists() {
+        let st = store.read_last_flush()?;
+        let consistent = last_flush_objects_path.exists()
+            && tree_resolves_in(repo, &st.tree_sha, &last_flush_objects_path);
+        if consistent {
+            (st, last_flush_objects_path.clone())
+        } else {
+            eprintln!(
+                "git mesh advice: last-flush state inconsistent with last-flush.objects; falling back to baseline diff"
+            );
+            (baseline.clone(), baseline_objects.clone())
+        }
+    } else {
+        (baseline.clone(), baseline_objects.clone())
+    };
+
+    // Step 5: diff_trees(last_flush → current) for touch intervals.
+    let last_flush_objects = last_flush_objects_path;
+    let incr_delta = workspace_tree::diff_trees(
+        repo,
+        &last_flush_state.tree_sha,
+        &current.tree_sha,
+        &last_flush_objects_for_diff,
+        &current_objects,
+    )?;
+
+    let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
+
+    // Step 6: load mesh state.
+    let meshes = crate::resolver::stale_meshes(repo, default_engine_options()).unwrap_or_default();
+
+    // Step 7: load per-session dedup sets.
+    let meshes_seen = store.meshes_seen_set()?;
+
+    // ── EDIT rule ─────────────────────────────────────────────────────────────
+    // Materialise FILES_MODIFIED_DURING_SESSION from session_delta.
+    // DiffEntry::Modified → Action::WholeFile (no hunk bounds from diff --raw).
+    // DiffEntry::Removed  → skip (no meaningful anchor overlap for deletions).
+    // DiffEntry::Added    → handled separately in CREATE rule below.
+
+    let mut output = String::new();
+    let mut new_meshes_seen: Vec<String> = Vec::new();
+    let mut new_mesh_candidates: Vec<String> = Vec::new();
+
+    for entry in &session_delta {
+        let path = match entry {
+            DiffEntry::Modified { path, .. } => path.clone(),
+            DiffEntry::ModeChange { path, .. } => path.clone(),
+            DiffEntry::Renamed { to, .. } => to.clone(),
+            // Added paths are handled by the CREATE rule below.
+            DiffEntry::Added { .. } => continue,
+            // Deleted paths: no anchor overlap meaningful.
+            DiffEntry::Deleted { .. } => continue,
+        };
+        if advice_path_is_internal(&path, &internal_path_prefixes) {
+            continue;
+        }
+        let action = Action::WholeFile { path };
+
+        for mesh in &meshes {
+            // Find any anchor that overlaps the action.
+            let matching_anchor = mesh.anchors.iter().find(|a| edit_overlaps(&action, a));
+            let Some(active_anchor_resolved) = matching_anchor else {
+                continue;
+            };
+
+            // EDIT rule 1: if NOT mesh_is_stale AND mesh is in meshes_seen → skip.
+            let stale = mesh_is_stale(mesh);
+            let already_seen =
+                meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name);
+            if !stale && already_seen {
+                continue;
+            }
+
+            // Emit BasicOutput.
+            let active_anchor_str = format_anchor_resolved(active_anchor_resolved);
+            let status_if_not_fresh = if matches!(
+                active_anchor_resolved.status,
+                crate::types::AnchorStatus::Fresh
+            ) {
+                None
+            } else {
+                Some(Status::from_anchor_status(&active_anchor_resolved.status))
+            };
+            let non_active_anchors: Vec<String> = mesh
+                .anchors
+                .iter()
+                .filter(|a| a.anchor_id != active_anchor_resolved.anchor_id)
+                .map(format_anchor_resolved)
+                .collect();
+            let block = BasicOutput {
+                active_anchor: active_anchor_str,
+                mesh_name: mesh.name.clone(),
+                why: mesh.message.clone(),
+                status_if_not_fresh,
+                non_active_anchors,
+            };
+            output.push_str(&block.to_string());
+
+            // Record mesh as seen and as candidate (whether or not stale).
+            if !already_seen {
+                new_meshes_seen.push(mesh.name.clone());
+            }
+            if !new_mesh_candidates.contains(&mesh.name) {
+                new_mesh_candidates.push(mesh.name.clone());
+            }
+
+            // EDIT rule 3: reconciliation instructions gate.
+            if !flags.has_printed_reconciliation_instructions {
+                output.push_str(&reconciliation_instructions(mesh));
+                flags.has_printed_reconciliation_instructions = true;
+            }
+        }
+    }
+
+    // ── CREATE rule ───────────────────────────────────────────────────────────
+    // For each Added path in session_delta, run the suggester pipeline and
+    // emit a per-anchor hint for high-confidence, not-yet-suggested entries.
+
+    let added_paths: Vec<String> = session_delta
+        .iter()
+        .filter_map(|e| match e {
+            DiffEntry::Added { path, .. } => {
+                if advice_path_is_internal(path, &internal_path_prefixes) {
+                    None
+                } else {
+                    Some(path.clone())
+                }
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut emitted_fps: Vec<String> = Vec::new();
+    let mut any_creation_emission = false;
+
+    if !added_paths.is_empty() {
+        use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
+
+        let advice_dir = match std::env::var("GIT_MESH_ADVICE_DIR") {
+            Ok(s) if !s.is_empty() => std::path::PathBuf::from(s),
+            _ => store
+                .dir()
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
+        };
+        let sessions = if advice_dir.as_os_str().is_empty() {
+            Vec::new()
+        } else {
+            load_all_sessions(&advice_dir).unwrap_or_default()
+        };
+
+        if !sessions.is_empty() {
+            let cfg = SuggestConfig::from_env();
+            let suggestions = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg);
+            let advice_seen = store.advice_seen_set()?;
+
+            for sug in &suggestions {
+                use crate::advice::suggestion::ConfidenceBand;
+                // CREATE rule: confidence == high ↔ band ∈ {High, HighPlus}.
+                if !matches!(sug.band, ConfidenceBand::High | ConfidenceBand::HighPlus) {
+                    continue;
+                }
+                let fp = crate::advice::fingerprint::fingerprint_suggestion(sug);
+                // suggested == false ↔ fingerprint absent from advice-seen.jsonl.
+                if advice_seen.contains(&fp) || emitted_fps.contains(&fp) {
+                    continue;
+                }
+
+                // Check that at least one participant overlaps an added path.
+                let has_added_participant = sug.participants.iter().any(|p| {
+                    added_paths.iter().any(|ap| {
+                        let p_path = p.path.to_string_lossy();
+                        p_path.as_ref() == ap.as_str()
+                    })
+                });
+                if !has_added_participant {
+                    continue;
+                }
+
+                // Emit per-anchor hint line per the spec:
+                // "If [ACTIVE_ANCHOR] has implicit semantic dependencies…"
+                for p in &sug.participants {
+                    let active_anchor = if p.whole {
+                        p.path.to_string_lossy().into_owned()
+                    } else {
+                        format!("{}#L{}-L{}", p.path.to_string_lossy(), p.start, p.end)
+                    };
+                    output.push_str(&format!(
+                        "# If {active_anchor} has implicit semantic dependencies, document with `git mesh`:\n"
+                    ));
+                    output.push_str(
+                        "#   git mesh add <name> [anchor 1] [anchor 2] && git mesh why -m <why>\n",
+                    );
+                }
+
+                emitted_fps.push(fp);
+                any_creation_emission = true;
+            }
+        }
+
+        if any_creation_emission && !flags.has_printed_creation_instructions {
+            // creation_instructions takes &[&AnchorResolved]; we have no resolved
+            // anchors for the added paths at this point (they're new files with
+            // no existing mesh anchors). Emit the fixed instruction block directly
+            // using the text from creation_instructions with an empty slice.
+            let creation_text = creation_instructions(&[]);
+            output.push_str(&creation_text);
+            flags.has_printed_creation_instructions = true;
+        }
+    }
+
+    // ── Step 5 / advance last-flush ───────────────────────────────────────────
+    if last_flush_objects.exists() {
+        std::fs::remove_dir_all(&last_flush_objects)
+            .map_err(|e| anyhow::anyhow!("remove `{}`: {e}", last_flush_objects.display()))?;
+    }
+    std::fs::rename(&current_objects, &last_flush_objects).map_err(|e| {
+        anyhow::anyhow!(
+            "rename `{}` -> `{}`: {e}",
+            current_objects.display(),
+            last_flush_objects.display()
+        )
+    })?;
+    current_objects_guard.disarm();
+
+    let new_cursor = store.reads_byte_len()?;
+    let new_last_flush = crate::advice::session::state::BaselineState {
+        schema_version: crate::advice::session::SCHEMA_VERSION,
+        tree_sha: current.tree_sha.clone(),
+        index_sha: baseline.index_sha.clone(),
+        captured_at: chrono::Utc::now().to_rfc3339(),
+        read_cursor: new_cursor,
+    };
+    store.write_last_flush(&new_last_flush)?;
+
+    // ── Write output ──────────────────────────────────────────────────────────
+    use std::io::Write;
+    let stdout_result = if output.is_empty() {
+        Ok(())
+    } else {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        handle
+            .write_all(output.as_bytes())
+            .and_then(|()| handle.flush())
+    };
+    match stdout_result {
+        Ok(()) => {}
+        Err(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context("write advice to stdout"));
+        }
+    }
+
+    // Persist seen sets and flags only after successful output.
+    if !new_meshes_seen.is_empty() {
+        store.append_meshes_seen(&new_meshes_seen)?;
+    }
+    if !new_mesh_candidates.is_empty() {
+        store.append_mesh_candidates(&new_mesh_candidates)?;
+    }
+    if !emitted_fps.is_empty() {
+        store.append_advice_seen(&emitted_fps)?;
+    }
+
+    // Build touch intervals from incr_delta.
+    let touch_ts = chrono::Utc::now().to_rfc3339();
+    let touch_intervals = build_touch_intervals(
+        incr_delta.as_slice(),
+        &[],
+        &touch_ts,
+        &internal_path_prefixes,
+    );
+    for interval in &touch_intervals {
+        store.append_touch(interval)?;
+    }
+
+    // Step 6: persist SessionFlags.
+    store.write_flags(&flags)?;
+
+    Ok(0)
 }
 
 /// Flush the session and emit a final reconciliation sweep for any
