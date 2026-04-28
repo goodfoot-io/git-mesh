@@ -458,3 +458,105 @@ fn signal6_bash_only_edit_detected_by_milestone() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// F1 regression: stop's EDIT pass uses session_delta (not incr_delta).
+//
+// Scenario: snapshot → edit → milestone (advances last-flush) → stop (no new edits).
+// After milestone, incr_delta is empty but session_delta still shows the file.
+// stop must still emit the stale mesh.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stop_emits_stale_mesh_after_milestone_session_delta() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    // Use whole-file anchor so Action::WholeFile matches.
+    git_mesh::staging::append_add_whole(&gix, "f1-mesh", "file1.txt", None)?;
+    git_mesh::staging::append_add_whole(&gix, "f1-mesh", "file2.txt", None)?;
+    set_why(&gix, "f1-mesh", "f1 regression mesh")?;
+    commit_mesh(&gix, "f1-mesh")?;
+
+    let s = sid("f1-stop");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+
+    // Edit file1.txt: makes the anchor stale and appears in session_delta.
+    repo.write_file("file1.txt", "edited-for-f1\nline2\nline3\nline4\nline5\n")?;
+
+    // milestone: emits f1-mesh and advances last-flush to current state.
+    let ms_out = run_advice(&repo, &s, &["milestone"])?;
+    ok(&ms_out);
+    let ms_text = stdout(&ms_out);
+    assert!(
+        ms_text.contains("# f1-mesh mesh:"),
+        "milestone must emit f1-mesh when file is modified; got:\n{ms_text}"
+    );
+
+    // No further edits. incr_delta is now empty (last-flush == current).
+    // session_delta still shows file1.txt as modified.
+    //
+    // stop must still emit the stale mesh because it iterates session_delta.
+    let stop_out = run_advice(&repo, &s, &["stop"])?;
+    ok(&stop_out);
+    let stop_text = stdout(&stop_out);
+    assert!(
+        stop_text.contains("# f1-mesh mesh:"),
+        "stop must re-emit the stale f1-mesh via session_delta even after milestone; \
+         got:\n{stop_text}"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F6: timing guard — snapshot → modify 50 files → stop must complete in < 5s
+// on a fixture with 5 meshes. This is an informational bound; if it flakes,
+// the fix is to optimize, not to relax the bound.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stop_completes_under_5s_with_5_meshes_and_50_modified_files() -> Result<()> {
+    use std::time::Instant;
+
+    let repo = TestRepo::new()?;
+    let gix = repo.gix_repo()?;
+
+    // Create 50 files and commit them as the baseline.
+    for i in 1..=50 {
+        repo.write_file_lines(&format!("src/file{i:02}.rs"), 20)?;
+    }
+    repo.commit_all("initial 50 files")?;
+
+    // Create 5 meshes, each spanning two files.
+    for m in 1..=5 {
+        let fa = format!("src/file{:02}.rs", m * 2 - 1);
+        let fb = format!("src/file{:02}.rs", m * 2);
+        append_add(&gix, &format!("mesh{m}"), &fa, 1, 20, None)?;
+        append_add(&gix, &format!("mesh{m}"), &fb, 1, 20, None)?;
+        set_why(&gix, &format!("mesh{m}"), &format!("timing mesh {m}"))?;
+        commit_mesh(&gix, &format!("mesh{m}"))?;
+    }
+
+    let s = sid("timing");
+
+    // Snapshot baseline.
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+
+    // Modify all 50 files.
+    for i in 1..=50 {
+        repo.write_file_lines(&format!("src/file{i:02}.rs"), 21)?;
+    }
+
+    // Time the stop verb.
+    let start = Instant::now();
+    let out = run_advice(&repo, &s, &["stop"])?;
+    let elapsed = start.elapsed();
+
+    ok(&out);
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "stop took {elapsed:?}, expected < 5s on 5-mesh / 50-file fixture"
+    );
+
+    Ok(())
+}

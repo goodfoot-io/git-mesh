@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# PostToolUse: dispatch Read → `read <anchor>` and Bash/mcp__* → `milestone`.
-# Read resolves a single anchor from file_path + offset/limit; Bash/mcp run
-# milestone once per unique repo root found via bash_candidate_dirs (or cwd
-# for mcp__*). Fail-open — internal errors silently exit 0.
+# PostToolUse: dispatch Read → `read <anchor>`; everything else → `milestone`.
+# No per-tool branching beyond Read vs everything-else; no path parsing for
+# Bash/mcp or other tools. Fail-open — internal errors silently exit 0.
 
 set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
@@ -37,42 +36,11 @@ case "$tool" in
     emit_advice_text PostToolUse "$text"
     ;;
 
-  Bash)
-    cmd="$(hook_field '.tool_input.command')"
-    declare -A seen=()
-    roots=()
-    while IFS= read -r d; do
-      root="$(resolve_repo_root "$d")"
-      [ -n "$root" ] || continue
-      if [ -z "${seen[$root]:-}" ]; then
-        seen[$root]=1
-        roots+=("$root")
-      fi
-    done < <(bash_candidate_dirs "$cwd" "$cmd")
-    [ "${#roots[@]}" -gt 0 ] || exit 0
-
-    combined=""
-    for root in "${roots[@]}"; do
-      out="$(run_advice_verb "$root" "$sid" milestone)"
-      [ -n "$out" ] || continue
-      if [ -n "$combined" ]; then
-        combined="${combined}"$'\n\n'"$out"
-      else
-        combined="$out"
-      fi
-    done
-    emit_advice_text PostToolUse "$combined"
-    ;;
-
-  mcp__*)
+  *)
     root="$(resolve_repo_root "$cwd")"
     [ -n "$root" ] || exit 0
     text="$(run_advice_verb "$root" "$sid" milestone)"
     emit_advice_text PostToolUse "$text"
-    ;;
-
-  *)
-    exit 0
     ;;
 esac
 

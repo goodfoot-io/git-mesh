@@ -1402,6 +1402,8 @@ fn run_advice_milestone(repo: &gix::Repository, session_id: String) -> Result<i3
     let mut output = String::new();
     let mut new_meshes_seen: Vec<String> = Vec::new();
     let mut new_mesh_candidates: Vec<String> = Vec::new();
+    // F4: per-call dedup — tracks meshes already emitted in this verb invocation.
+    let mut emitted_meshes_this_call: Vec<String> = Vec::new();
 
     for entry in &session_delta {
         let path = match entry {
@@ -1419,6 +1421,10 @@ fn run_advice_milestone(repo: &gix::Repository, session_id: String) -> Result<i3
         let action = Action::WholeFile { path };
 
         for mesh in &meshes {
+            // F4: per-call dedup — skip if already emitted in this invocation.
+            if emitted_meshes_this_call.contains(&mesh.name) {
+                continue;
+            }
             // Find any anchor that overlaps the action.
             let matching_anchor = mesh.anchors.iter().find(|a| edit_overlaps(&action, a));
             let Some(active_anchor_resolved) = matching_anchor else {
@@ -1457,6 +1463,7 @@ fn run_advice_milestone(repo: &gix::Repository, session_id: String) -> Result<i3
                 non_active_anchors,
             };
             output.push_str(&block.to_string());
+            emitted_meshes_this_call.push(mesh.name.clone());
 
             // Record mesh as seen and as candidate (whether or not stale).
             if !already_seen {
@@ -1747,7 +1754,13 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
     // Unlike the standalone `milestone`, we also skip meshes already in
     // mesh_candidates (the session is ending; re-announcing a known candidate
     // adds no value and creates duplicate JSONL entries).
-    for entry in &incr_delta {
+    //
+    // IMPORTANT: iterate session_delta (baseline → current), NOT incr_delta
+    // (last_flush → current). When the user runs `milestone` mid-session and a
+    // mesh becomes stale afterward, stop's EDIT pass must still reach the file
+    // even if it's outside incr_delta. session_delta covers the full session.
+    let mut emitted_meshes_this_call: Vec<String> = Vec::new();
+    for entry in &session_delta {
         let path = match entry {
             DiffEntry::Modified { path, .. } => path.clone(),
             DiffEntry::ModeChange { path, .. } => path.clone(),
@@ -1761,16 +1774,22 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
         let action = Action::WholeFile { path };
 
         for mesh in &meshes {
+            // F4: per-call dedup — skip if already emitted in this invocation.
+            if emitted_meshes_this_call.contains(&mesh.name) {
+                continue;
+            }
             let already_seen =
                 meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name);
             let already_candidate =
                 mesh_candidates.contains(&mesh.name) || new_mesh_candidates.contains(&mesh.name);
-            // Skip: already announced and already a candidate.
-            if already_seen && already_candidate {
+            let stale = mesh_is_stale(mesh);
+            // Skip: already announced, already a candidate, and NOT stale.
+            // A stale mesh must still be re-emitted even if previously seen/candidate.
+            if already_seen && already_candidate && !stale {
                 continue;
             }
             // Skip: not stale and already announced (same as milestone EDIT rule 1).
-            if !mesh_is_stale(mesh) && already_seen {
+            if !stale && already_seen {
                 continue;
             }
             if !mesh.anchors.iter().any(|a| edit_overlaps(&action, a)) {
@@ -1803,6 +1822,7 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
                 non_active_anchors,
             };
             output.push_str(&block.to_string());
+            emitted_meshes_this_call.push(mesh.name.clone());
 
             if !already_seen {
                 new_meshes_seen.push(mesh.name.clone());
@@ -1945,6 +1965,8 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
     }
 
     // ── Block B — related-anchors creation sweep ─────────────────────────────
+    // new_fps is populated here but written to advice-seen AFTER stdout (F3).
+    let mut block_b_new_fps: Vec<String> = Vec::new();
     {
         use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
 
@@ -1967,7 +1989,6 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
             let suggestions = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg);
             let advice_seen = store.advice_seen_set()?;
 
-            let mut new_fps: Vec<String> = Vec::new();
             let mut anchor_lines: Vec<String> = Vec::new();
 
             for sug in &suggestions {
@@ -1976,11 +1997,10 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
                     continue;
                 }
                 let fp = crate::advice::fingerprint::fingerprint_suggestion(sug);
-                // Always append to advice-seen (flip suggested → true) before any early return.
-                if advice_seen.contains(&fp) || new_fps.contains(&fp) {
+                if advice_seen.contains(&fp) || block_b_new_fps.contains(&fp) {
                     continue;
                 }
-                new_fps.push(fp);
+                block_b_new_fps.push(fp);
 
                 for p in &sug.participants {
                     let anchor = if p.whole {
@@ -1992,9 +2012,7 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
                 }
             }
 
-            if !new_fps.is_empty() {
-                store.append_advice_seen(&new_fps)?;
-
+            if !block_b_new_fps.is_empty() {
                 output.push_str(
                     "# Use `git mesh` to document implicit semantic dependencies. Potential candidates:\n",
                 );
@@ -2030,12 +2048,16 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
         }
     }
 
-    // Persist seen sets and flags only after successful output.
+    // Persist seen sets and flags only after successful output (F3: advice-seen
+    // written after stdout, matching milestone's ordering).
     if !new_meshes_seen.is_empty() {
         store.append_meshes_seen(&new_meshes_seen)?;
     }
     if !new_mesh_candidates.is_empty() {
         store.append_mesh_candidates(&new_mesh_candidates)?;
+    }
+    if !block_b_new_fps.is_empty() {
+        store.append_advice_seen(&block_b_new_fps)?;
     }
 
     // Step 8: persist SessionFlags.

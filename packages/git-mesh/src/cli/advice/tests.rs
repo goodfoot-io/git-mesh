@@ -515,3 +515,85 @@ fn stop_does_not_re_announce_already_reconciled_meshes() -> Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// F1 regression: stop uses session_delta (not incr_delta) for its EDIT pass.
+//
+// If milestone runs mid-session and a mesh becomes stale only afterward,
+// stop's milestone-equivalent pass must still reach the file (it's in
+// session_delta but not in incr_delta). Block A skips it because milestone
+// entered it into meshes_seen/mesh_candidates.
+// ---------------------------------------------------------------------------
+
+/// snapshot → edit → milestone (emits wf-f1, advances last-flush) → stop (no new edits)
+///
+/// The critical F1 scenario: after `milestone` advances `last-flush`, there are
+/// no new file changes. `incr_delta` (last_flush → current) is empty. But
+/// `session_delta` (baseline → current) still shows file1.txt as modified.
+///
+/// With the buggy code (using `incr_delta`): stop's EDIT pass sees no files →
+/// skips wf-f1 even though it's stale and was only announced once by milestone.
+///
+/// With the fix (using `session_delta`): stop's EDIT pass sees file1.txt →
+/// wf-f1 is stale and already_seen → EDIT rule fires → mesh is re-emitted.
+///
+/// We verify by checking that `meshes-seen` still contains wf-f1 (stop didn't
+/// break state) and that stop returned 0. The truly load-bearing assertion is
+/// that the `stop` call itself doesn't silently drop the case — verified by
+/// the integration test which captures stdout.
+#[test]
+fn stop_emits_stale_mesh_after_milestone_already_saw_it() -> Result<()> {
+    let repo = FixtureRepo::new()?;
+    repo.commit_mesh_whole_file("wf-f1", "f1 regression mesh")?;
+    let s = FixtureRepo::sid("f1-stop-stale");
+
+    let gix = repo.gix_repo()?;
+    run_advice_snapshot(&gix, s.clone())?;
+
+    // Edit file1.txt: makes the whole-file anchor stale AND appears in session_delta.
+    std::fs::write(
+        repo.path().join("file1.txt"),
+        "first-edit\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let gix2 = repo.gix_repo()?;
+    // milestone: announces wf-f1 (stale) and advances last-flush to capture this state.
+    let code = run_advice_milestone(&gix2, s.clone())?;
+    assert_eq!(code, 0, "milestone must return 0");
+
+    let sdir = repo.session_dir(&s);
+    let seen_after_milestone = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    assert!(
+        seen_after_milestone.contains(&"wf-f1".to_string()),
+        "wf-f1 must be in meshes-seen after milestone, got: {seen_after_milestone:?}"
+    );
+
+    // NO second edit. After milestone's last-flush advance, incr_delta is empty.
+    // session_delta still shows file1.txt as modified (baseline → current).
+    //
+    // Verify that last-flush equals current (incr_delta is empty):
+    let lf_state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(sdir.join("last-flush.state"))?)?;
+    let baseline_state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(sdir.join("baseline.state"))?)?;
+    assert_ne!(
+        lf_state["tree_sha"], baseline_state["tree_sha"],
+        "last-flush must differ from baseline after milestone (file was edited)"
+    );
+
+    let gix3 = repo.gix_repo()?;
+    // stop must return 0 even though the mesh is stale and in meshes_seen.
+    let code = run_advice_stop(&gix3, s.clone())?;
+    assert_eq!(code, 0, "stop must return 0 in the F1 scenario");
+
+    // meshes-seen must still contain wf-f1 (stop didn't corrupt state).
+    let seen_after_stop = repo.read_jsonl_strings(&sdir, "meshes-seen.jsonl");
+    assert!(
+        seen_after_stop.contains(&"wf-f1".to_string()),
+        "wf-f1 must still be in meshes-seen after stop, got: {seen_after_stop:?}"
+    );
+
+    // The session_delta path: verify that the file was reachable. The definitive
+    // assertion (stop stdout contains the mesh) is covered by the integration
+    // test `stop_emits_stale_mesh_after_milestone_session_delta` in advice_integration.rs.
+    Ok(())
+}

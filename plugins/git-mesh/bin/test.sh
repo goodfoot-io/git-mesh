@@ -269,45 +269,41 @@ assert_stdout_empty "PostToolUse(no baseline)"
 # replacement in the new four-verb CLI surface.
 
 # ---------------------------------------------------------------------------
-# Test 10: PostToolUse Bash with `cd /other-repo && …` resolves to that
-# repo's advice store.
+# Test 10: PostToolUse Bash dispatches milestone against cwd (no per-tool
+# path parsing). The hook uses the payload cwd to find the repo.
 # ---------------------------------------------------------------------------
-log "Test 10: PostToolUse Bash parses cd into a separate repo"
-REPO10A="$(make_repo repo10a)"
-REPO10B="$(make_repo repo10b)"
+log "Test 10: PostToolUse Bash dispatches milestone against cwd"
+REPO10="$(make_repo repo10)"
 SID10="sess-ten"
 run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID10" --arg c "$REPO10B" \
+  "$(jq -nc --arg s "$SID10" --arg c "$REPO10" \
     '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
-echo "bash-edit" >> "$REPO10B/a.txt"
-CMD10="cd $REPO10B && echo done"
-PAYLOAD10="$(jq -nc --arg s "$SID10" --arg c "$REPO10A" --arg cmd "$CMD10" \
+echo "bash-edit" >> "$REPO10/a.txt"
+CMD10="echo done"
+PAYLOAD10="$(jq -nc --arg s "$SID10" --arg c "$REPO10" --arg cmd "$CMD10" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t10", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD10"
-assert_rc_zero "PostToolUse(Bash cd)"
-# a.txt was modified in repo10b — milestone detects the edit and emits b.txt
-# (the partner) in the output.
-assert_stdout_contains "PostToolUse(Bash cd)" "b.txt"
+assert_rc_zero "PostToolUse(Bash cwd)"
+# a.txt was modified in repo10 — milestone detects the edit and emits b.txt.
+assert_stdout_contains "PostToolUse(Bash cwd)" "b.txt"
 
 # ---------------------------------------------------------------------------
-# Test 11: PostToolUse Bash with `git -C /other-repo …` resolves the
-# target repo even without a cd.
+# Test 11: PostToolUse on a non-Read tool (mcp__*-style name) dispatches
+# milestone against cwd — no separate mcp arm exists.
 # ---------------------------------------------------------------------------
-log "Test 11: PostToolUse Bash parses git -C target"
-REPO11A="$(make_repo repo11a)"
-REPO11B="$(make_repo repo11b)"
+log "Test 11: PostToolUse mcp__* dispatches milestone against cwd"
+REPO11="$(make_repo repo11)"
 SID11="sess-eleven"
 run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID11" --arg c "$REPO11B" \
+  "$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
     '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
-echo "via-git-C" >> "$REPO11B/a.txt"
-CMD11="git -C $REPO11B status"
-PAYLOAD11="$(jq -nc --arg s "$SID11" --arg c "$REPO11A" --arg cmd "$CMD11" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t11", duration_ms:1}')"
+echo "mcp-edit" >> "$REPO11/a.txt"
+PAYLOAD11="$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"mcp__filesystem__write_file", tool_input:{}, tool_response:{}, tool_use_id:"t11", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD11"
-assert_rc_zero "PostToolUse(Bash git -C)"
-# a.txt was modified in repo11b — milestone detects the edit and emits b.txt.
-assert_stdout_contains "PostToolUse(Bash git -C)" "b.txt"
+assert_rc_zero "PostToolUse(mcp__ cwd)"
+# a.txt was modified — milestone detects the edit and emits b.txt.
+assert_stdout_contains "PostToolUse(mcp__ cwd)" "b.txt"
 
 # ---------------------------------------------------------------------------
 # Test 12: CLI exit-code split — operational failures (exit 1) vs

@@ -65,33 +65,6 @@ abspath_against() {
   esac
 }
 
-# Print every directory a Bash command may operate in: the inherited cwd
-# plus every `cd <dir>` and `git -C <dir>` target found in the command
-# string. Heuristic — handles `cd X`, `cd X &&`, `cd X;`, `(cd X && …)`,
-# and `git -C X <subcmd>`. Subshell-only `cd`s still surface, which is
-# the safer side to err on (we'd rather render advice for a repo Claude
-# briefly visited than miss a repo it actually mutated).
-bash_candidate_dirs() {
-  local cwd="$1" cmd="$2"
-  printf '%s\n' "$cwd"
-  # `cd <dir>` targets — `|| true` so an unmatched grep doesn't trip set -e.
-  { printf '%s\n' "$cmd" \
-      | grep -oE '(^|[[:space:];&|()])cd[[:space:]]+[^[:space:];&|()]+' \
-      || true; } \
-    | sed -E 's/^.*cd[[:space:]]+//' \
-    | while IFS= read -r d; do
-        [ -n "$d" ] && abspath_against "$cwd" "$d"
-      done
-  # `git -C <dir>` targets.
-  { printf '%s\n' "$cmd" \
-      | grep -oE '(^|[[:space:];&|()])git[[:space:]]+-C[[:space:]]+[^[:space:];&|()]+' \
-      || true; } \
-    | sed -E 's/^.*git[[:space:]]+-C[[:space:]]+//' \
-    | while IFS= read -r d; do
-        [ -n "$d" ] && abspath_against "$cwd" "$d"
-      done
-}
-
 # Run a single advice verb for one repo and print the raw text (no JSON wrapper).
 # Usage: run_advice_verb <repo_root> <sid> <verb> [<anchor>]
 # Silent if there's nothing to say or the verb returns non-zero.
