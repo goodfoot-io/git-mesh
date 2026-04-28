@@ -1,6 +1,6 @@
 # Using `git mesh advice`
 
-Advice is a session-scoped stream that surfaces the implicit semantic dependencies a developer crosses while working. Each render emits one candidate per coupling crossed since the last flush — a mesh anchor read, a related anchor that drifted under an edit, a rename that broke an anchored path, sibling anchors co-touched in the session, staging that cuts across the mesh — and carries the mesh's why so the developer reads what relationship the anchors hold at the moment they're stepping on it. The related anchor the candidate routes to may be code or prose: an ADR section, a contract clause, a runbook step, an API doc are normal advice targets.
+Advice is a session-scoped stream that surfaces the implicit semantic dependencies a developer crosses while working. Each render emits one candidate per coupling crossed since the last flush — a mesh anchor read, a related anchor that drifted under an edit, a rename that broke an anchored path, sibling anchors co-touched in the session, staging that cuts across the mesh — and carries the mesh's why so the developer reads which subsystem the anchors form at the moment they're stepping on it. The related anchor the candidate routes to may be code or prose: an ADR section, a contract clause, a runbook step, an API doc are normal advice targets.
 
 Advice is observation, not enforcement. It doesn't gate commits and doesn't run in CI. Drift gating belongs to `git mesh stale` and the `pre-commit` subcommand; advice is the *during-work* surface that shows the developer which dependencies they've touched.
 
@@ -49,9 +49,9 @@ Candidates surface five kinds of crossing — read-intersects-mesh, delta-inters
 
 When a candidate fires:
 
-- **Read or open the related anchor** the candidate routes to. The anchor address plus the relationship description is usually enough; the related file (code or prose) shows the rest. If the related anchor is a doc section, the why says what the doc promises or governs and the section spells out the contract.
-- **If the why doesn't match what the related anchor currently does**, the dependency has drifted out of the why. Update the why (`git mesh why <name> -m …`) as part of the same change.
-- **If the why is fine but the anchors drifted**, see `./responding-to-drift.md`.
+- **Read or open the related anchor** the candidate routes to. The anchor address plus the subsystem definition is usually enough to orient you; the related file (code or prose) shows the mechanism.
+- **If the subsystem itself has changed** (the anchors no longer form what the why says they do), update the why (`git mesh why <name> -m …`) as part of the same change.
+- **If the subsystem is the same but the anchors drifted**, see `./responding-to-drift.md`.
 
 ## Common quirks
 

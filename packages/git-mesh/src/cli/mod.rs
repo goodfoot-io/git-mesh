@@ -32,7 +32,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-mesh",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A mesh holds the anchors — line-range or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that names the relationship between them in one sentence: what they form, what one promises, what one governs, what one cites.\n\nBare invocations:\n  git mesh <name>          show one mesh (anchors, why, config)"
+    after_help = "A mesh holds the anchors — line-range or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that defines the subsystem those anchors collectively form. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in source comments, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git mesh <name>          show one mesh (anchors, why, config)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -60,29 +60,17 @@ pub enum Commands {
     /// Stage anchors to remove on the next mesh commit.
     Rm(RmArgs),
 
-    /// Read or stage the mesh's why — the durable one-sentence
-    /// definition of the relationship the anchors hold.
+    /// Read or stage the mesh's why — a one-sentence definition of
+    /// the subsystem, flow, or concern the anchors collectively form.
     ///
-    /// Name the relationship: what the anchors form together, what
-    /// one promises, what one governs, what one cites. Write it so
-    /// it survives a rewrite of either side. The why is prose: the
-    /// mesh name carries the label, so don't restate the name as a
-    /// prefix or use a git-style leading keyword (`contract:`,
-    /// `spec:`, `gov:`). The anchors carry the paths; describe the
-    /// relationship in role-words ("the doc," "the parser," "the
-    /// runbook," "the migration") rather than repeating filenames.
-    /// Name a path only when the path itself is part of the
-    /// dependency (a hard-coded script reference, a generated file
-    /// invoked by name). For asymmetric relationships, name which
-    /// side is normative in prose ("the doc is the source of truth
-    /// when they disagree," "X promises the shape Y honors"). Avoid
-    /// restating the diff, embedding incidental implementation
-    /// properties (parser strictness, current field names), or
-    /// bundling ownership and review triggers. If you're stuck,
-    /// reach for vocabulary like subsystem, specification,
-    /// mechanism, consumer role, or contract — but the rule is one
-    /// prose sentence, stable across implementation churn at either
-    /// anchor.
+    /// Write the why as a definition: name the subsystem and say
+    /// plainly what it does across the anchors (e.g. "Checkout
+    /// request flow that carries a charge attempt from the browser
+    /// to the Stripe-backed server."). Leave invariants, caveats,
+    /// ownership, and review triggers to source comments, commit
+    /// messages, CODEOWNERS, and PR descriptions. The why is
+    /// inherited across routine re-anchors; only stage a new one
+    /// when the subsystem itself changes.
     ///
     /// Bare `git mesh why <name>` prints the current why; the writer
     /// flags `-m`/`-F`/`--edit` stage a new one.
@@ -302,13 +290,13 @@ pub struct RmArgs {
 ))]
 pub struct WhyArgs {
     /// Mesh whose why text to read (no writer flag) or stage
-    /// (`-m` / `-F` / `--edit`). The why names the relationship the
-    /// anchors hold.
+    /// (`-m` / `-F` / `--edit`). The why defines the subsystem the
+    /// anchors collectively form.
     pub name: String,
 
     /// Inline why text (`-m "..."`). Writer flag. One sentence
-    /// naming the relationship the anchors hold; stable across
-    /// implementation churn at either anchor.
+    /// defining the subsystem the anchors form; evergreen and
+    /// inherited across routine re-anchors.
     #[arg(short = 'm', value_name = "MSG")]
     pub m: Option<String>,
 

@@ -62,4 +62,4 @@ request-schema mesh: Charge request schema is shared by client and server.
 - server/routes.ts#L8-L21
 ```
 
-The first line is the mesh name + current why. Each bullet is an anchor; the marker in brackets is its status. Absence of a marker means `FRESH`. Use the why line to decide whether the change is intentional before touching either side.
+The first line is the mesh name + current why. Each bullet is an anchor; the marker in brackets is its status. Absence of a marker means `FRESH`. The why tells you which subsystem the anchors form so you can judge whether the change still belongs to it before touching either side.

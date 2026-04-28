@@ -16,6 +16,7 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    if: false  # disabled
 
     steps:
       - uses: actions/checkout@v4

@@ -238,15 +238,21 @@ assert_stdout_empty "UserPromptSubmit(non-repo)"
 # Test 7: Stop hook flushes; skipped on max_tokens.
 # ---------------------------------------------------------------------------
 log "Test 7: Stop hook"
-# Make a fresh post-edit crossing in repo5 so Stop has something new to render.
-echo "more" >> "$REPO5/b.txt"
-PAYLOAD7="$(jq -nc --arg s "$SID5" --arg c "$REPO5" \
+# Use a fresh repo + session so the mesh is unannounced — every mesh is
+# emitted at most once per advice session, so we can't reuse repo5/SID5.
+REPO7="$(make_repo repo7)"
+SID7="sess-seven"
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+echo "more" >> "$REPO7/b.txt"
+PAYLOAD7="$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"end_turn", output:""}')"
 run_hook "$BIN_DIR/advice-stop.sh" "$PAYLOAD7"
 assert_rc_zero "Stop(end_turn)"
 assert_stdout_contains "Stop(end_turn)" "a.txt"
 
-PAYLOAD7B="$(jq -nc --arg s "$SID5" --arg c "$REPO5" \
+PAYLOAD7B="$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"max_tokens", output:""}')"
 run_hook "$BIN_DIR/advice-stop.sh" "$PAYLOAD7B"
 assert_rc_zero "Stop(max_tokens)"

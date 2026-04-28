@@ -95,19 +95,19 @@ Run `yarn validate` from the workspace root for final validations — it typeche
 </validation>
 
 <git-mesh>
-A mesh names an implicit semantic dependency between two or more anchors - a **line-range anchor** (`path#L<start>-L<end>`) or a **whole-file anchor** — in code or prose — that is real, load-bearing, and not enforced by any type, schema, or test. It exists so a future developer touching one anchor learns, at that moment, what the other anchor relies on them to keep true. The standing question whenever you edit, read, or review is: does this region create or rely on a coupling that isn't visible from the lines themselves? If yes, and if you can name a concrete wrong decision someone would make under deadline when the related anchor changes silently, write a mesh.
 
 ```bash
-# Stage the mesh: slug names the relationship, whole-file anchors the prose spec, line range anchors the exact parser bytes.
-git mesh add billing/charge-request-contract \
-  docs/api/charge.md \
-  services/api/charge.ts#L30-L76
+# Stage the mesh: slug titles the subsystem; line-range anchors (`path#L<start>-L<end>`) or whole-file anchors carry the path
+git mesh add billing/checkout-request-flow \
+  web/checkout.tsx#L88-L120 \
+  api/charge.ts#L30-L76
 
-# One prose sentence in role-words; names which side is normative. Every new mesh needs a why before it can be committed.
-git mesh why billing/charge-request-contract \
-  -m "The published request spec states the body shape the parser honors; the spec is the source of truth when they disagree."
+# Name the subsystem, flow, or concern the anchors collectively form, and say plainly what it does across them
+git mesh why billing/checkout-request-flow \
+  -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
 
-# The post-commit hook runs `git mesh commit`, anchoring the staged ranges to the commit that just landed.
-git commit -m "Document charge request contract and wire the parser"
+# The post-commit hook runs `git mesh commit`
+git commit -m "Wire checkout to charge API"
 ```
+
 </git-mesh>

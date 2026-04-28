@@ -8,7 +8,7 @@ Based on the change:
 - **Bytes changed and the relationship still holds (refactor, rename, formatting)**: Re-anchor. The why is inherited; do not rewrite it.
 - **Bytes changed and the relationship is broken on one side**: Fix the related anchor (code / test / doc), re-anchor after. Both sides should land in the same commit.
 - **`MOVED` with identical bytes**: Usually leave it — the anchor follows. Re-anchor only if the new location is the one the mesh should point at going forward.
-- **The relationship itself changed (different anchors, different contract, new owner, new review trigger)**: Stage a new `git mesh why`, then re-anchor.
+- **The subsystem itself changed (different anchors form a different thing)**: Stage a new `git mesh why`, then re-anchor.
 - **The relationship no longer exists**: `git mesh delete <name>`, or `git mesh revert <name> <commit-ish>` to restore a prior correct state.
 
 ## Re-anchoring
@@ -30,17 +30,12 @@ git mesh commit <name>
 
 This is the only time `git mesh rm` appears in a re-anchor workflow. Otherwise, `rm` only removes an anchor from the mesh entirely.
 
-## The why is the relationship, not a changelog
+## The why is the subsystem, not a changelog
 
-Mesh commits inherit the previous why when none is staged. Routine re-anchors (anchor moved, file renamed, lines shifted) carry the relationship description forward unchanged. Stage a new why **only when the relationship itself changes**. Write it as a durable answer to "what relationship does this mesh represent?" — not a commit-log entry.
-
-Whys are prose, not log entries: no `contract:`, `spec:`, `gov:` prefixes — the mesh name carries the label. Whys that don't repeat filenames survive `git mesh add` re-anchors after a rename without needing a rewrite (the anchors update; the prose stays correct because it talks about "the doc" or "the parser," not `docs/api/charge.md`).
+Mesh commits inherit the previous why when none is staged. Routine re-anchors (anchor moved, file renamed, lines shifted) carry the definition forward unchanged. Stage a new why **only when the subsystem itself changes**. Write it as a durable answer to "what subsystem do these anchors form?" — not a commit-log entry. Caveats, invariants, ownership, and review triggers belong in source comments, commit messages, CODEOWNERS, and PR descriptions.
 
 ```bash
-git mesh why <name> -m "Token verification depends on signature verification
-
-Owner: team-auth
-Review when either signing or verification algorithm changes."
+git mesh why <name> -m "Token verification flow that lets the API trust a request bearer signed by the auth service."
 git mesh commit <name>
 ```
 

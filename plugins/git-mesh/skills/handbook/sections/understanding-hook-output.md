@@ -21,8 +21,8 @@ surfaces:
 
 - **`additionalContext`** — material the assistant sees on its next
   turn. This is where routing belongs: the other anchors in the mesh
-  the assistant should also consider, the why that names the
-  relationship the anchors hold, the mesh name that labels the
+  the assistant should also consider, the why that defines the
+  subsystem the anchors form, the mesh name that labels the
   coupling.
 - **`systemMessage`** — the same text mirrored into the transcript,
   so the developer reading the conversation later sees exactly what

@@ -28,10 +28,10 @@ Common command shape:
 
 ```bash
 git mesh doctor
-git mesh add frontend-backend-sync src/client.ts#L10-L40 src/server.ts#L20-L64
-git mesh why frontend-backend-sync -m "Client request matches server handler"
-git mesh commit frontend-backend-sync
-git mesh stale frontend-backend-sync
+git mesh add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
+git mesh why checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+git mesh commit checkout-request-flow
+git mesh stale checkout-request-flow
 ```
 
 See [docs/git-mesh-the-missing-handbook.md](./docs/git-mesh-the-missing-handbook.md)

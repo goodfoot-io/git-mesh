@@ -31,54 +31,36 @@ Kebab-case slug that names the *relationship*, not either side, optionally prefi
 - For one side that promises or governs the other, name the contract or rule: `charge-request-contract`, `uuidv4-lex-order`, `p1-payment-runbook`.
 - For prose-to-prose citations or summaries, name what's being kept in sync: `architecture-summary-sync`, `threat-model-controls-link`.
 - Avoid naming after one anchor (`charge-ts-deps`, `adr-0017-impl`); the slug should survive a rename or rewrite of either side.
-- **Load the label into the name, not the why.** A descriptive slug (`charge-request-contract`, `uuidv4-lex-order`, `p1-payment-runbook`) lets the why be plain prose about the relationship instead of having to label itself.
-- Add a category prefix (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`) when the repo spans multiple domains or teams.
+- Pick the noun phrase a person would naturally use to refer to the subsystem the anchors form (`checkout-request-flow`, `tier-rollout`, `rate-limits`, `auth-token`).
+- Add a category prefix (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`) when the repo spans multiple domains or teams; skip it when the area is obvious.
 - Avoid `misc`, `john-work`, `temp`, `frontend`.
 - One relationship per mesh. If anchors split into two reasons to change together, create two meshes.
 
 ## Writing the why
 
-**One rule:** name the relationship the anchors hold in one prose sentence, written so it survives a rewrite of either side.
-
-The reader opens the files to see the mechanism for themselves; the why's job is to orient them, not to pre-chew the answer. Three style rules follow:
-
-- **The mesh name carries the label.** The why is prose; don't restate the name as a prefix or use a git-style leading keyword (`contract:`, `spec:`, `gov:`, `note:`). If the why's first words restate the name, drop them.
-- **The anchors carry the paths.** Describe the relationship in role-words — "the doc," "the parser," "the client," "the runbook," "the responder," "the migration" — rather than repeating filenames. A why without filenames survives a rename. Name a path only when the path itself is part of the dependency (a hard-coded script reference, a generated file invoked by name). External proper nouns the anchors don't carry (vendor names like `Stripe`, system names like `Kafka`) are fine.
-- **Sharpen the role-words when one side isn't enough.** The point of role-words is disambiguation, not minimalism. When both anchors are prose ("the doc" applies to both) or both are code ("the handler" applies to both), reach for sharper role-words — "the threat entry" and "the paired control," "the request doc" and "the parser," "the runbook step" and "the alert handler" — before falling back to filenames. If one role-word genuinely covers both sides, the why isn't yet specific enough.
-- **For asymmetric relationships, name which side is normative in prose.** "The doc is the source of truth when they disagree." "X promises the shape Y honors." "X governs the assumption Y relies on." Don't smuggle this in as a category prefix.
-
-Avoid restating the diff, embedding incidental implementation properties (parser strictness, current field names), scolding, or bundling ownership and review triggers — those belong in source comments, commit messages, CODEOWNERS, and PR descriptions.
+Write the **why** as a definition: name the subsystem, flow, or concern the anchors collectively form, and say plainly what it does across them. Leave invariants, caveats, ownership, and review triggers to source comments, commit messages, CODEOWNERS, and PR descriptions. The why is inherited across routine re-anchors; only stage a new one when the subsystem itself changes.
 
 ```bash
-# GOOD — names the relationship in prose, no filename repetition, survives rewrites
-git mesh why billing/checkout-request-flow \
-  -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+# GOOD — names the subsystem; evergreen, readable out of context
+git mesh why billing/checkout-request-flow -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
+git mesh why experiments/tier-rollout      -m "Tier-rollout bucketing that steers both the live dashboard and the nightly recomputation onto one treatment per user."
 
-git mesh why billing/charge-request-contract \
-  -m "The doc states the request body shape the parser honors; the doc is the source of truth when they disagree."
-
-git mesh why platform/uuidv4-lex-order \
-  -m "An ADR governs the v4 lex-order assumption the joiner relies on for cross-service joins."
-
-# BAD — restates the name as a prefix, repeats filenames already in the anchors, embeds incidental implementation, scolds, or bundles metadata
-git mesh why billing/charge-request-contract -m "Contract: docs/api/charge.md states the body shape api/charge.ts parses."
-git mesh why billing/charge-request-contract -m "docs/api/charge.md states the body shape api/charge.ts parses."
-git mesh why billing/checkout-request-flow -m "Browser POST body — strict parser, field names load-bearing."
-git mesh why billing/checkout-request-flow -m "Don't change amount without updating the server."
-git mesh why billing/checkout-request-flow -m "Charge flow. Owner: team-billing. Review on body changes."
+# BAD — restates the diff, scolds the reader, or bundles metadata
+git mesh why billing/checkout-request-flow -m "Checkout posts the shape api/charge.ts parses."              # describes the coupling, not the subsystem
+git mesh why billing/checkout-request-flow -m "Don't change amount without updating the server."            # caveat — belongs in a code comment
+git mesh why billing/checkout-request-flow -m "Charge flow. Owner: team-billing. Review on body changes."   # metadata — belongs in CODEOWNERS / PR
 ```
 
-### Vocabulary, when you're stuck
+Re-anchor after drift; do not rewrite the why:
 
-The "name the relationship" rule is enough most of the time. If you're stuck, try one of these framings — they are scaffolding, not categories the writer has to pick before starting:
+```bash
+# Same (path, extent), bytes changed: re-add is a re-anchor (last-write-wins)
+git mesh add billing/checkout-request-flow api/charge.ts#L30-L76
 
-- **Subsystem** — symmetric co-implementation: the anchors *together* form a thing. *Checkout request flow across client and server.*
-- **Specification** — asymmetric: one side is the source of truth, the other must conform. Covers promises, governance, normative references, ADRs that govern code. *`docs/adr/0017-uuidv4.md` governs the lex-order assumption in `services/joiner/sort.ts`.*
-- **Mechanism** — the dependency *is* a non-obvious mechanism the lines don't show: a load-bearing flush, an import-time side effect, a sleep masking a race, dynamic name construction (`f"{prefix}_KEY"`).
-- **Consumer role** — a downstream depends on these lines in a specific way: a binding regen target, a CDC tail, a literal client on a slow release cycle.
-- **Contract** — the dependency is on a property the code maintains rather than on another file: a sort order a `bisect` reads, a UUID lex-order convention, a schema-migration requirement.
-
-Don't bundle several of these into one why ("strict parser, field names load-bearing, owner: billing") — that usually means the mesh is trying to carry more than one relationship and should be split.
+# Different line span: rm the old, add the new
+git mesh rm  billing/checkout-request-flow api/charge.ts#L30-L76
+git mesh add billing/checkout-request-flow api/charge.ts#L34-L82
+```
 
 ## Line-range anchor vs whole-file anchor
 

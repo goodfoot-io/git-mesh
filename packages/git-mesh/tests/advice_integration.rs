@@ -162,6 +162,7 @@ fn advice_store_inside_worktree_is_not_captured_or_co_touched() -> Result<()> {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-mesh"));
         cmd.current_dir(repo.path())
             .env("GIT_MESH_ADVICE_DIR", &advice_dir)
+            .env_remove("GIT_MESH_ADVICE_DEBUG")
             .args(["advice", &s]);
         cmd.args(extra);
         Ok(cmd.output()?)
