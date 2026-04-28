@@ -169,7 +169,7 @@ fn git_log_name_only_parity_with_subprocess_n20() {
 
     let out = Command::new("git")
         .current_dir(repo.workdir().unwrap())
-        .args(["log", "--name-only", "--no-merges",
+        .args(["log", "--name-only", "--no-merges", "--no-renames",
                &format!("-n{n}"), "--pretty=format:COMMIT:%H"])
         .output()
         .unwrap();
