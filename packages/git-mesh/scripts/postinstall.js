@@ -54,7 +54,29 @@ function buildFromSource(destBinary, binaryName) {
   fs.chmodSync(destBinary, 0o755);
 }
 
+function isInsideSourceTree() {
+  // Walk up from this script looking for a `.git` entry. If found, this is
+  // the @goodfoot/git-mesh source repo (developer doing `yarn install`), not
+  // a consumer install under node_modules. Mutating the tracked `bin/git-mesh`
+  // shim in that case dirties the working tree and — if committed — ships a
+  // dangling symlink in the published tarball (see git-mesh-v1.0.25 regression).
+  let dir = path.resolve(__dirname, '..');
+  for (let i = 0; i < 16; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    if (path.basename(parent) === 'node_modules') return false;
+    dir = parent;
+  }
+  return false;
+}
+
 function main() {
+  if (isInsideSourceTree()) {
+    console.log('@goodfoot/git-mesh: postinstall skipped (running inside source tree).');
+    return;
+  }
+
   const platform = PLATFORM_MAP[process.platform];
   const arch = ARCH_MAP[process.arch];
 

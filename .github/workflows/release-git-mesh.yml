@@ -101,6 +101,20 @@ jobs:
             cd ../..
           done
 
+      - name: Verify meta-package bin shim is a real file
+        working-directory: packages/git-mesh
+        run: |
+          ls -la bin/
+          if [ ! -f bin/git-mesh ] || [ -L bin/git-mesh ]; then
+            echo "ERROR: packages/git-mesh/bin/git-mesh must be a regular file, not a symlink or missing." >&2
+            echo "       A symlink here will be silently dropped by npm publish, breaking bin-linking on consumers." >&2
+            exit 1
+          fi
+          if ! grep -q 'Installation incomplete' bin/git-mesh; then
+            echo "ERROR: packages/git-mesh/bin/git-mesh does not look like the expected shim." >&2
+            exit 1
+          fi
+
       - name: Publish meta-package
         working-directory: packages/git-mesh
         run: |
