@@ -25,16 +25,25 @@ Skip when:
 
 ## Naming
 
-Kebab-case slug that names the *relationship*, not either side, optionally prefixed by a category: `<category>/<slug>`. The slug should still fit if either anchor is rewritten.
+Kebab-case slug that names the *relationship*, not either side. Prefer a **hierarchical path** of kebab-case segments separated by `/`: `<category>/<subcategory>/<identifier-slug>`. Each segment is lowercase a-z, 0-9, and `-`, and starts with a letter or digit. The leaf slug should still fit if either anchor is rewritten.
 
+Recommended shapes, in order of growing scope:
+
+- `<identifier-slug>` — small repo, one obvious domain. `checkout-request-flow`.
+- `<category>/<identifier-slug>` — repo spans a few domains. `billing/checkout-request-flow`.
+- `<category>/<subcategory>/<identifier-slug>` — recommended default once a category contains more than a handful of meshes, or when the middle segment carries a stable id (an ADR number, a wiki article slug, a threat-model id, a sub-team). `billing/payments/checkout-request-flow`, `auth/oauth/token-refresh`, `adr/0017/uuidv4-lex-order`, `wiki/world-war-ii/eastern-front`, `security/threat-model/t-07-controls-link`.
+- Deeper paths are allowed when the hierarchy is real, but stop once another segment stops adding grouping value — flat-but-descriptive beats deep-and-redundant.
+
+Choosing segments:
+
+- **Leaf (identifier-slug).** The noun phrase a person would naturally use to refer to the subsystem the anchors form: `checkout-request-flow`, `tier-rollout`, `rate-limits`, `auth-token`.
 - For anchors that form a thing together, name what they form: `checkout-request-flow`, `tier-rollout`, `auth-token`, `rate-limits`.
 - For one side that promises or governs the other, name the contract or rule: `charge-request-contract`, `uuidv4-lex-order`, `p1-payment-runbook`.
 - For prose-to-prose citations or summaries, name what's being kept in sync: `architecture-summary-sync`, `threat-model-controls-link`.
-- Avoid naming after one anchor (`charge-ts-deps`, `adr-0017-impl`); the slug should survive a rename or rewrite of either side.
-- Pick the noun phrase a person would naturally use to refer to the subsystem the anchors form (`checkout-request-flow`, `tier-rollout`, `rate-limits`, `auth-token`).
-- Add a category prefix (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`) when the repo spans multiple domains or teams; skip it when the area is obvious.
-- Avoid `misc`, `john-work`, `temp`, `frontend`.
-- One relationship per mesh. If anchors split into two reasons to change together, create two meshes.
+- **Category / subcategory.** Domain or team at the top (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`, `wiki/`, `adr/`, `security/`); a stable sub-grouping in the middle (a feature area, a numbered artifact, an article slug, a sub-team). Reuse the same prefix across sibling meshes so prefix listings (`git mesh ls billing/payments/...`) group naturally.
+- Avoid naming after one anchor (`charge-ts-deps`, `adr-0017-impl`); the leaf should survive a rename or rewrite of either side.
+- Avoid `misc`, `john-work`, `temp`, `frontend`, and other catch-all segments at any level.
+- One relationship per mesh. If anchors split into two reasons to change together, create two meshes — typically siblings under the same prefix.
 
 ## Writing the why
 

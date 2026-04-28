@@ -163,7 +163,8 @@ fn t7_topic_block_renders_verbatim() {
     assert!(out.contains("# These files move together: the session has touched them together and"));
     assert!(out.contains("# Record:"));
     assert!(out.contains("#   git mesh add <mesh-name> <path-1> <path-2> [...]"));
-    assert!(out.contains("# Name with a kebab-case slug that titles the subsystem, optionally"));
+    assert!(out.contains("# Name hierarchically with kebab-case segments separated by `/` —"));
+    assert!(out.contains("# recommended shape `<category>/<subcategory>/<identifier-slug>`, e.g."));
 }
 
 #[test]

@@ -26,11 +26,14 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
 ];
 
 /// Mesh-name shape, per `docs/advice-notes.md` §12.12 T7 and the handbook:
-/// kebab-case slug, optionally prefixed by a kebab-case category and a `/`.
-/// Concretely: `^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)?$`.
+/// one or more kebab-case segments separated by `/`. The recommended
+/// hierarchical form is `<category>/<subcategory>/<identifier-slug>`,
+/// but a bare slug or any depth `>= 1` is accepted.
+/// Concretely: `^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)*$`.
 pub const MESH_NAME_RULE: &str =
-    "kebab-case `<slug>` or `<category>/<slug>`; lowercase a-z, 0-9, and `-`; \
-     each segment must start with a letter or digit";
+    "kebab-case segments separated by `/` (e.g. `<slug>`, `<category>/<slug>`, \
+     or `<category>/<subcategory>/<identifier-slug>`); lowercase a-z, 0-9, \
+     and `-`; each segment must start with a letter or digit";
 
 /// Validate a mesh name against §3.5, §10.2, and the §12.12 T7 naming rule.
 pub fn validate_mesh_name(name: &str) -> Result<()> {
@@ -52,13 +55,8 @@ fn validate_mesh_name_shape(value: &str) -> Result<()> {
     if value.is_empty() {
         return Err(bad("mesh name must not be empty"));
     }
-    // Split optional `<category>/<slug>` into at most two segments.
+    // Split hierarchical `<a>/<b>/<c>/...` into one or more segments.
     let segments: Vec<&str> = value.split('/').collect();
-    if segments.len() > 2 {
-        return Err(bad(format!(
-            "`{value}` must contain at most one `/` separator ({MESH_NAME_RULE})"
-        )));
-    }
     for segment in &segments {
         if segment.is_empty() {
             return Err(bad(format!(

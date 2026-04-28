@@ -541,10 +541,14 @@ Record:
   git mesh why <mesh-name> -m \"What the anchors do together.\"
   git mesh commit <mesh-name>
 
-Name with a kebab-case slug that titles the subsystem, optionally
-prefixed by a category: billing/, platform/, experiments/, auth/.
-One relationship per mesh — if anchors split into two reasons to change
-together, record two meshes.
+Name hierarchically with kebab-case segments separated by `/` —
+recommended shape `<category>/<subcategory>/<identifier-slug>`, e.g.
+billing/payments/checkout-request-flow, auth/oauth/token-refresh,
+adr/0017/uuidv4-lex-order. Drop segments when they don't add grouping
+(`billing/checkout-request-flow` or just `checkout-request-flow` are
+fine for small repos). One relationship per mesh — if anchors split
+into two reasons to change together, record two meshes, typically as
+siblings under the same prefix.
 ";
 
 const TOPIC_T8: &str = "\

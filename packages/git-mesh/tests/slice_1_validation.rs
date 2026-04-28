@@ -1,8 +1,9 @@
 //! Slice 1 — CLI validation and naming.
 //!
 //! Each rejection asserts a non-zero exit code and a stderr substring.
-//! The positive test exercises the `<category>/<slug>` mesh-name form
-//! end to end (add → commit → ls / show / stale).
+//! The positive tests exercise the `<category>/<slug>` and the
+//! hierarchical `<category>/<subcategory>/<identifier-slug>` mesh-name
+//! forms end to end (add → commit → ls / show / stale).
 
 mod support;
 
@@ -214,10 +215,43 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
 }
 
 #[test]
-fn rejects_double_slash_in_name() -> Result<()> {
+fn hierarchical_three_segment_name_accepted_and_indexed() -> Result<()> {
     let repo = seeded_with_a_b()?;
-    let out = repo.run_mesh(["add", "a/b/c", "a.ts#L1-L5"])?;
-    assert_rejected(&out, "at most one `/`");
+
+    let name = "billing/payments/checkout-request-flow";
+    let out = repo.run_mesh(["add", name, "a.ts#L1-L5", "b.ts#L1-L5"])?;
+    assert!(
+        out.status.success(),
+        "stage failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = repo.run_mesh(["why", name, "-m", "Checkout request flow."])?;
+    assert!(out.status.success(), "why failed");
+    let out = repo.run_mesh(["commit", name])?;
+    assert!(
+        out.status.success(),
+        "commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        repo.ref_exists(&format!("refs/meshes/v1/{name}")),
+        "expected mesh ref under refs/meshes/v1/billing/payments/"
+    );
+
+    let listed = repo.mesh_stdout(["ls", "a.ts"])?;
+    assert!(
+        listed.contains(name),
+        "ls output missing the hierarchical mesh:\n{listed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_empty_segment_in_name() -> Result<()> {
+    let repo = seeded_with_a_b()?;
+    let out = repo.run_mesh(["add", "a//c", "a.ts#L1-L5"])?;
+    assert_rejected(&out, "empty segment");
     Ok(())
 }
 

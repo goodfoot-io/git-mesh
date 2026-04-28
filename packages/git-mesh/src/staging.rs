@@ -206,11 +206,12 @@ fn staging_dir(repo: &gix::Repository) -> Result<PathBuf> {
 
 /// Encode a mesh name for use as a single filesystem-path component.
 ///
-/// Mesh names accept the `<category>/<slug>` form (validation §12.12 T7),
-/// but the staging area stores per-mesh files under a flat directory keyed
-/// by mesh name. Substituting `/` → `%2F` keeps the encoding deterministic
-/// and unambiguous: the validator forbids `%` (and `_`) in valid mesh
-/// names, so `%2F` cannot collide with a literal name segment.
+/// Mesh names accept the hierarchical `<category>/<subcategory>/<slug>`
+/// form (validation §12.12 T7), but the staging area stores per-mesh files
+/// under a flat directory keyed by mesh name. Substituting `/` → `%2F`
+/// keeps the encoding deterministic and unambiguous: the validator forbids
+/// `%` (and `_`) in valid mesh names, so `%2F` cannot collide with a
+/// literal name segment.
 pub fn encode_name_for_fs(name: &str) -> String {
     name.replace('/', "%2F")
 }
