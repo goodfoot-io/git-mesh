@@ -14,8 +14,8 @@ use crate::cli::PreCommitArgs;
 use crate::mesh::read::list_mesh_names;
 use crate::resolver::{build_pending_findings, resolve_mesh};
 use crate::types::{
-    DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
-    AnchorExtent, AnchorStatus,
+    AnchorExtent, AnchorStatus, DriftSource, EngineOptions, Finding, LayerSet, MeshResolved,
+    PendingDrift, PendingFinding,
 };
 use anyhow::Result;
 use std::collections::HashSet;

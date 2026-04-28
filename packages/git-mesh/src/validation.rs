@@ -30,8 +30,7 @@ pub const RESERVED_MESH_NAMES: &[&str] = &[
 /// hierarchical form is `<category>/<subcategory>/<identifier-slug>`,
 /// but a bare slug or any depth `>= 1` is accepted.
 /// Concretely: `^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)*$`.
-pub const MESH_NAME_RULE: &str =
-    "kebab-case segments separated by `/` (e.g. `<slug>`, `<category>/<slug>`, \
+pub const MESH_NAME_RULE: &str = "kebab-case segments separated by `/` (e.g. `<slug>`, `<category>/<slug>`, \
      or `<category>/<subcategory>/<identifier-slug>`); lowercase a-z, 0-9, \
      and `-`; each segment must start with a letter or digit";
 

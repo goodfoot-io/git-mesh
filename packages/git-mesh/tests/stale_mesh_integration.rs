@@ -23,10 +23,10 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::types::{
-    ContentRef, DriftSource, EngineOptions, LayerSet, PendingDrift, AnchorExtent, AnchorStatus,
+    AnchorExtent, AnchorStatus, ContentRef, DriftSource, EngineOptions, LayerSet, PendingDrift,
     Scope, UnavailableReason,
 };
-use git_mesh::{append_add, commit_mesh, resolve_mesh, resolve_anchor, set_why, stale_meshes};
+use git_mesh::{append_add, commit_mesh, resolve_anchor, resolve_mesh, set_why, stale_meshes};
 use std::path::PathBuf;
 use support::TestRepo;
 

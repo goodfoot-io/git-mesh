@@ -135,8 +135,7 @@ fn parse_rfc3339_ms(ts: &str) -> Option<i64> {
 
 fn julian_day(y: i64, m: i64, d: i64) -> i64 {
     // Algorithm from https://en.wikipedia.org/wiki/Julian_day
-    (1461 * (y + 4800 + (m - 14) / 12)) / 4
-        + (367 * (m - 2 - 12 * ((m - 14) / 12))) / 12
+    (1461 * (y + 4800 + (m - 14) / 12)) / 4 + (367 * (m - 2 - 12 * ((m - 14) / 12))) / 12
         - (3 * ((y + 4900 + (m - 14) / 12) / 100)) / 4
         + d
         - 32075
@@ -180,8 +179,14 @@ fn is_ranged_touch(t: &TouchInterval) -> bool {
 ///
 /// JS: `${e.path}|${e.start_line ?? 'n'}-${e.end_line ?? 'n'}|${e.ts}`
 fn read_event_key(r: &ReadRecord) -> String {
-    let s = r.start_line.map(|v| v.to_string()).unwrap_or_else(|| "n".to_string());
-    let e = r.end_line.map(|v| v.to_string()).unwrap_or_else(|| "n".to_string());
+    let s = r
+        .start_line
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "n".to_string());
+    let e = r
+        .end_line
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "n".to_string());
     format!("{}|{}-{}|{}", r.path, s, e, r.ts)
 }
 
@@ -204,8 +209,14 @@ pub fn build_op_stream(session: &SessionRecord, cfg: &SuggestConfig) -> Vec<Op> 
         .reads
         .iter()
         .map(|r| {
-            let s = r.start_line.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
-            let e = r.end_line.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
+            let s = r
+                .start_line
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string());
+            let e = r
+                .end_line
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string());
             format!("{}#{}-{}", r.path, s, e)
         })
         .collect();
@@ -240,8 +251,10 @@ pub fn build_op_stream(session: &SessionRecord, cfg: &SuggestConfig) -> Vec<Op> 
 
     let mut dump_edits: HashSet<String> = HashSet::new();
     {
-        let edit_touches: Vec<&&TouchInterval> =
-            touches_filtered.iter().filter(|t| is_edit_touch(t)).collect();
+        let edit_touches: Vec<&&TouchInterval> = touches_filtered
+            .iter()
+            .filter(|t| is_edit_touch(t))
+            .collect();
         let mut by_ts: BTreeMap<&str, Vec<&&TouchInterval>> = BTreeMap::new();
         for t in &edit_touches {
             by_ts.entry(t.ts.as_str()).or_default().push(t);
@@ -365,15 +378,29 @@ mod tests {
     }
 
     fn read(path: &str, start: Option<u32>, end: Option<u32>, ts: &str) -> ReadRecord {
-        ReadRecord { path: path.to_string(), start_line: start, end_line: end, ts: ts.to_string() }
+        ReadRecord {
+            path: path.to_string(),
+            start_line: start,
+            end_line: end,
+            ts: ts.to_string(),
+        }
     }
 
     fn touch(path: &str, start: u32, end: u32, ts: &str) -> TouchInterval {
-        TouchInterval { path: path.to_string(), start_line: start, end_line: end, ts: ts.to_string() }
+        TouchInterval {
+            path: path.to_string(),
+            start_line: start,
+            end_line: end,
+            ts: ts.to_string(),
+        }
     }
 
     fn session(reads: Vec<ReadRecord>, touches: Vec<TouchInterval>) -> SessionRecord {
-        SessionRecord { sid: "test".to_string(), reads, touches }
+        SessionRecord {
+            sid: "test".to_string(),
+            reads,
+            touches,
+        }
     }
 
     #[test]
@@ -389,7 +416,11 @@ mod tests {
             vec![],
         );
         let ops = build_op_stream(&s, &cfg());
-        assert!(ops.is_empty(), "dump reads should be dropped; got {:?}", ops.len());
+        assert!(
+            ops.is_empty(),
+            "dump reads should be dropped; got {:?}",
+            ops.len()
+        );
     }
 
     #[test]
@@ -398,7 +429,11 @@ mod tests {
         let ts = "2024-01-01T00:00:00Z";
         let s = session(
             vec![],
-            vec![touch("a.rs", 0, 0, ts), touch("b.rs", 0, 0, ts), touch("c.rs", 0, 0, ts)],
+            vec![
+                touch("a.rs", 0, 0, ts),
+                touch("b.rs", 0, 0, ts),
+                touch("c.rs", 0, 0, ts),
+            ],
         );
         let ops = build_op_stream(&s, &cfg());
         assert!(ops.is_empty(), "dump edits should be dropped");

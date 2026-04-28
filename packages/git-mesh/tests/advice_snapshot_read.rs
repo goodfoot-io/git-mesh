@@ -60,14 +60,37 @@ fn snapshot_creates_state_files_and_empty_jsonls() -> Result<()> {
         .expect("baseline_objects_dir has parent")
         .to_path_buf();
 
-    assert!(session_dir.join("baseline.state").exists(), "baseline.state must exist");
-    assert!(session_dir.join("last-flush.state").exists(), "last-flush.state must exist");
-    assert!(session_dir.join("reads.jsonl").exists(), "reads.jsonl must exist");
-    assert!(session_dir.join("touches.jsonl").exists(), "touches.jsonl must exist");
-    assert!(session_dir.join("advice-seen.jsonl").exists(), "advice-seen.jsonl must exist");
-    assert!(session_dir.join("docs-seen.jsonl").exists(), "docs-seen.jsonl must exist");
+    assert!(
+        session_dir.join("baseline.state").exists(),
+        "baseline.state must exist"
+    );
+    assert!(
+        session_dir.join("last-flush.state").exists(),
+        "last-flush.state must exist"
+    );
+    assert!(
+        session_dir.join("reads.jsonl").exists(),
+        "reads.jsonl must exist"
+    );
+    assert!(
+        session_dir.join("touches.jsonl").exists(),
+        "touches.jsonl must exist"
+    );
+    assert!(
+        session_dir.join("advice-seen.jsonl").exists(),
+        "advice-seen.jsonl must exist"
+    );
+    assert!(
+        session_dir.join("docs-seen.jsonl").exists(),
+        "docs-seen.jsonl must exist"
+    );
 
-    for name in &["reads.jsonl", "touches.jsonl", "advice-seen.jsonl", "docs-seen.jsonl"] {
+    for name in &[
+        "reads.jsonl",
+        "touches.jsonl",
+        "advice-seen.jsonl",
+        "docs-seen.jsonl",
+    ] {
         let size = std::fs::metadata(session_dir.join(name))?.len();
         assert_eq!(size, 0, "{name} must be empty after snapshot");
     }
@@ -102,7 +125,10 @@ fn snapshot_resets_prior_session_state() -> Result<()> {
         .to_path_buf();
 
     let reads_size = std::fs::metadata(session_dir.join("reads.jsonl"))?.len();
-    assert_eq!(reads_size, 0, "reads.jsonl must be truncated by second snapshot");
+    assert_eq!(
+        reads_size, 0,
+        "reads.jsonl must be truncated by second snapshot"
+    );
     Ok(())
 }
 
@@ -168,7 +194,11 @@ fn read_invalid_path_nonzero_no_append() -> Result<()> {
     let store = git_mesh::advice::SessionStore::open(repo.path(), &repo.path().join(".git"), &sid)
         .expect("open");
     let records = store.reads_since_cursor(0)?;
-    assert_eq!(records.len(), 0, "invalid read must not append to reads.jsonl");
+    assert_eq!(
+        records.len(),
+        0,
+        "invalid read must not append to reads.jsonl"
+    );
     Ok(())
 }
 

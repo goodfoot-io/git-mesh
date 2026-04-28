@@ -3,11 +3,15 @@
 use crate::git;
 use crate::staging::{SidecarVerifyError, read_sidecar_verified};
 use crate::types::{
-    PendingDrift, PendingFinding, AnchorExtent, AnchorResolved, AnchorStatus, StagedOpRef,
+    AnchorExtent, AnchorResolved, AnchorStatus, PendingDrift, PendingFinding, StagedOpRef,
 };
 
 /// Acknowledgment matching by `anchor_id` (plan §B2).
-pub(crate) fn apply_acknowledgment(repo: &gix::Repository, mesh_name: &str, r: &mut AnchorResolved) {
+pub(crate) fn apply_acknowledgment(
+    repo: &gix::Repository,
+    mesh_name: &str,
+    r: &mut AnchorResolved,
+) {
     if r.status == AnchorStatus::Fresh {
         return;
     }

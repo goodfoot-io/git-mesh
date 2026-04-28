@@ -38,8 +38,12 @@ fn tracked_edit_delete_rename_appear_in_diff_trees() -> Result<()> {
         objects_b.path(),
     )?;
 
-    let has_modified = entries.iter().any(|e| matches!(e, DiffEntry::Modified { path, .. } if path == "edit.txt"));
-    let has_deleted = entries.iter().any(|e| matches!(e, DiffEntry::Deleted { path, .. } if path == "delete.txt"));
+    let has_modified = entries
+        .iter()
+        .any(|e| matches!(e, DiffEntry::Modified { path, .. } if path == "edit.txt"));
+    let has_deleted = entries
+        .iter()
+        .any(|e| matches!(e, DiffEntry::Deleted { path, .. } if path == "delete.txt"));
     let has_renamed = entries.iter().any(|e| matches!(e, DiffEntry::Renamed { from, to, .. } if from == "old.txt" && to == "new.txt"));
 
     assert!(has_modified, "edited file must appear as Modified");
@@ -77,13 +81,22 @@ fn untracked_included_ignored_excluded() -> Result<()> {
         objects.path(),
     )?;
 
-    let paths: Vec<&str> = entries.iter().filter_map(|e| match e {
-        DiffEntry::Added { path, .. } => Some(path.as_str()),
-        _ => None,
-    }).collect();
+    let paths: Vec<&str> = entries
+        .iter()
+        .filter_map(|e| match e {
+            DiffEntry::Added { path, .. } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect();
 
-    assert!(paths.contains(&"untracked.txt"), "untracked must be captured");
-    assert!(!paths.contains(&"ignored.txt"), "ignored must not be captured");
+    assert!(
+        paths.contains(&"untracked.txt"),
+        "untracked must be captured"
+    );
+    assert!(
+        !paths.contains(&"ignored.txt"),
+        "ignored must not be captured"
+    );
     Ok(())
 }
 
@@ -103,8 +116,7 @@ fn binary_blob_round_trips_through_temp_object_dir() -> Result<()> {
     let tree = capture(&gix, objects.path())?;
 
     // The objects dir must be non-empty (objects were written).
-    let has_objects = std::fs::read_dir(objects.path())?
-        .any(|e| e.map(|_| true).unwrap_or(false));
+    let has_objects = std::fs::read_dir(objects.path())?.any(|e| e.map(|_| true).unwrap_or(false));
     assert!(!tree.tree_sha.is_empty(), "tree_sha must be non-empty");
     assert!(has_objects, "temp object dir must contain written objects");
     Ok(())
@@ -145,9 +157,9 @@ fn exec_bit_change_yields_mode_change() -> Result<()> {
             objects_b.path(),
         )?;
 
-        let has_mode_change = entries.iter().any(|e| {
-            matches!(e, DiffEntry::ModeChange { path, .. } if path == "script.sh")
-        });
+        let has_mode_change = entries
+            .iter()
+            .any(|e| matches!(e, DiffEntry::ModeChange { path, .. } if path == "script.sh"));
         assert!(has_mode_change, "exec-bit toggle must yield ModeChange");
     }
     Ok(())
@@ -165,12 +177,27 @@ fn submodule_gitlink_captured_not_recursed() -> Result<()> {
     let sub_dir = tempfile::tempdir()?;
     {
         use std::process::Command;
-        Command::new("git").args(["init", "--initial-branch=main"]).current_dir(sub_dir.path()).output()?;
-        Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(sub_dir.path()).output()?;
-        Command::new("git").args(["config", "user.name", "T"]).current_dir(sub_dir.path()).output()?;
+        Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(sub_dir.path())
+            .output()?;
+        Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(sub_dir.path())
+            .output()?;
+        Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(sub_dir.path())
+            .output()?;
         std::fs::write(sub_dir.path().join("x.txt"), "x\n")?;
-        Command::new("git").args(["add", "."]).current_dir(sub_dir.path()).output()?;
-        Command::new("git").args(["commit", "-m", "init"]).current_dir(sub_dir.path()).output()?;
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(sub_dir.path())
+            .output()?;
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(sub_dir.path())
+            .output()?;
     }
 
     repo.run_git([
@@ -188,7 +215,10 @@ fn submodule_gitlink_captured_not_recursed() -> Result<()> {
     let tree = capture(&gix, objects.path())?;
 
     // tree_sha must be non-empty (submodule gitlink captured without recursing).
-    assert!(!tree.tree_sha.is_empty(), "tree must include submodule gitlink");
+    assert!(
+        !tree.tree_sha.is_empty(),
+        "tree must include submodule gitlink"
+    );
     Ok(())
 }
 
@@ -209,7 +239,10 @@ fn symlink_mode_round_trips() -> Result<()> {
         let objects = tempfile::tempdir()?;
         let tree = capture(&gix, objects.path())?;
 
-        assert!(!tree.tree_sha.is_empty(), "symlink must be captured in tree");
+        assert!(
+            !tree.tree_sha.is_empty(),
+            "symlink must be captured in tree"
+        );
     }
     Ok(())
 }

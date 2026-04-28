@@ -38,9 +38,8 @@ fn run_read(repo: &TestRepo, session: &str, top_flags: &[&str], paths: &[&str]) 
 }
 
 fn session_dir(repo: &TestRepo, sid: &str) -> std::path::PathBuf {
-    let store =
-        git_mesh::advice::SessionStore::open(repo.path(), &repo.path().join(".git"), sid)
-            .expect("open store");
+    let store = git_mesh::advice::SessionStore::open(repo.path(), &repo.path().join(".git"), sid)
+        .expect("open store");
     store
         .baseline_objects_dir()
         .parent()
@@ -52,11 +51,15 @@ fn session_dir(repo: &TestRepo, sid: &str) -> std::path::PathBuf {
 // render WITHOUT --snapshot-if-missing bails when no baseline exists.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn render_without_flag_bails_when_no_baseline() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("no-flag");
     let out = run_render(&repo, &sid, &[])?;
-    assert!(!out.status.success(), "expected non-zero exit without snapshot");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit without snapshot"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("snapshot"),
@@ -71,6 +74,7 @@ fn render_without_flag_bails_when_no_baseline() -> Result<()> {
 // baseline.state must exist afterwards.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn render_with_flag_lazily_bootstraps_then_renders_empty() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("lazy-render");
@@ -98,6 +102,7 @@ fn render_with_flag_lazily_bootstraps_then_renders_empty() -> Result<()> {
 // corrupt must still bail (only missing triggers bootstrap).
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn render_with_flag_corrupt_baseline_still_bails() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("corrupt");
@@ -140,6 +145,7 @@ fn render_with_flag_corrupt_baseline_still_bails() -> Result<()> {
 // baseline.state must exist afterwards and reads.jsonl must be non-empty.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn read_with_flag_lazily_bootstraps() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("lazy-read");

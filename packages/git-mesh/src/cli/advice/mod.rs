@@ -10,6 +10,9 @@
 //! developer reads what the coupling is at the moment they're
 //! stepping on it.
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::{Result, bail};
 use clap::Subcommand;
 
@@ -38,34 +41,26 @@ pub struct AdviceArgs {
 
     #[command(subcommand)]
     pub command: Option<AdviceCommand>,
-
-    /// Append per-reason documentation blocks to the render. Blocks emit
-    /// only when the flush surfaces a reason with an associated doc topic
-    /// (rename, anchor shrink, symbol rename, cross-mesh overlap, terminal
-    /// state, etc.); pure partner-read surfacings have no topic and
-    /// produce no extra output. Each topic emits once per session —
-    /// already-seen topics in `docs-seen.jsonl` are suppressed.
-    #[arg(long)]
-    pub documentation: bool,
-
-    /// When `baseline.state` is absent, automatically take a snapshot before
-    /// proceeding. A present-but-corrupt or unreadable baseline still fails
-    /// closed — only the missing case triggers auto-bootstrap.
-    #[arg(long)]
-    pub snapshot_if_missing: bool,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum AdviceCommand {
     /// Capture the current workspace tree as the session baseline; later
-    /// renders diff against it to detect dependency-crossing edits.
+    /// verbs diff against it to detect dependency-crossing edits.
     Snapshot,
-    /// Record one or more read events; later renders use these to surface
-    /// dependencies the developer crossed by reading (not just editing).
+    /// Record a single read event (anchor or whole-file path); later verbs
+    /// use this to surface dependencies crossed by reading, not just editing.
     Read {
-        /// Paths (optionally anchor-qualified) to record as reads.
-        paths: Vec<String>,
+        /// Anchor to record as read. Either a plain repo-relative path
+        /// (whole-file) or `<path>#L<start>-L<end>` (line-range anchor).
+        anchor: String,
     },
+    /// Flush the current session delta: emit advice for every implicit
+    /// dependency crossed since the last milestone or snapshot.
+    Milestone,
+    /// Flush the session and emit a final reconciliation sweep for any
+    /// touched-and-stale meshes not yet announced this session.
+    Stop,
     /// Corpus-wide debug/parity surface for the n-ary mesh suggester:
     /// runs `run_suggest_pipeline` against every session under
     /// `GIT_MESH_ADVICE_DIR` and emits each suggestion as one
@@ -85,47 +80,38 @@ pub enum AdviceCommand {
     Suggest,
 }
 
-/// Top-level entry: dispatches to `snapshot`, `read`, `suggest`, or, when no
-/// subcommand is given, runs the file-backed delta render pipeline.
+/// Top-level entry: dispatches to `snapshot`, `read`, `milestone`, `stop`, or
+/// `suggest`. No bare-render arm — a subcommand is always required.
 ///
 /// `Suggest` does not require a `<SESSION_ID>` — it is corpus-wide and reads
-/// every session from `GIT_MESH_ADVICE_DIR`. All other variants require a
+/// every session from `GIT_MESH_ADVICE_DIR`. All other subcommands require a
 /// session id and fail closed when one is not provided.
 pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     // Suggest is corpus-wide — no session id required.
     if matches!(args.command, Some(AdviceCommand::Suggest)) {
         return run_advice_suggest();
     }
-    // All other subcommands (and the bare render) are session-scoped.
+    // All other subcommands are session-scoped.
     let session_id = args.session_id.ok_or_else(|| {
-        anyhow::anyhow!(
-            "git mesh advice: a <SESSION_ID> is required (e.g. `git mesh advice <id>`)"
-        )
+        anyhow::anyhow!("git mesh advice: a <SESSION_ID> is required (e.g. `git mesh advice <id>`)")
     })?;
     validate_session_id(&session_id)?;
     match args.command {
         Some(AdviceCommand::Snapshot) => run_advice_snapshot(repo, session_id),
-        Some(AdviceCommand::Read { paths }) => {
-            run_advice_read(repo, session_id, paths, args.snapshot_if_missing)
-        }
+        Some(AdviceCommand::Read { anchor }) => run_advice_read(repo, session_id, anchor),
+        Some(AdviceCommand::Milestone) => run_advice_milestone(repo, session_id),
+        Some(AdviceCommand::Stop) => run_advice_stop(repo, session_id),
         Some(AdviceCommand::Suggest) => unreachable!("handled above"),
-        None => run_advice_render(
-            repo,
-            &session_id,
-            args.documentation,
-            args.snapshot_if_missing,
+        None => bail!(
+            "git mesh advice: a subcommand is required; run `git mesh advice --help` for usage"
         ),
     }
 }
 
-/// Bare-render entry point: file-backed delta pipeline. Walks the
-/// session delta, the incremental delta since last flush, and recorded
-/// reads against the mesh state, and emits one candidate per implicit
-/// semantic dependency the developer has crossed but not yet seen
-/// advice for.
-///
-/// Implements parent §Phase 4 step list. Pre-stdout ordering of state
-/// mutations is load-bearing for broken-pipe safety — see step 16.
+/// Delta render pipeline — internal helper preserved for Phase 3 to reuse.
+/// Not exposed on the public CLI surface; `milestone` and `stop` will call
+/// this (or a derivative) when their behaviour is implemented in Phase 3.
+#[allow(dead_code)]
 fn run_advice_render(
     repo: &gix::Repository,
     session_id: &str,
@@ -255,7 +241,8 @@ fn run_advice_render(
                     let name = m.name.clone();
                     let why = m.message.clone();
                     m.anchors.into_iter().map(move |r| {
-                        let whole = matches!(r.anchored.extent, crate::types::AnchorExtent::WholeFile);
+                        let whole =
+                            matches!(r.anchored.extent, crate::types::AnchorExtent::WholeFile);
                         MeshAnchor {
                             name: name.clone(),
                             why: why.clone(),
@@ -343,12 +330,16 @@ fn run_advice_render(
     let mut candidates: Vec<crate::advice::candidates::Candidate> = Vec::new();
     {
         let before = candidates.len();
-        candidates.extend(crate::advice::candidates::detect_read_intersects_mesh(&input));
+        candidates.extend(crate::advice::candidates::detect_read_intersects_mesh(
+            &input,
+        ));
         crate::advice_debug!("detector", "name" => "detect_read_intersects_mesh", "candidates" => candidates.len() - before);
     }
     {
         let before = candidates.len();
-        candidates.extend(crate::advice::candidates::detect_delta_intersects_mesh(&input));
+        candidates.extend(crate::advice::candidates::detect_delta_intersects_mesh(
+            &input,
+        ));
         crate::advice_debug!("detector", "name" => "detect_delta_intersects_mesh", "candidates" => candidates.len() - before);
     }
     {
@@ -466,7 +457,11 @@ fn run_advice_render(
         use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
         let advice_dir = match std::env::var("GIT_MESH_ADVICE_DIR") {
             Ok(s) if !s.is_empty() => std::path::PathBuf::from(s),
-            _ => store.dir().parent().map(|p| p.to_path_buf()).unwrap_or_default(),
+            _ => store
+                .dir()
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
         };
         let sessions = if advice_dir.as_os_str().is_empty() {
             Vec::new()
@@ -598,6 +593,7 @@ fn run_advice_render(
 /// Translate a session's `incr_delta` + `new_reads` into one
 /// `TouchInterval` per affected path/anchor, all sharing `ts` so a co-touch
 /// detector can group them by timestamp. (Finding 3.)
+#[allow(dead_code)]
 fn build_touch_intervals(
     incr_delta: &[crate::advice::workspace_tree::DiffEntry],
     new_reads: &[crate::advice::session::state::ReadRecord],
@@ -663,6 +659,7 @@ fn build_touch_intervals(
     out
 }
 
+#[allow(dead_code)]
 fn active_advice_store_prefixes(
     repo_root: &std::path::Path,
     store_dir: &std::path::Path,
@@ -683,6 +680,7 @@ fn active_advice_store_prefixes(
     ]
 }
 
+#[allow(dead_code)]
 fn advice_path_is_internal(path: &str, internal_path_prefixes: &[String]) -> bool {
     internal_path_prefixes.iter().any(|prefix| {
         path == prefix
@@ -696,6 +694,7 @@ fn advice_path_is_internal(path: &str, internal_path_prefixes: &[String]) -> boo
 /// `git cat-file -e` against an alternate object directory). Returns false
 /// on any failure, including when git isn't usable — the caller falls back
 /// to baseline diff in that case. (Finding 2b.)
+#[allow(dead_code)]
 fn tree_resolves_in(repo: &gix::Repository, tree_sha: &str, objects_dir: &std::path::Path) -> bool {
     // The captured tree can be either session-owned (untracked or edited
     // workspace content) or already present in the real repository object db
@@ -722,7 +721,11 @@ fn real_loose_object_exists(repo: &gix::Repository, oid: &str) -> bool {
         return false;
     }
     let (dir, file) = oid.split_at(2);
-    repo.git_dir().join("objects").join(dir).join(file).is_file()
+    repo.git_dir()
+        .join("objects")
+        .join(dir)
+        .join(file)
+        .is_file()
 }
 
 fn default_engine_options() -> crate::types::EngineOptions {
@@ -869,7 +872,9 @@ fn run_advice_suggest() -> Result<i32> {
     // directory is a valid user configuration and must not silently degrade quality.
     let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
     if fixture_mode {
-        eprintln!("fixture mode: GIT_MESH_SUGGEST_FIXTURE is set; historical-cochange channel disabled");
+        eprintln!(
+            "fixture mode: GIT_MESH_SUGGEST_FIXTURE is set; historical-cochange channel disabled"
+        );
     }
     let (repo_opt, repo_root) = if cfg.history_enabled && !fixture_mode {
         match gix::discover(".") {
@@ -898,21 +903,15 @@ fn run_advice_suggest() -> Result<i32> {
         repo_root
     };
 
-    let suggestions = run_suggest_pipeline(
-        &sessions,
-        repo_opt.as_ref(),
-        &repo_root,
-        &cfg,
-    );
+    let suggestions = run_suggest_pipeline(&sessions, repo_opt.as_ref(), &repo_root, &cfg);
 
     use std::io::Write;
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     for s in &suggestions {
-        let line = serde_json::to_string(s)
-            .map_err(|e| anyhow::anyhow!("serialize suggestion: {e}"))?;
-        writeln!(handle, "{line}")
-            .map_err(|e| anyhow::anyhow!("write suggestion: {e}"))?;
+        let line =
+            serde_json::to_string(s).map_err(|e| anyhow::anyhow!("serialize suggestion: {e}"))?;
+        writeln!(handle, "{line}").map_err(|e| anyhow::anyhow!("write suggestion: {e}"))?;
     }
     Ok(0)
 }
@@ -931,9 +930,8 @@ fn load_jsonl_lines<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> R
         if line.is_empty() {
             continue;
         }
-        let v: T = serde_json::from_str(&line).map_err(|e| {
-            anyhow::anyhow!("parse `{}` line {}: {e}", path.display(), idx + 1)
-        })?;
+        let v: T = serde_json::from_str(&line)
+            .map_err(|e| anyhow::anyhow!("parse `{}` line {}: {e}", path.display(), idx + 1))?;
         out.push(v);
     }
     Ok(out)
@@ -967,22 +965,18 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
     let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
 
     // Compute the current repo key. None means "not in a repo" → cross-corpus mode.
-    let preferred_key: Option<String> = gix::discover(".")
-        .ok()
-        .and_then(|repo| {
-            let root = repo.workdir().map(|p| p.to_path_buf())?;
-            let git_dir = repo.git_dir().to_path_buf();
-            Some(crate::advice::session::store::repo_key(&root, &git_dir))
-        });
+    let preferred_key: Option<String> = gix::discover(".").ok().and_then(|repo| {
+        let root = repo.workdir().map(|p| p.to_path_buf())?;
+        let git_dir = repo.git_dir().to_path_buf();
+        Some(crate::advice::session::store::repo_key(&root, &git_dir))
+    });
 
     // Cross-corpus mode: fixture mode OR not inside any repo.
     let cross_corpus = fixture_mode || preferred_key.is_none();
 
     /// Returns all subdirectories of `session_root` that contain
     /// `reads.jsonl` or `touches.jsonl` (i.e. valid session dirs).
-    fn nested_session_dirs(
-        session_root: &std::path::Path,
-    ) -> Result<Vec<std::path::PathBuf>> {
+    fn nested_session_dirs(session_root: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
         if !session_root.exists() {
             return Ok(Vec::new());
         }
@@ -1015,7 +1009,11 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
             }
             let reads = load_jsonl_lines::<ReadRecord>(&reads_path)?;
             let touches = load_jsonl_lines::<TouchInterval>(&touches_path)?;
-            sessions.push(SessionRecord { sid, reads, touches });
+            sessions.push(SessionRecord {
+                sid,
+                reads,
+                touches,
+            });
         }
         Ok(sessions)
     }
@@ -1034,8 +1032,8 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
         .collect();
 
     for entry in first_level {
-        let has_own_session_files = entry.join("reads.jsonl").exists()
-            || entry.join("touches.jsonl").exists();
+        let has_own_session_files =
+            entry.join("reads.jsonl").exists() || entry.join("touches.jsonl").exists();
         let nested = nested_session_dirs(&entry)?;
         let has_nested_sessions = !nested.is_empty();
 
@@ -1114,13 +1112,11 @@ fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest
 /// Format a "no sessions found" error message that names the preferred repo key when
 /// we are inside a repo, so the user can locate where sessions should be written.
 pub(crate) fn no_sessions_error_message(advice_dir: &std::path::Path) -> String {
-    let preferred_key: Option<String> = gix::discover(".")
-        .ok()
-        .and_then(|repo| {
-            let root = repo.workdir().map(|p| p.to_path_buf())?;
-            let git_dir = repo.git_dir().to_path_buf();
-            Some(crate::advice::session::store::repo_key(&root, &git_dir))
-        });
+    let preferred_key: Option<String> = gix::discover(".").ok().and_then(|repo| {
+        let root = repo.workdir().map(|p| p.to_path_buf())?;
+        let git_dir = repo.git_dir().to_path_buf();
+        Some(crate::advice::session::store::repo_key(&root, &git_dir))
+    });
     let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
     match (preferred_key, fixture_mode) {
         (Some(key), false) => format!(
@@ -1152,67 +1148,68 @@ fn run_advice_snapshot(repo: &gix::Repository, session_id: String) -> Result<i32
     Ok(0)
 }
 
-/// Record read events in the file-backed session store.
-fn run_advice_read(
-    repo: &gix::Repository,
-    session_id: String,
-    paths: Vec<String>,
-    snapshot_if_missing: bool,
-) -> Result<i32> {
+/// Record a single read event (one anchor or whole-file path) in the
+/// file-backed session store.
+fn run_advice_read(repo: &gix::Repository, session_id: String, anchor: String) -> Result<i32> {
     use crate::advice::session::SessionStore;
     use crate::advice::session::state::ReadRecord;
     use crate::advice::session::store::LockTimeout;
 
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
-    let mut store = SessionStore::open(wd, &gd, &session_id)?;
+    let store = SessionStore::open(wd, &gd, &session_id)?;
 
-    if paths.is_empty() {
-        bail!("git mesh advice <id> read: at least one path is required");
+    if anchor.is_empty() {
+        bail!("git mesh advice <id> read: anchor must not be empty");
     }
 
-    // Validate every path/anchor first; only append if all are valid.
-    for spec in &paths {
-        validate_read_spec(repo, spec)?;
-    }
+    validate_read_spec(repo, &anchor)?;
 
-    // Require baseline.state — fail closed unless --snapshot-if-missing.
+    // Require baseline.state — fail closed.
     if !store.dir().join("baseline.state").exists() {
-        if snapshot_if_missing {
-            snapshot_into(&mut store, repo, &gd)?;
-        } else {
-            bail!(
-                "no baseline for session `{session_id}`; run snapshot first \
-                 (`git mesh advice {session_id} snapshot`)"
-            );
-        }
+        bail!(
+            "no baseline for session `{session_id}`; run snapshot first \
+             (`git mesh advice {session_id} snapshot`)"
+        );
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    for spec in &paths {
-        let (path_str, anchor) = match spec.split_once("#L") {
-            Some((p, frag)) => {
-                let (s, e) = frag.split_once("-L").unwrap();
-                (
-                    p.to_string(),
-                    Some((s.parse::<u32>().unwrap(), e.parse::<u32>().unwrap())),
-                )
-            }
-            None => (spec.clone(), None),
-        };
-        let rec = ReadRecord {
-            path: path_str,
-            start_line: anchor.map(|(s, _)| s),
-            end_line: anchor.map(|(_, e)| e),
-            ts: now.clone(),
-        };
-        store.append_read(
-            &rec,
-            LockTimeout::Bounded(std::time::Duration::from_secs(30)),
-        )?;
-    }
+    let (path_str, line_anchor) = match anchor.split_once("#L") {
+        Some((p, frag)) => {
+            let (s, e) = frag.split_once("-L").unwrap();
+            (
+                p.to_string(),
+                Some((s.parse::<u32>().unwrap(), e.parse::<u32>().unwrap())),
+            )
+        }
+        None => (anchor.clone(), None),
+    };
+    let rec = ReadRecord {
+        path: path_str,
+        start_line: line_anchor.map(|(s, _)| s),
+        end_line: line_anchor.map(|(_, e)| e),
+        ts: now,
+    };
+    store.append_read(
+        &rec,
+        LockTimeout::Bounded(std::time::Duration::from_secs(30)),
+    )?;
 
     Ok(0)
+}
+
+/// Flush the current session delta: emit advice for every implicit dependency
+/// crossed since the last milestone or snapshot. Phase 3 will implement the
+/// structured-English spec rules; for now this is a stub.
+fn run_advice_milestone(_repo: &gix::Repository, _session_id: String) -> Result<i32> {
+    bail!("not implemented")
+}
+
+/// Flush the session and emit a final reconciliation sweep for any
+/// touched-and-stale meshes not yet announced. Phase 3 will implement the
+/// structured-English spec rules; for now this is a stub.
+fn run_advice_stop(_repo: &gix::Repository, _session_id: String) -> Result<i32> {
+    bail!("not implemented")
 }
 
 /// Reject session ids that would silently collide on disk or escape the

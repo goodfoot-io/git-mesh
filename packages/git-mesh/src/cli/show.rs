@@ -1,7 +1,7 @@
 //! `git mesh` list / `git mesh <name>` show / `git mesh ls` — §10.4, §3.4.
 
-use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::anchor::read_anchor;
+use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Anchor, AnchorExtent};
 use crate::{
@@ -207,9 +207,7 @@ pub(crate) fn parse_format(fmt: &str) -> anyhow::Result<Vec<FormatToken>> {
 }
 
 fn has_range_token(tokens: &[FormatToken]) -> bool {
-    tokens
-        .iter()
-        .any(|t| matches!(t, FormatToken::Anchor(_)))
+    tokens.iter().any(|t| matches!(t, FormatToken::Anchor(_)))
 }
 
 /// Render a single line from the token vector against the mesh commit info and
@@ -239,7 +237,8 @@ pub(crate) fn render_tokens(
                 CommitField::Subject => out.push_str(&meta.summary),
             },
             FormatToken::Anchor(f) => {
-                let r = anchor.expect("anchor token present but no anchor context — invariant violated");
+                let r = anchor
+                    .expect("anchor token present but no anchor context — invariant violated");
                 match f {
                     AnchorField::Path => out.push_str(&r.path),
                     AnchorField::RangeSpec => {

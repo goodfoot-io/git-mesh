@@ -36,12 +36,12 @@ fn open_creates_dir_mode_0700_acquires_lock_releases_on_drop() {
     let (_tmp, repo_root, git_dir) = fake_repo_dirs();
     let sid = session_id("open");
 
-    let store = SessionStore::open(&repo_root, &git_dir, &sid)
-        .expect("open should succeed");
+    let store = SessionStore::open(&repo_root, &git_dir, &sid).expect("open should succeed");
 
     // Directory must exist under GIT_MESH_ADVICE_DIR / repo-key / session-id
     // The test verifies dir existence and mode 0700 on the session directory.
-    let store_dir = store.baseline_objects_dir()
+    let store_dir = store
+        .baseline_objects_dir()
         .parent()
         .expect("baseline_objects_dir has parent")
         .to_path_buf();
@@ -79,7 +79,10 @@ fn bounded_lock_timeout_when_held() {
 
     // Second acquire with Bounded(30ms) must return an error immediately.
     let result = acquire_lock(&dir, LockTimeout::Bounded(Duration::from_millis(30)));
-    assert!(result.is_err(), "bounded acquire must fail when lock is held");
+    assert!(
+        result.is_err(),
+        "bounded acquire must fail when lock is held"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -153,10 +156,14 @@ fn append_read_and_reads_since_cursor() {
         ts: "2026-01-01T00:00:00Z".into(),
     };
 
-    store.append_read(&rec, LockTimeout::Blocking).expect("append_read");
+    store
+        .append_read(&rec, LockTimeout::Blocking)
+        .expect("append_read");
 
     let cursor: u64 = 0;
-    let records = store.reads_since_cursor(cursor).expect("reads_since_cursor");
+    let records = store
+        .reads_since_cursor(cursor)
+        .expect("reads_since_cursor");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].path, "src/main.rs");
 }
@@ -174,7 +181,8 @@ fn malformed_jsonl_fails_closed_with_location() {
     // Manually inject a malformed MID-FILE line (followed by a valid
     // line) — torn-tail recovery (finding 5) only forgives the FINAL
     // line; earlier corruption stays a hard error.
-    let reads_path = store.baseline_objects_dir()
+    let reads_path = store
+        .baseline_objects_dir()
         .parent()
         .expect("parent")
         .join("reads.jsonl");
@@ -185,7 +193,10 @@ fn malformed_jsonl_fails_closed_with_location() {
     .expect("write malformed");
 
     let result = store.reads_since_cursor(0);
-    assert!(result.is_err(), "malformed mid-file JSONL must return error");
+    assert!(
+        result.is_err(),
+        "malformed mid-file JSONL must return error"
+    );
     let msg = format!("{:?}", result.unwrap_err());
     // Error must mention the file and a line number.
     assert!(
@@ -231,7 +242,8 @@ fn unknown_schema_version_returns_error() {
     let store = SessionStore::open(&repo_root, &git_dir, &sid).expect("open");
 
     // Write a state file with an unknown schema_version.
-    let baseline_path = store.baseline_objects_dir()
+    let baseline_path = store
+        .baseline_objects_dir()
         .parent()
         .expect("parent")
         .join("baseline.state");

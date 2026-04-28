@@ -47,7 +47,10 @@ fn plant_old_mesh(repo: &TestRepo, mesh_name: &str, uuids: &[&str]) -> Result<()
             .unwrap()
             .write_all(anchors_content.as_bytes())?;
         let output = child.wait_with_output()?;
-        anyhow::ensure!(output.status.success(), "hash-object for ranges blob failed");
+        anyhow::ensure!(
+            output.status.success(),
+            "hash-object for ranges blob failed"
+        );
         String::from_utf8(output.stdout)?.trim().to_string()
     };
 
@@ -63,14 +66,16 @@ fn plant_old_mesh(repo: &TestRepo, mesh_name: &str, uuids: &[&str]) -> Result<()
         use std::io::Write;
         child.stdin.as_mut().unwrap().write_all(b"{}\n")?;
         let output = child.wait_with_output()?;
-        anyhow::ensure!(output.status.success(), "hash-object for config blob failed");
+        anyhow::ensure!(
+            output.status.success(),
+            "hash-object for config blob failed"
+        );
         String::from_utf8(output.stdout)?.trim().to_string()
     };
 
     // Build a tree with "ranges" and "config" entries.
-    let tree_input = format!(
-        "100644 blob {ranges_blob}\tranges\n100644 blob {config_blob}\tconfig\n"
-    );
+    let tree_input =
+        format!("100644 blob {ranges_blob}\tranges\n100644 blob {config_blob}\tconfig\n");
     let tree_sha = {
         let mut child = Command::new("git")
             .args(["-C", repo.path().to_str().unwrap()])
@@ -202,8 +207,7 @@ fn migrates_refs_and_mesh_tree() -> Result<()> {
     );
 
     // The uuid list in the "anchors" blob must match what we planted.
-    let anchors_content =
-        repo.git_stdout(["show", &format!("{mesh_commit}:anchors")])?;
+    let anchors_content = repo.git_stdout(["show", &format!("{mesh_commit}:anchors")])?;
     assert!(
         anchors_content.contains(uuid1),
         "anchors blob missing {uuid1}"
@@ -328,7 +332,11 @@ fn fails_closed_on_malformed_blob() -> Result<()> {
             .stderr(std::process::Stdio::piped())
             .spawn()?;
         use std::io::Write;
-        child.stdin.as_mut().unwrap().write_all(bad_blob.as_bytes())?;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(bad_blob.as_bytes())?;
         let output = child.wait_with_output()?;
         anyhow::ensure!(output.status.success(), "hash-object failed");
         String::from_utf8(output.stdout)?.trim().to_string()
@@ -354,12 +362,7 @@ fn fails_closed_on_malformed_blob() -> Result<()> {
 
 /// Write an old-format anchor blob and create refs/ranges/v1/<uuid>.
 /// Avoids the borrow/spawn tangle in the first draft of plant_old_anchor.
-fn plant_old_anchor_v2(
-    repo: &TestRepo,
-    uuid: &str,
-    commit_sha: &str,
-    path: &str,
-) -> Result<()> {
+fn plant_old_anchor_v2(repo: &TestRepo, uuid: &str, commit_sha: &str, path: &str) -> Result<()> {
     let old_blob = format!(
         "anchor {commit_sha}\ncreated 2025-01-01T00:00:00Z\nrange 1 3 aabbccddaabbccddaabbccddaabbccddaabbccdd\t{path}\n"
     );

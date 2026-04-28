@@ -3,11 +3,11 @@
 //! Ports the four-granularity content cohesion from Section 11 of
 //! `docs/analyze-v4.mjs`.
 
-use std::collections::{BTreeMap, BTreeSet};
 use git_mesh::advice::suggest::{
-    build_idf, jaccard, per_edge_cohesion, range_tokens_of, tokens_of, trigram_cohesion,
-    trigrams_of, CanonicalId,
+    CanonicalId, build_idf, jaccard, per_edge_cohesion, range_tokens_of, tokens_of,
+    trigram_cohesion, trigrams_of,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 // ---------------------------------------------------------------------------
 // tokens_of
@@ -192,7 +192,10 @@ fn per_edge_cohesion_identical_text_returns_positive() {
     let a = range_tokens_of(shared);
     let b = range_tokens_of(shared);
     let w = per_edge_cohesion(&a, &b, &idf, 6);
-    assert!(w > 0.0, "shared text should yield positive cohesion, idf={idf:?}");
+    assert!(
+        w > 0.0,
+        "shared text should yield positive cohesion, idf={idf:?}"
+    );
 }
 
 #[test]

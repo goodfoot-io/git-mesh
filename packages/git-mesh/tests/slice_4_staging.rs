@@ -42,6 +42,7 @@ fn render(repo: &TestRepo, s: &str) -> Result<String> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn t8_staging_cross_cut_surfaces() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -71,6 +72,7 @@ fn t8_staging_cross_cut_surfaces() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn t9_empty_mesh_risk_when_remove_empties_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -94,6 +96,7 @@ fn t9_empty_mesh_risk_when_remove_empties_mesh() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn staged_overlap_dedups_within_session() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;

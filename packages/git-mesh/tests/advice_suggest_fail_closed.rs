@@ -38,7 +38,8 @@ fn suggest_fails_when_advice_dir_unset() {
 
 #[test]
 fn suggest_fails_when_advice_dir_points_at_missing_path() {
-    let out = run_suggest_with_env(&[("GIT_MESH_ADVICE_DIR", "/tmp/nonexistent-git-mesh-test-dir")]);
+    let out =
+        run_suggest_with_env(&[("GIT_MESH_ADVICE_DIR", "/tmp/nonexistent-git-mesh-test-dir")]);
     assert!(
         !out.status.success(),
         "expected non-zero exit when GIT_MESH_ADVICE_DIR points at missing dir"
@@ -60,7 +61,9 @@ fn suggest_fails_when_advice_dir_is_empty() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("no sessions") || stderr.contains("reads.jsonl") || stderr.contains("touches.jsonl"),
+        stderr.contains("no sessions")
+            || stderr.contains("reads.jsonl")
+            || stderr.contains("touches.jsonl"),
         "stderr must mention missing sessions; got: {stderr:?}"
     );
 }
@@ -92,7 +95,8 @@ fn suggest_stderr_contains_fixture_mode_notice_when_fixture_env_set() {
 #[test]
 fn suggest_stderr_has_no_fixture_mode_notice_in_normal_mode() {
     // Point at a missing dir (will fail closed) but NOT in fixture mode.
-    let out = run_suggest_with_env(&[("GIT_MESH_ADVICE_DIR", "/tmp/nonexistent-git-mesh-test-dir")]);
+    let out =
+        run_suggest_with_env(&[("GIT_MESH_ADVICE_DIR", "/tmp/nonexistent-git-mesh-test-dir")]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("fixture mode"),

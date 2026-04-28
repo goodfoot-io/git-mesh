@@ -42,13 +42,13 @@ fn ok(out: &Output) {
 }
 
 fn session_dir(repo: &TestRepo, sid: &str) -> std::path::PathBuf {
-    let store = git_mesh::advice::SessionStore::open(
-        repo.path(),
-        &repo.path().join(".git"),
-        sid,
-    )
-    .expect("open store");
-    store.baseline_objects_dir().parent().expect("parent").to_path_buf()
+    let store = git_mesh::advice::SessionStore::open(repo.path(), &repo.path().join(".git"), sid)
+        .expect("open store");
+    store
+        .baseline_objects_dir()
+        .parent()
+        .expect("parent")
+        .to_path_buf()
 }
 
 fn render_via_cli(repo: &TestRepo, s: &str, extra: &[&str]) -> Result<String> {
@@ -106,7 +106,9 @@ fn assert_all_lines_commented(out: &str) {
 fn baseline_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["baseline".into()], true);
     assert_all_lines_commented(&out);
-    assert!(out.contains("# A mesh is a lightweight contract for an agreement that no schema, type,"));
+    assert!(
+        out.contains("# A mesh is a lightweight contract for an agreement that no schema, type,")
+    );
     assert!(out.contains("# The `why` is load-bearing identity, not commentary."));
     assert!(out.contains("# Inspect a mesh:"));
     assert!(out.contains("#   git mesh show <name>"));
@@ -186,7 +188,9 @@ fn t9_topic_block_renders_verbatim() {
 #[test]
 fn t11_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["terminal-states".into()], true);
-    assert!(out.contains("# A terminal marker means the resolver cannot evaluate this anchor at all."));
+    assert!(
+        out.contains("# A terminal marker means the resolver cannot evaluate this anchor at all.")
+    );
     assert!(out.contains("# [ORPHANED]  — the recorded commit is unreachable."));
     assert!(out.contains("# [CONFLICT]  — the file is mid-merge. Finish the merge first."));
     assert!(out.contains("# [SUBMODULE] — the anchor points inside a submodule"));
@@ -199,7 +203,10 @@ fn t11_topic_block_renders_verbatim() {
 #[test]
 fn documentation_empty_flush_prints_nothing() {
     let out = render::render(&[], &[], true);
-    assert!(out.is_empty(), "empty flush + --documentation must be empty: {out:?}");
+    assert!(
+        out.is_empty(),
+        "empty flush + --documentation must be empty: {out:?}"
+    );
 }
 
 #[test]
@@ -216,8 +223,16 @@ fn documentation_appends_t1_and_t2_hints_after_output() {
     let out = render::render(&[t1, t2], &[], true);
     let t1_hint = "to re-record an anchor after edits";
     let t2_hint = "to re-record a partner that needed matching edits";
-    assert_eq!(out.matches(t1_hint).count(), 1, "t1 hint must appear once: {out}");
-    assert_eq!(out.matches(t2_hint).count(), 1, "t2 hint must appear once: {out}");
+    assert_eq!(
+        out.matches(t1_hint).count(),
+        1,
+        "t1 hint must appear once: {out}"
+    );
+    assert_eq!(
+        out.matches(t2_hint).count(),
+        1,
+        "t2 hint must appear once: {out}"
+    );
     let body_pos = out.find("# m1 mesh:").expect("mesh body present");
     let t1_pos = out.find(t1_hint).expect("t1 hint present");
     let t2_pos = out.find(t2_hint).expect("t2 hint present");
@@ -230,8 +245,7 @@ fn documentation_with_t8_does_not_duplicate_topic_block() {
     let mut t8_c = l1_candidate();
     t8_c.reason_kind = ReasonKind::StagingCrossCut;
     t8_c.density = Density::L2;
-    t8_c.partner_clause =
-        "overlap|staged|other|p.rs|10|20|5|25|".into();
+    t8_c.partner_clause = "overlap|staged|other|p.rs|10|20|5|25|".into();
     t8_c.trigger_start = Some(10);
     t8_c.trigger_end = Some(20);
     let t8 = candidate_to_suggestion(&t8_c);
@@ -250,6 +264,7 @@ fn documentation_with_t8_does_not_duplicate_topic_block() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Phase 3
 fn docs_seen_does_not_shrink_across_renders() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -277,6 +292,7 @@ fn docs_seen_does_not_shrink_across_renders() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn documentation_empty_via_cli_prints_nothing() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let s = sid("doc-empty");

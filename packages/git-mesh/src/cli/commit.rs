@@ -2,7 +2,7 @@
 
 use crate::cli::{AddArgs, CommitArgs, ConfigArgs, RmArgs, WhyArgs};
 use crate::staging::{StagedConfig, append_prepared_add, parse_address, prepare_add};
-use crate::types::{CopyDetection, EngineOptions, AnchorExtent, validate_add_target};
+use crate::types::{AnchorExtent, CopyDetection, EngineOptions, validate_add_target};
 use crate::{append_config, append_remove, commit_mesh, read_mesh, set_why};
 use anyhow::{Context, Result, anyhow};
 
@@ -40,9 +40,9 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // the stage-time precheck and the prepare_add path operate on the
     // same anchor (independent of clap arg ordering).
     let anchor_oid: Option<String> = match args.at.as_deref() {
-        Some(s) => Some(
-            crate::git::resolve_commit(repo, s).map_err(|e| anyhow!("--at `{s}`: {e}"))?,
-        ),
+        Some(s) => {
+            Some(crate::git::resolve_commit(repo, s).map_err(|e| anyhow!("--at `{s}`: {e}"))?)
+        }
         None => None,
     };
 

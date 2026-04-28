@@ -1,7 +1,9 @@
 //! Tests for the composite scoring and cohesion gate (Sections 13–14 of
 //! `docs/analyze-v4.mjs`).
 
-use git_mesh::advice::suggest::{passes_cohesion_gate, CandidateScore, ComponentBreakdown, SuggestConfig};
+use git_mesh::advice::suggest::{
+    CandidateScore, ComponentBreakdown, SuggestConfig, passes_cohesion_gate,
+};
 
 fn cfg() -> SuggestConfig {
     SuggestConfig::default()

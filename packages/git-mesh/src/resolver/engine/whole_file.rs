@@ -5,7 +5,7 @@
 use super::EngineState;
 use crate::git;
 use crate::types::{
-    DriftSource, MeshConfig, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
+    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
 };
 use crate::{Error, Result};
 use std::path::PathBuf;

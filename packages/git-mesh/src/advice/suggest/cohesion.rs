@@ -38,21 +38,118 @@ pub type SourceCache = BTreeMap<String, RangeTokens>;
 fn is_keyword(s: &str) -> bool {
     matches!(
         s,
-        "fn" | "let" | "mut" | "pub" | "use" | "mod" | "self" | "Self" | "super" | "crate"
-            | "struct" | "enum" | "impl" | "trait" | "where" | "as" | "in" | "if" | "else"
-            | "match" | "for" | "while" | "loop" | "return" | "break" | "continue"
-            | "true" | "false" | "None" | "Some" | "Ok" | "Err" | "Result" | "Option"
-            | "String" | "str" | "usize" | "isize" | "u8" | "u16" | "u32" | "u64"
-            | "i8" | "i16" | "i32" | "i64" | "bool" | "Vec" | "Box" | "Arc" | "Rc"
-            | "PathBuf" | "Path" | "HashMap" | "HashSet" | "BTreeMap" | "and" | "or"
-            | "not" | "await" | "async" | "dyn" | "ref" | "static" | "const" | "echo"
-            | "set" | "done" | "then" | "esac" | "case" | "function" | "var" | "this"
-            | "new" | "class" | "export" | "import" | "from" | "default" | "extends"
-            | "implements" | "interface" | "type" | "void" | "null" | "undefined"
-            | "number" | "string" | "boolean" | "object" | "any" | "http" | "https"
-            | "com" | "org" | "www" | "TODO" | "FIXME" | "XXX" | "NOTE" | "the"
-            | "with" | "when" | "that" | "into" | "has" | "have" | "are" | "was"
-            | "were" | "been" | "being"
+        "fn" | "let"
+            | "mut"
+            | "pub"
+            | "use"
+            | "mod"
+            | "self"
+            | "Self"
+            | "super"
+            | "crate"
+            | "struct"
+            | "enum"
+            | "impl"
+            | "trait"
+            | "where"
+            | "as"
+            | "in"
+            | "if"
+            | "else"
+            | "match"
+            | "for"
+            | "while"
+            | "loop"
+            | "return"
+            | "break"
+            | "continue"
+            | "true"
+            | "false"
+            | "None"
+            | "Some"
+            | "Ok"
+            | "Err"
+            | "Result"
+            | "Option"
+            | "String"
+            | "str"
+            | "usize"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "bool"
+            | "Vec"
+            | "Box"
+            | "Arc"
+            | "Rc"
+            | "PathBuf"
+            | "Path"
+            | "HashMap"
+            | "HashSet"
+            | "BTreeMap"
+            | "and"
+            | "or"
+            | "not"
+            | "await"
+            | "async"
+            | "dyn"
+            | "ref"
+            | "static"
+            | "const"
+            | "echo"
+            | "set"
+            | "done"
+            | "then"
+            | "esac"
+            | "case"
+            | "function"
+            | "var"
+            | "this"
+            | "new"
+            | "class"
+            | "export"
+            | "import"
+            | "from"
+            | "default"
+            | "extends"
+            | "implements"
+            | "interface"
+            | "type"
+            | "void"
+            | "null"
+            | "undefined"
+            | "number"
+            | "string"
+            | "boolean"
+            | "object"
+            | "any"
+            | "http"
+            | "https"
+            | "com"
+            | "org"
+            | "www"
+            | "TODO"
+            | "FIXME"
+            | "XXX"
+            | "NOTE"
+            | "the"
+            | "with"
+            | "when"
+            | "that"
+            | "into"
+            | "has"
+            | "have"
+            | "are"
+            | "was"
+            | "were"
+            | "been"
+            | "being"
     )
 }
 
@@ -87,9 +184,7 @@ pub fn tokens_of(text: &str) -> Vec<String> {
         if c.is_ascii_alphabetic() || c == '_' {
             let start = i;
             i += 1;
-            while i < chars.len()
-                && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
-            {
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }
             if i - start >= 3 {
@@ -275,13 +370,9 @@ pub fn intersection_cohesion(
         .map(|t| (t, *idf.get(t).unwrap_or(&0.0)))
         .collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let weight = (ranked.iter().map(|(_, v)| v).sum::<f64>() / shared_id_saturation as f64)
-        .min(1.0);
-    let display: Vec<String> = ranked
-        .iter()
-        .take(8)
-        .map(|(t, _)| t.to_string())
-        .collect();
+    let weight =
+        (ranked.iter().map(|(_, v)| v).sum::<f64>() / shared_id_saturation as f64).min(1.0);
+    let display: Vec<String> = ranked.iter().take(8).map(|(t, _)| t.to_string()).collect();
     (weight, display)
 }
 

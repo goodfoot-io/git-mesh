@@ -59,9 +59,7 @@ pub fn is_acceptable_path(p: &Path) -> bool {
         let basename = s.rsplit('/').next().unwrap_or(s);
         if let Some(pos) = basename.rfind('.') {
             let ext = &basename[pos + 1..];
-            !ext.is_empty()
-                && ext.len() <= 8
-                && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+            !ext.is_empty() && ext.len() <= 8 && ext.bytes().all(|b| b.is_ascii_alphanumeric())
         } else {
             false
         }

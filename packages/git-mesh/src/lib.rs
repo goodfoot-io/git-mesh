@@ -15,30 +15,32 @@
 //! * [`cli`]         — clap surface; consumed by the binary.
 
 pub mod advice;
+pub mod anchor;
 pub mod cli;
 pub mod file_index;
 pub mod git;
 pub mod mesh;
-pub mod anchor;
 pub mod resolver;
 pub mod staging;
 pub mod sync;
 pub mod types;
 pub mod validation;
 
-pub use file_index::{IndexEntry, ls_all, ls_by_path, ls_by_path_line_range, read_index, rebuild_index};
+pub use anchor::{anchor_ref_path, create_anchor, parse_anchor, read_anchor, serialize_anchor};
+pub use file_index::{
+    IndexEntry, ls_all, ls_by_path, ls_by_path_line_range, read_index, rebuild_index,
+};
 pub use git::read_git_text;
 pub use mesh::{
     MeshCommitInfo, commit_mesh, delete_mesh, is_ancestor_commit, list_mesh_names,
     mesh_commit_info, mesh_commit_info_at, mesh_log, read_mesh, read_mesh_at, rename_mesh,
     resolve_commit_ish, restore_mesh, revert_mesh, show_mesh, show_mesh_at,
 };
-pub use anchor::{create_anchor, parse_anchor, anchor_ref_path, read_anchor, serialize_anchor};
-pub use resolver::{culprit_commit, resolve_mesh, resolve_anchor, stale_meshes};
+pub use resolver::{culprit_commit, resolve_anchor, resolve_mesh, stale_meshes};
 pub use staging::{
     StagedAdd, StagedConfig, StagedRemove, Staging, append_add, append_config, append_remove,
     clear_staging, list_staged_mesh_names, read_staging, set_why,
 };
 pub use sync::{default_remote, ensure_refspec_configured, fetch_mesh_refs, push_mesh_refs};
 pub use types::*;
-pub use validation::{RESERVED_MESH_NAMES, validate_mesh_name, validate_anchor_id};
+pub use validation::{RESERVED_MESH_NAMES, validate_anchor_id, validate_mesh_name};

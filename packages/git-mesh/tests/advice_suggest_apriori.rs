@@ -23,7 +23,7 @@ fn marginals_counts_each_id_once_per_session() {
 fn marginals_absent_id_not_in_index() {
     let pairs = vec![(0usize, "s1".to_string())];
     let index = atom_marginals_resolved(&pairs);
-    assert!(index.get(&99).is_none());
+    assert!(!index.contains_key(&99));
 }
 
 // ---------------------------------------------------------------------------
@@ -101,5 +101,8 @@ fn confidence_picks_maximum_direction() {
         (1, "s2".to_string()),
     ]);
     let stats = apriori_stats(&pair, &index, 10);
-    assert!((stats.confidence - 1.0).abs() < 1e-9, "max(P(A|B),P(B|A)) should be 1.0");
+    assert!(
+        (stats.confidence - 1.0).abs() < 1e-9,
+        "max(P(A|B),P(B|A)) should be 1.0"
+    );
 }

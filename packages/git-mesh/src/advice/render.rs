@@ -25,7 +25,11 @@ const REASON_EMPTY_MESH: &str = "empty_mesh";
 /// that fired for the first time this flush.
 ///
 /// `documentation` gates the per-reason appendix (§12.11).
-pub fn render(suggestions: &[Suggestion], new_doc_topics: &[String], documentation: bool) -> String {
+pub fn render(
+    suggestions: &[Suggestion],
+    new_doc_topics: &[String],
+    documentation: bool,
+) -> String {
     if suggestions.is_empty() {
         return String::new();
     }
@@ -47,7 +51,12 @@ pub fn render(suggestions: &[Suggestion], new_doc_topics: &[String], documentati
     let mut by_mesh: std::collections::BTreeMap<String, Vec<&Suggestion>> =
         std::collections::BTreeMap::new();
     for s in &per_mesh_suggs {
-        let mesh_name = s.participants.first().map(|p| p.name.as_str()).unwrap_or("").to_string();
+        let mesh_name = s
+            .participants
+            .first()
+            .map(|p| p.name.as_str())
+            .unwrap_or("")
+            .to_string();
         by_mesh.entry(mesh_name).or_default().push(s);
     }
 
@@ -73,11 +82,15 @@ pub fn render(suggestions: &[Suggestion], new_doc_topics: &[String], documentati
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut appendix = String::new();
         for s in suggestions {
-            let Some(reason) = drift_reason(s) else { continue };
+            let Some(reason) = drift_reason(s) else {
+                continue;
+            };
             if !seen.insert(reason.clone()) {
                 continue;
             }
-            let Some(hint) = render_hint_for_reason(&reason) else { continue };
+            let Some(hint) = render_hint_for_reason(&reason) else {
+                continue;
+            };
             appendix.push_str(&hint);
         }
         if !appendix.is_empty() {
@@ -151,9 +164,14 @@ fn render_mesh_block(
 
             // Touched bullet.
             if !meta.touched_path.is_empty() {
-                let key = (meta.touched_path.clone(), meta.touched_start, meta.touched_end);
+                let key = (
+                    meta.touched_path.clone(),
+                    meta.touched_start,
+                    meta.touched_end,
+                );
                 if seen_bullet.insert(key) {
-                    let addr = format_addr(&meta.touched_path, meta.touched_start, meta.touched_end);
+                    let addr =
+                        format_addr(&meta.touched_path, meta.touched_start, meta.touched_end);
                     let line = format!("# - {addr}");
                     out.push_str(&truncate_line(&line));
                     out.push('\n');
@@ -168,12 +186,20 @@ fn render_mesh_block(
                     "[ORPHANED]" | "[CONFLICT]" | "[SUBMODULE]" | "[DELETED]"
                 );
                 if !is_whole_file && !is_non_excerpt_marker {
-                    let key = (meta.excerpt_of_path.clone(), meta.excerpt_start, meta.excerpt_end);
+                    let key = (
+                        meta.excerpt_of_path.clone(),
+                        meta.excerpt_start,
+                        meta.excerpt_end,
+                    );
                     if seen_excerpts.insert(key) {
                         let body = read_excerpt_from_meta(&meta);
                         if !body.is_empty() {
                             out.push_str("#\n");
-                            let addr = format_addr(&meta.excerpt_of_path, meta.excerpt_start, meta.excerpt_end);
+                            let addr = format_addr(
+                                &meta.excerpt_of_path,
+                                meta.excerpt_start,
+                                meta.excerpt_end,
+                            );
                             out.push_str(&format!("# {addr}\n"));
                             out.push_str(&body);
                         }
@@ -224,7 +250,9 @@ fn partner_range_from_meta(s: &Suggestion, _meta: &DriftMeta) -> (Option<i64>, O
 /// Get (start, end) for participant at index `idx` in a suggestion,
 /// returning (None, None) for whole-file pins.
 fn participant_range(s: &Suggestion, idx: usize) -> (Option<i64>, Option<i64>) {
-    let Some(p) = s.participants.get(idx) else { return (None, None) };
+    let Some(p) = s.participants.get(idx) else {
+        return (None, None);
+    };
     if p.whole {
         (None, None)
     } else {
@@ -244,10 +272,22 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
     };
 
     // Reconstruct from DriftMeta — mirrors the previous render_cross_cutting(Candidate).
-    let partner_path = s.participants.first().map(|p| p.path.to_string_lossy().to_string()).unwrap_or_default();
-    let trigger_path = s.participants.get(1).map(|p| p.path.to_string_lossy().to_string()).unwrap_or_default();
+    let partner_path = s
+        .participants
+        .first()
+        .map(|p| p.path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let trigger_path = s
+        .participants
+        .get(1)
+        .map(|p| p.path.to_string_lossy().to_string())
+        .unwrap_or_default();
     let (trigger_start, trigger_end) = participant_range(s, 1);
-    let mesh = s.participants.first().map(|p| p.name.as_str()).unwrap_or("");
+    let mesh = s
+        .participants
+        .first()
+        .map(|p| p.name.as_str())
+        .unwrap_or("");
 
     let mut out = String::new();
     match meta.reason_kind.as_str() {
@@ -299,9 +339,7 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
                         "# {staged_mesh} [STAGED] re-records {path}#L{os}-L{oe} with content that differs from {other_mesh}.\n"
                     ));
                     out.push_str(&format!("# - {other_mesh}: {path}#L{os}-L{oe}\n"));
-                    out.push_str(&format!(
-                        "# - {staged_mesh} [STAGED]: {path}#L{os}-L{oe}\n"
-                    ));
+                    out.push_str(&format!("# - {staged_mesh} [STAGED]: {path}#L{os}-L{oe}\n"));
                 }
                 _ => {
                     out.push_str(&format!("# {} [STAGED]\n", mesh));
@@ -717,7 +755,10 @@ mod tests {
         let s = sugg("m1", "b.rs");
         let out = render(&[s], &[], false);
         for line in out.lines() {
-            assert!(line.starts_with('#'), "line does not start with #: {line:?}");
+            assert!(
+                line.starts_with('#'),
+                "line does not start with #: {line:?}"
+            );
         }
     }
 
@@ -951,7 +992,9 @@ mod tests {
             partner_marker: String::new(),
             partner_clause: String::new(),
             density: CDensity::L2,
-            command: "git mesh rm  link src/foo.ts\ngit mesh add link src/bar.ts\ngit mesh commit link".into(),
+            command:
+                "git mesh rm  link src/foo.ts\ngit mesh add link src/bar.ts\ngit mesh commit link"
+                    .into(),
             excerpt_of_path: String::new(),
             excerpt_start: None,
             excerpt_end: None,
@@ -1090,20 +1133,25 @@ mod tests {
                     new_path: None,
                 };
                 let s = candidate_to_suggestion(&c);
-                let topics: Vec<String> = kind.doc_topic().into_iter().map(str::to_string).collect();
+                let topics: Vec<String> =
+                    kind.doc_topic().into_iter().map(str::to_string).collect();
                 // Without --documentation
-                let out_bare = render(&[s.clone()], &[], false);
+                let out_bare = render(std::slice::from_ref(&s), &[], false);
                 assert!(
                     !re(&out_bare),
                     "bare render for {:?} density={:?} contains the word 'group': {:?}",
-                    kind, density, out_bare
+                    kind,
+                    density,
+                    out_bare
                 );
                 // With --documentation
                 let out_doc = render(&[s], &topics, true);
                 assert!(
                     !re(&out_doc),
                     "--documentation render for {:?} density={:?} contains the word 'group': {:?}",
-                    kind, density, out_doc
+                    kind,
+                    density,
+                    out_doc
                 );
             }
         }

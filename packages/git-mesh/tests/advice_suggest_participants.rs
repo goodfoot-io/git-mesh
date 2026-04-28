@@ -1,7 +1,7 @@
 //! Integration tests for the participants + anchor-merge stage.
 
 use git_mesh::advice::suggest::{
-    build_participants, merge_ranges_per_file, Op, OpKind, SuggestConfig,
+    Op, OpKind, SuggestConfig, build_participants, merge_ranges_per_file,
 };
 
 fn cfg() -> SuggestConfig {
@@ -76,13 +76,16 @@ fn intervals_beyond_tolerance_remain_separate_participants() {
 
 #[test]
 fn iou_of_identical_intervals_is_one() {
-    use git_mesh::advice::suggest::range_iou;
     use git_mesh::advice::suggest::build_participants;
+    use git_mesh::advice::suggest::range_iou;
     let ops = vec![make_read_op("a.rs", 10, 30, 0)];
     let p1 = &build_participants(&ops, "s1")[0];
     let p2 = &build_participants(&ops, "s2")[0];
     let iou = range_iou(p1, p2);
-    assert!((iou - 1.0).abs() < 1e-9, "identical intervals → iou=1.0, got {iou}");
+    assert!(
+        (iou - 1.0).abs() < 1e-9,
+        "identical intervals → iou=1.0, got {iou}"
+    );
 }
 
 #[test]
@@ -106,7 +109,10 @@ fn iou_partial_overlap_is_computed_correctly() {
     let p2 = &build_participants(&ops2, "s2")[0];
     let iou = range_iou(p1, p2);
     let expected = 11.0_f64 / 30.0;
-    assert!((iou - expected).abs() < 1e-9, "expected {expected}, got {iou}");
+    assert!(
+        (iou - expected).abs() < 1e-9,
+        "expected {expected}, got {iou}"
+    );
 }
 
 #[test]
@@ -119,7 +125,14 @@ fn iou_below_threshold_does_not_create_edge() {
     all_parts.extend(build_participants(&ops2, "s2"));
     let all_merged = merge_ranges_per_file(&all_parts, &cfg());
     let iou = range_iou(&all_merged[0], &all_merged[1]);
-    assert!(iou < cfg().range_overlap_iou, "iou {iou} must be below threshold");
+    assert!(
+        iou < cfg().range_overlap_iou,
+        "iou {iou} must be below threshold"
+    );
     let idx = build_canonical_ranges(&all_merged, &cfg());
-    assert_eq!(idx.ranges.len(), 2, "non-overlapping ranges must produce two canonical ids");
+    assert_eq!(
+        idx.ranges.len(),
+        2,
+        "non-overlapping ranges must produce two canonical ids"
+    );
 }

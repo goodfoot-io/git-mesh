@@ -1,8 +1,8 @@
 //! Integration tests for the canonical-id stage.
 
 use git_mesh::advice::suggest::{
-    build_canonical_ranges, build_participants, merge_ranges_per_file, range_iou, Op, OpKind,
-    SuggestConfig,
+    Op, OpKind, SuggestConfig, build_canonical_ranges, build_participants, merge_ranges_per_file,
+    range_iou,
 };
 
 fn cfg() -> SuggestConfig {
@@ -26,7 +26,12 @@ fn make_read_op(path: &str, start: u32, end: u32, idx: usize) -> Op {
     }
 }
 
-fn parts_for(path: &str, start: u32, end: u32, sid: &str) -> git_mesh::advice::suggest::Participant {
+fn parts_for(
+    path: &str,
+    start: u32,
+    end: u32,
+    sid: &str,
+) -> git_mesh::advice::suggest::Participant {
     let ops = vec![make_read_op(path, start, end, 0)];
     build_participants(&ops, sid).into_iter().next().unwrap()
 }
@@ -44,8 +49,14 @@ fn same_input_produces_same_canonical_ids() {
     ];
     let idx1 = build_canonical_ranges(&parts, &cfg());
     let idx2 = build_canonical_ranges(&parts, &cfg());
-    assert_eq!(idx1.ranges, idx2.ranges, "ranges must be identical across runs");
-    assert_eq!(idx1.canonical_id_of, idx2.canonical_id_of, "ids must be identical across runs");
+    assert_eq!(
+        idx1.ranges, idx2.ranges,
+        "ranges must be identical across runs"
+    );
+    assert_eq!(
+        idx1.canonical_id_of, idx2.canonical_id_of,
+        "ids must be identical across runs"
+    );
 }
 
 #[test]
@@ -91,8 +102,7 @@ fn adding_unrelated_file_does_not_change_existing_ids() {
     for p in &base {
         let k = git_mesh::advice::suggest::canonical::part_key(p);
         assert_eq!(
-            idx_base.canonical_id_of[&k],
-            idx_ext.canonical_id_of[&k],
+            idx_base.canonical_id_of[&k], idx_ext.canonical_id_of[&k],
             "adding unrelated file must not change existing ids"
         );
     }

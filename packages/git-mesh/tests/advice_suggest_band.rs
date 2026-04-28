@@ -1,6 +1,8 @@
 //! Tests for the band + viability stage (Section 15 of `docs/analyze-v4.mjs`).
 
-use git_mesh::advice::suggest::{confidence_band, viability_label, CandidateScore, ComponentBreakdown};
+use git_mesh::advice::suggest::{
+    CandidateScore, ComponentBreakdown, confidence_band, viability_label,
+};
 use git_mesh::advice::suggestion::{ConfidenceBand, Viability};
 
 fn make_candidate(

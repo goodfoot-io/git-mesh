@@ -1,8 +1,8 @@
 //! `.git/mesh/file-index` — derived lookup table (§3.4).
 
+use crate::anchor::read_anchor;
 use crate::git::mesh_dir;
 use crate::mesh::read::{list_mesh_names, read_mesh};
-use crate::anchor::read_anchor;
 use crate::types::AnchorExtent;
 use crate::{Error, Result};
 use std::fs;

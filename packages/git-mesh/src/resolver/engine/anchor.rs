@@ -9,7 +9,7 @@ use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
 use crate::types::{
-    DriftSource, MeshConfig, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
+    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, MeshConfig,
     UnavailableReason,
 };
 use crate::{Error, Result};

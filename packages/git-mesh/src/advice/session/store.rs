@@ -125,9 +125,9 @@ pub fn atomic_write(dest: &Path, contents: &[u8]) -> Result<()> {
     let parent = dest
         .parent()
         .ok_or_else(|| anyhow::anyhow!("atomic_write: dest `{}` has no parent", dest.display()))?;
-    let file_name = dest
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("atomic_write: dest `{}` has no filename", dest.display()))?;
+    let file_name = dest.file_name().ok_or_else(|| {
+        anyhow::anyhow!("atomic_write: dest `{}` has no filename", dest.display())
+    })?;
     let mut tmp_name = file_name.to_os_string();
     tmp_name.push(".tmp");
     let tmp = parent.join(&tmp_name);

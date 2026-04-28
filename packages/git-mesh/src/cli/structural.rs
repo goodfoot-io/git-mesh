@@ -1,7 +1,7 @@
 //! Structural handlers (restore, revert, delete, mv) + doctor — §6.6, §6.7, §6.8.
 
-use crate::cli::{DeleteArgs, MvArgs, RestoreArgs, RevertArgs};
 use crate::anchor::anchor_ref_path;
+use crate::cli::{DeleteArgs, MvArgs, RestoreArgs, RevertArgs};
 use crate::sync::default_remote;
 use crate::{
     delete_mesh, file_index, list_mesh_names, read_mesh, rename_mesh, restore_mesh, revert_mesh,
@@ -383,7 +383,9 @@ fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<
             out.push(DoctorFinding {
                 code: DoctorCode::DanglingRangeRef,
                 severity: Severity::Info,
-                message: format!("dangling anchor ref at {descriptor} is not referenced by any mesh"),
+                message: format!(
+                    "dangling anchor ref at {descriptor} is not referenced by any mesh"
+                ),
                 remediation: Some(
                     "harmless pending `git gc`; delete with `git update-ref -d` if intended".into(),
                 ),

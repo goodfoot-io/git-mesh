@@ -88,7 +88,10 @@ fn run() -> Result<i32> {
     // to stdout. Intercept here before `discover_repo` so the binary works
     // outside a worktree (e.g. in the parity test fixtures).
     if let Some(cli::Commands::Advice(ref advice_args)) = cli.command
-        && matches!(advice_args.command, Some(cli::advice::AdviceCommand::Suggest))
+        && matches!(
+            advice_args.command,
+            Some(cli::advice::AdviceCommand::Suggest)
+        )
     {
         return cli::advice::run_advice_suggest_standalone();
     }

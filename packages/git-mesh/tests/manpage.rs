@@ -29,8 +29,7 @@ fn generated_manpage_matches_checked_in_artifact() {
     let expected = std::fs::read(&checked_in).expect("read checked-in manpage");
 
     assert_eq!(
-        generated,
-        expected,
+        generated, expected,
         "generated git-mesh.1 differs from checked-in artifact; run `yarn build:man` and commit the result"
     );
 }

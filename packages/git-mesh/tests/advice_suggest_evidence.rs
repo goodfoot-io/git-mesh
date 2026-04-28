@@ -1,8 +1,8 @@
 //! Integration tests for the pair-evidence stage.
 
 use git_mesh::advice::suggest::{
-    build_canonical_ranges, build_pair_evidence,
     Op, OpKind, Participant, ParticipantKind, SessionParticipants, SuggestConfig, Technique,
+    build_canonical_ranges, build_pair_evidence,
 };
 
 fn cfg() -> SuggestConfig {
@@ -68,7 +68,12 @@ fn op_window_pair_within_distance_recorded() {
     let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
     assert_eq!(pairs.len(), 1);
     let state = pairs.values().next().unwrap();
-    assert!(state.evidence.iter().any(|e| e.technique == Technique::OperationWindow));
+    assert!(
+        state
+            .evidence
+            .iter()
+            .any(|e| e.technique == Technique::OperationWindow)
+    );
 }
 
 #[test]
@@ -124,7 +129,12 @@ fn two_sessions_same_pair_produces_recurrence_evidence() {
 
 #[test]
 fn three_sessions_produce_two_recurrence_rows() {
-    let mk = |sid: &str| vec![make_part("a.rs", 1, 10, sid, 0), make_part("b.rs", 1, 10, sid, 1)];
+    let mk = |sid: &str| {
+        vec![
+            make_part("a.rs", 1, 10, sid, 0),
+            make_part("b.rs", 1, 10, sid, 1),
+        ]
+    };
     let s1 = mk("s1");
     let s2 = mk("s2");
     let s3 = mk("s3");
@@ -162,8 +172,20 @@ fn pair_evidence_is_deterministic_across_runs() {
     let all_parts = mk_parts();
     let canonical = build_canonical_ranges(&all_parts, &cfg());
     let sessions = vec![
-        make_session("s1", vec![make_part("a.rs", 1, 20, "s1", 0), make_part("b.rs", 1, 20, "s1", 2)]),
-        make_session("s2", vec![make_part("c.rs", 1, 10, "s2", 0), make_part("a.rs", 1, 20, "s2", 1)]),
+        make_session(
+            "s1",
+            vec![
+                make_part("a.rs", 1, 20, "s1", 0),
+                make_part("b.rs", 1, 20, "s1", 2),
+            ],
+        ),
+        make_session(
+            "s2",
+            vec![
+                make_part("c.rs", 1, 10, "s2", 0),
+                make_part("a.rs", 1, 20, "s2", 1),
+            ],
+        ),
     ];
 
     let pairs1 = build_pair_evidence(&sessions, &canonical, &cfg());

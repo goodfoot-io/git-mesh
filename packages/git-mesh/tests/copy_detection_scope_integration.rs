@@ -18,7 +18,7 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::StagedConfig;
-use git_mesh::types::{CopyDetection, EngineOptions, AnchorStatus};
+use git_mesh::types::{AnchorStatus, CopyDetection, EngineOptions};
 use git_mesh::{append_add, append_config, commit_mesh, resolve_mesh, set_why};
 use support::TestRepo;
 

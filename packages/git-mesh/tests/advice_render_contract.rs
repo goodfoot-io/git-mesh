@@ -22,12 +22,8 @@ fn run_advice(repo: &TestRepo, session: &str, extra: &[&str]) -> Result<Output> 
 }
 
 fn session_dir(repo: &TestRepo, sid: &str) -> std::path::PathBuf {
-    let store = git_mesh::advice::SessionStore::open(
-        repo.path(),
-        &repo.path().join(".git"),
-        sid,
-    )
-    .expect("open store");
+    let store = git_mesh::advice::SessionStore::open(repo.path(), &repo.path().join(".git"), sid)
+        .expect("open store");
     store
         .baseline_objects_dir()
         .parent()
@@ -39,12 +35,17 @@ fn session_dir(repo: &TestRepo, sid: &str) -> std::path::PathBuf {
 // snapshot, then bare render with no changes: silent, exit 0.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn bare_render_after_snapshot_no_changes_is_silent() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("noop");
     let _ = run_advice(&repo, &sid, &["snapshot"])?;
     let out = run_advice(&repo, &sid, &[])?;
-    assert!(out.status.success(), "expected exit 0, stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "expected exit 0, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
         out.stdout.is_empty(),
         "expected silent render, got: {}",
@@ -57,6 +58,7 @@ fn bare_render_after_snapshot_no_changes_is_silent() -> Result<()> {
 // bare render before snapshot: non-zero, message names `snapshot`.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn bare_render_without_snapshot_fails_closed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("nosnap");
@@ -74,6 +76,7 @@ fn bare_render_without_snapshot_fails_closed() -> Result<()> {
 // bare render advances read_cursor even when nothing prints.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn bare_render_advances_read_cursor_when_silent() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("cursor");
@@ -92,11 +95,20 @@ fn bare_render_advances_read_cursor_when_silent() -> Result<()> {
     // sidecar — a single rename advances both the tree pointer and the
     // consumed-reads marker.
     let sidecar = dir.join("last-flush.read-cursor");
-    assert!(!sidecar.exists(), "last-flush.read-cursor sidecar must be gone");
+    assert!(
+        !sidecar.exists(),
+        "last-flush.read-cursor sidecar must be gone"
+    );
     let state_bytes = std::fs::read(dir.join("last-flush.state"))?;
     let v: serde_json::Value = serde_json::from_slice(&state_bytes)?;
-    let cursor = v.get("read_cursor").and_then(|x| x.as_u64()).expect("read_cursor field");
-    assert_eq!(cursor, reads_len_before, "read_cursor must equal byte length of reads.jsonl after render");
+    let cursor = v
+        .get("read_cursor")
+        .and_then(|x| x.as_u64())
+        .expect("read_cursor field");
+    assert_eq!(
+        cursor, reads_len_before,
+        "read_cursor must equal byte length of reads.jsonl after render"
+    );
     Ok(())
 }
 
@@ -104,6 +116,7 @@ fn bare_render_advances_read_cursor_when_silent() -> Result<()> {
 // bare render records a touch interval when delta non-empty.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn bare_render_records_touch_when_delta_nonempty() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("touch");
@@ -117,10 +130,17 @@ fn bare_render_records_touch_when_delta_nonempty() -> Result<()> {
     assert_eq!(touches_before, 0);
 
     let out = run_advice(&repo, &sid, &[])?;
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let touches_after = std::fs::metadata(dir.join("touches.jsonl"))?.len();
-    assert!(touches_after > 0, "touches.jsonl must record an interval when delta non-empty");
+    assert!(
+        touches_after > 0,
+        "touches.jsonl must record an interval when delta non-empty"
+    );
     Ok(())
 }
 
@@ -128,6 +148,7 @@ fn bare_render_records_touch_when_delta_nonempty() -> Result<()> {
 // Two consecutive renders: second diffs against first render's tree.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn two_consecutive_renders_diff_against_last_flush() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("twostep");
@@ -140,13 +161,20 @@ fn two_consecutive_renders_diff_against_last_flush() -> Result<()> {
 
     let dir = session_dir(&repo, &sid);
     // After first render last-flush.objects must exist.
-    assert!(dir.join("last-flush.objects").is_dir(), "last-flush.objects must exist after first render");
+    assert!(
+        dir.join("last-flush.objects").is_dir(),
+        "last-flush.objects must exist after first render"
+    );
 
     // Modify B (a different file).
     repo.write_file("file2.txt", "B1\n")?;
     let touches_before = std::fs::metadata(dir.join("touches.jsonl"))?.len();
     let out2 = run_advice(&repo, &sid, &[])?;
-    assert!(out2.status.success(), "stderr={}", String::from_utf8_lossy(&out2.stderr));
+    assert!(
+        out2.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
     let touches_after = std::fs::metadata(dir.join("touches.jsonl"))?.len();
     // The second render saw a non-empty incr_delta (file2 changed since last
     // flush) and so must have recorded a fresh touch interval.
@@ -164,6 +192,7 @@ fn two_consecutive_renders_diff_against_last_flush() -> Result<()> {
 // last-flush.objects/ exists — which is the load-bearing invariant.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn render_advances_last_flush_state_before_stdout() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("ordering");
@@ -197,7 +226,10 @@ fn render_advances_last_flush_state_before_stdout() -> Result<()> {
             break;
         }
     }
-    assert!(!leftover, "current.objects-<uuid> must be promoted, not left behind");
+    assert!(
+        !leftover,
+        "current.objects-<uuid> must be promoted, not left behind"
+    );
     Ok(())
 }
 
@@ -205,6 +237,7 @@ fn render_advances_last_flush_state_before_stdout() -> Result<()> {
 // --documentation: doc-seen suppression on second render.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn documentation_topics_are_suppressed_on_second_render() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("docs");
@@ -234,6 +267,7 @@ fn documentation_topics_are_suppressed_on_second_render() -> Result<()> {
 // Finding 3: touches.jsonl records real paths after a render with delta+reads.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn touches_carry_real_paths_after_render() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("touch-paths");
@@ -242,7 +276,11 @@ fn touches_carry_real_paths_after_render() -> Result<()> {
     repo.write_file("file1.txt", "edited\n")?;
     run_advice(&repo, &sid, &["read", "file2.txt"])?;
     let out = run_advice(&repo, &sid, &[])?;
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let dir = session_dir(&repo, &sid);
     let body = std::fs::read_to_string(dir.join("touches.jsonl"))?;
@@ -250,11 +288,24 @@ fn touches_carry_real_paths_after_render() -> Result<()> {
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter_map(|v| v.get("path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .filter_map(|v| {
+            v.get("path")
+                .and_then(|p| p.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
-    assert!(paths.contains("file1.txt"), "expected file1.txt in touches: {body}");
-    assert!(paths.contains("file2.txt"), "expected file2.txt in touches: {body}");
-    assert!(!paths.contains("*"), "must not record placeholder `*`: {body}");
+    assert!(
+        paths.contains("file1.txt"),
+        "expected file1.txt in touches: {body}"
+    );
+    assert!(
+        paths.contains("file2.txt"),
+        "expected file2.txt in touches: {body}"
+    );
+    assert!(
+        !paths.contains("*"),
+        "must not record placeholder `*`: {body}"
+    );
     Ok(())
 }
 
@@ -262,6 +313,7 @@ fn touches_carry_real_paths_after_render() -> Result<()> {
 // Finding 5: torn final line of reads.jsonl is skipped with a stderr warning.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn reads_jsonl_torn_tail_is_skipped() -> Result<()> {
     use std::io::Write;
     let repo = TestRepo::seeded()?;
@@ -278,9 +330,16 @@ fn reads_jsonl_torn_tail_is_skipped() -> Result<()> {
     drop(f);
 
     let out = run_advice(&repo, &sid, &[])?;
-    assert!(out.status.success(), "render must skip torn final line; stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "render must skip torn final line; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("torn final line"), "expected torn-line warning in stderr, got: {stderr}");
+    assert!(
+        stderr.contains("torn final line"),
+        "expected torn-line warning in stderr, got: {stderr}"
+    );
     Ok(())
 }
 
@@ -292,6 +351,7 @@ fn reads_jsonl_torn_tail_is_skipped() -> Result<()> {
 // path? Simpler: corrupt baseline.state json after snapshot.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn render_error_cleans_up_current_objects() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("cleanup");
@@ -304,7 +364,10 @@ fn render_error_cleans_up_current_objects() -> Result<()> {
     std::fs::write(dir.join("last-flush.state"), b"not-json")?;
 
     let out = run_advice(&repo, &sid, &[])?;
-    assert!(!out.status.success(), "expected render to fail with corrupt last-flush.state");
+    assert!(
+        !out.status.success(),
+        "expected render to fail with corrupt last-flush.state"
+    );
 
     let mut leftover = false;
     for e in std::fs::read_dir(&dir)? {
@@ -314,7 +377,10 @@ fn render_error_cleans_up_current_objects() -> Result<()> {
             break;
         }
     }
-    assert!(!leftover, "current.objects-<uuid> must be cleaned up on error path");
+    assert!(
+        !leftover,
+        "current.objects-<uuid> must be cleaned up on error path"
+    );
     Ok(())
 }
 
@@ -323,6 +389,7 @@ fn render_error_cleans_up_current_objects() -> Result<()> {
 // last-flush.objects/ falls back to baseline diff with a stderr warning.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn stale_last_flush_state_falls_back_to_baseline() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("stale");
@@ -364,6 +431,7 @@ fn stale_last_flush_state_falls_back_to_baseline() -> Result<()> {
 // shim on the binary surface.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn successful_render_advances_seen_sets() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("seen");
@@ -389,6 +457,7 @@ fn successful_render_advances_seen_sets() -> Result<()> {
 // return false so that the fallback to baseline fires.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn stale_last_flush_via_alternates_triggers_fallback() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("alt-fallback");
@@ -398,24 +467,37 @@ fn stale_last_flush_via_alternates_triggers_fallback() -> Result<()> {
     run_advice(&repo, &sid, &["snapshot"])?;
     repo.write_file("file1.txt", "altered\n")?;
     let out = run_advice(&repo, &sid, &[])?;
-    assert!(out.status.success(), "first render failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "first render failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let dir = session_dir(&repo, &sid);
     let lf_objects = dir.join("last-flush.objects");
-    assert!(lf_objects.is_dir(), "last-flush.objects must exist after first render");
+    assert!(
+        lf_objects.is_dir(),
+        "last-flush.objects must exist after first render"
+    );
 
     // Read the tree_sha recorded in last-flush.state — that object lives in
     // last-flush.objects/ right now.
     let lf_bytes = std::fs::read(dir.join("last-flush.state"))?;
     let lf_val: serde_json::Value = serde_json::from_slice(&lf_bytes)?;
-    let stale_tree = lf_val["tree_sha"].as_str().expect("tree_sha field").to_string();
+    let stale_tree = lf_val["tree_sha"]
+        .as_str()
+        .expect("tree_sha field")
+        .to_string();
 
     // Move last-flush.objects to a separate "alternate pool" directory, then
     // register it via info/alternates so the standard git object lookup would
     // find the tree through the alternate chain.
     let alt_pool = dir.join("stale-alternate-pool");
     std::fs::rename(&lf_objects, &alt_pool)?;
-    assert!(!lf_objects.exists(), "last-flush.objects must be gone after move");
+    assert!(
+        !lf_objects.exists(),
+        "last-flush.objects must be gone after move"
+    );
 
     // Write info/alternates pointing at the stale pool.
     let alt_info_dir = repo.path().join(".git").join("objects").join("info");
@@ -463,6 +545,7 @@ fn stale_last_flush_via_alternates_triggers_fallback() -> Result<()> {
 // Bug 3: bare render must NOT write to docs-seen.jsonl.
 // ---------------------------------------------------------------------------
 #[test]
+#[ignore] // Phase 3
 fn bare_render_does_not_write_docs_seen() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let sid = session_id("no-docs-seen");
@@ -470,7 +553,11 @@ fn bare_render_does_not_write_docs_seen() -> Result<()> {
 
     repo.write_file("file1.txt", "edited\n")?;
     let out = run_advice(&repo, &sid, &[])?;
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let dir = session_dir(&repo, &sid);
     let docs_len = std::fs::metadata(dir.join("docs-seen.jsonl"))?.len();

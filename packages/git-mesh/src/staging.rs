@@ -18,8 +18,8 @@
 
 use crate::git;
 use crate::types::{
-    CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE, NormalizationStamp,
-    AnchorExtent,
+    AnchorExtent, CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE,
+    NormalizationStamp,
 };
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -740,11 +740,13 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
         };
         let matches = fname == encoded
             || fname == format!("{encoded}.why")
-            || fname.strip_prefix(&format!("{encoded}.")).is_some_and(|rest| {
-                // `<N>` (sidecar) or `<N>.meta` (sidecar metadata).
-                let stripped = rest.strip_suffix(".meta").unwrap_or(rest);
-                !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())
-            });
+            || fname
+                .strip_prefix(&format!("{encoded}."))
+                .is_some_and(|rest| {
+                    // `<N>` (sidecar) or `<N>.meta` (sidecar metadata).
+                    let stripped = rest.strip_suffix(".meta").unwrap_or(rest);
+                    !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())
+                });
         if matches {
             fs::remove_file(entry.path())?;
         }

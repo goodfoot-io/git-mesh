@@ -4,7 +4,7 @@
 use super::filter_process::{FilterProcess, FilterSpawnError, filter_smudge, spawn_lfs_process};
 use crate::git;
 use crate::types::{
-    self, DriftSource, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus,
+    self, Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource,
     UnavailableReason,
 };
 use std::path::PathBuf;

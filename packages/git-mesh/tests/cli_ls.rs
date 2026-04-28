@@ -50,7 +50,12 @@ fn ls_empty_repo_prints_no_meshes() -> Result<()> {
 #[test]
 fn ls_one_committed_mesh_block_format() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "the parser honors the spec")?;
+    commit_mesh(
+        &repo,
+        "alpha",
+        "file1.txt#L1-L5",
+        "the parser honors the spec",
+    )?;
     let out = repo.mesh_stdout(["ls"])?;
     // Header line
     assert!(
@@ -90,7 +95,12 @@ fn ls_alphabetical_order() -> Result<()> {
 #[test]
 fn ls_staged_marker_on_committed_mesh_with_staged_ops() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "the spec governs the parser")?;
+    commit_mesh(
+        &repo,
+        "alpha",
+        "file1.txt#L1-L5",
+        "the spec governs the parser",
+    )?;
     // Stage an additional add without committing.
     repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
     let out = repo.mesh_stdout(["ls"])?;
@@ -184,7 +194,10 @@ fn ls_path_range_filter_overlaps_correctly() -> Result<()> {
     // Query L5-L6, should match overlap (L3-L7) but not nooverlap (L8-L10).
     let out = repo.mesh_stdout(["ls", "file1.txt#L5-L6"])?;
     assert!(out.contains("overlap:"), "expected overlap: {out}");
-    assert!(!out.contains("nooverlap:"), "nooverlap should not appear: {out}");
+    assert!(
+        !out.contains("nooverlap:"),
+        "nooverlap should not appear: {out}"
+    );
     Ok(())
 }
 
@@ -258,7 +271,12 @@ fn ls_search_matches_name() -> Result<()> {
 #[test]
 fn ls_search_matches_why_line() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "the parser honors the spec")?;
+    commit_mesh(
+        &repo,
+        "alpha",
+        "file1.txt#L1-L5",
+        "the parser honors the spec",
+    )?;
     commit_mesh(&repo, "beta", "file2.txt#L1-L3", "unrelated relationship")?;
     let out = repo.mesh_stdout(["ls", "--search", "parser"])?;
     assert!(out.contains("alpha:"), "alpha should match via why: {out}");
@@ -280,19 +298,36 @@ fn ls_search_matches_anchor_address() -> Result<()> {
 #[test]
 fn ls_search_case_insensitive_by_default() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "The Parser Honors The Spec")?;
+    commit_mesh(
+        &repo,
+        "alpha",
+        "file1.txt#L1-L5",
+        "The Parser Honors The Spec",
+    )?;
     let out = repo.mesh_stdout(["ls", "--search", "parser"])?;
-    assert!(out.contains("alpha:"), "case-insensitive match expected: {out}");
+    assert!(
+        out.contains("alpha:"),
+        "case-insensitive match expected: {out}"
+    );
     Ok(())
 }
 
 #[test]
 fn ls_search_case_sensitive_with_flag() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "The Parser Honors The Spec")?;
+    commit_mesh(
+        &repo,
+        "alpha",
+        "file1.txt#L1-L5",
+        "The Parser Honors The Spec",
+    )?;
     // With (?-i), lowercase "parser" should NOT match "Parser"
     let out = repo.mesh_stdout(["ls", "--search", "(?-i)parser"])?;
-    assert_eq!(out.trim(), "no meshes", "case-sensitive should not match: {out}");
+    assert_eq!(
+        out.trim(),
+        "no meshes",
+        "case-sensitive should not match: {out}"
+    );
     Ok(())
 }
 
@@ -300,7 +335,11 @@ fn ls_search_case_sensitive_with_flag() -> Result<()> {
 fn ls_search_invalid_regex_exits_two() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["ls", "--search", "[invalid"])?;
-    assert_eq!(out.status.code(), Some(2), "expected exit 2 for invalid regex");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected exit 2 for invalid regex"
+    );
     let stderr = String::from_utf8(out.stderr)?;
     assert!(
         stderr.contains("git-mesh: invalid --search pattern"),

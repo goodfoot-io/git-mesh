@@ -44,10 +44,7 @@ fn whole_file_mesh(name: &str, path: &str) -> MeshAnchor {
     }
 }
 
-fn input_with_delta<'a>(
-    delta: &'a [DiffEntry],
-    anchors: &'a [MeshAnchor],
-) -> CandidateInput<'a> {
+fn input_with_delta<'a>(delta: &'a [DiffEntry], anchors: &'a [MeshAnchor]) -> CandidateInput<'a> {
     CandidateInput {
         session_delta: &[],
         incr_delta: delta,
@@ -55,7 +52,10 @@ fn input_with_delta<'a>(
         touch_intervals: &[],
         mesh_anchors: anchors,
         internal_path_prefixes: &[],
-        staging: StagingState { adds: &[], removes: &[] },
+        staging: StagingState {
+            adds: &[],
+            removes: &[],
+        },
     }
 }
 
@@ -72,13 +72,17 @@ fn write_inside_mesh_range_fires_partner() {
         path: "src/net.rs".to_string(),
         old_oid: None,
         new_oid: None,
-        hunks: Some(vec![LineRange { start: 110, end: 120 }]),
+        hunks: Some(vec![LineRange {
+            start: 110,
+            end: 120,
+        }]),
     }];
     let input = input_with_delta(&delta, &anchors);
     let result = detect_delta_intersects_mesh(&input);
     assert!(
-        result.iter().any(|c| c.reason_kind == ReasonKind::Partner
-            && c.partner_path == "src/caller.rs"),
+        result
+            .iter()
+            .any(|c| c.reason_kind == ReasonKind::Partner && c.partner_path == "src/caller.rs"),
         "expected Partner candidate for src/caller.rs, got {result:?}"
     );
 }
@@ -96,7 +100,10 @@ fn write_outside_mesh_range_suppresses_partner() {
         path: "src/net.rs".to_string(),
         old_oid: None,
         new_oid: None,
-        hunks: Some(vec![LineRange { start: 200, end: 210 }]),
+        hunks: Some(vec![LineRange {
+            start: 200,
+            end: 210,
+        }]),
     }];
     let input = input_with_delta(&delta, &anchors);
     let result = detect_delta_intersects_mesh(&input);
@@ -119,7 +126,10 @@ fn whole_file_mesh_always_fires() {
         path: "src/foo.ts".to_string(),
         old_oid: None,
         new_oid: None,
-        hunks: Some(vec![LineRange { start: 9999, end: 10000 }]),
+        hunks: Some(vec![LineRange {
+            start: 9999,
+            end: 10000,
+        }]),
     }];
     let input = input_with_delta(&delta, &anchors);
     let result = detect_delta_intersects_mesh(&input);

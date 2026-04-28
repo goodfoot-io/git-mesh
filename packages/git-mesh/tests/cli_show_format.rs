@@ -30,7 +30,7 @@ fn format_big_p_produces_one_line_per_range() -> Result<()> {
         "expected file1.txt line range in output: {out:?}"
     );
     assert!(
-        lines.iter().any(|&l| l == "file2.txt"),
+        lines.contains(&"file2.txt"),
         "expected bare file2.txt in output: {out:?}"
     );
     Ok(())
@@ -62,7 +62,11 @@ fn format_subject_is_per_commit_not_per_range() -> Result<()> {
     // %s has no anchor token → one line total
     let out = repo.mesh_stdout(["show", "m", "--format", "%s"])?;
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 1, "commit-only format should give one line: {out:?}");
+    assert_eq!(
+        lines.len(),
+        1,
+        "commit-only format should give one line: {out:?}"
+    );
     assert_eq!(lines[0], "the why sentence");
     Ok(())
 }

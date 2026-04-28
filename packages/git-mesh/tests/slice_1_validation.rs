@@ -202,8 +202,12 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
     );
 
     let stale = repo.run_mesh(["stale", "--format=porcelain"])?;
-    assert_ne!(stale.status.code(), Some(2), "stale errored: {}",
-        String::from_utf8_lossy(&stale.stderr));
+    assert_ne!(
+        stale.status.code(),
+        Some(2),
+        "stale errored: {}",
+        String::from_utf8_lossy(&stale.stderr)
+    );
 
     let listed_b = repo.mesh_stdout(["ls", "b.ts"])?;
     assert!(

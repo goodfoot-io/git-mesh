@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
-use git_mesh::advice::suggest::history::{load_git_history, pair_history_score, HistoryIndex};
 use git_mesh::advice::suggest::SuggestConfig;
+use git_mesh::advice::suggest::history::{HistoryIndex, load_git_history, pair_history_score};
 
 // ---------------------------------------------------------------------------
 // HistoryIndex helpers (no real repo)
@@ -45,7 +45,10 @@ fn pair_score_no_overlap_returns_zero() {
 #[test]
 fn pair_score_shared_commit_accumulates_weight() {
     let mut cbp = BTreeMap::new();
-    cbp.insert("a.rs".to_string(), ["c1".to_string(), "c2".to_string()].into());
+    cbp.insert(
+        "a.rs".to_string(),
+        ["c1".to_string(), "c2".to_string()].into(),
+    );
     cbp.insert("b.rs".to_string(), ["c1".to_string()].into());
     let mut cw = BTreeMap::new();
     cw.insert("c1".to_string(), 0.5);
@@ -69,7 +72,11 @@ fn pair_score_unavailable_returns_zero() {
 // ---------------------------------------------------------------------------
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git").current_dir(dir).args(args).output().unwrap();
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "git {:?} failed: {}",
@@ -151,8 +158,8 @@ fn git_log_name_only_parity_with_subprocess_n20() {
     use std::collections::BTreeSet;
     // Anchor on CARGO_MANIFEST_DIR so the test works under nextest's sandboxed cwd.
     // WORKSPACE_PATH still overrides for callers that want to point elsewhere.
-    let repo_path = std::env::var("WORKSPACE_PATH")
-        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+    let repo_path =
+        std::env::var("WORKSPACE_PATH").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
     let mut candidate = std::path::PathBuf::from(&repo_path);
     let repo = loop {
         if candidate.join(".git").exists() {
@@ -169,8 +176,14 @@ fn git_log_name_only_parity_with_subprocess_n20() {
 
     let out = Command::new("git")
         .current_dir(repo.workdir().unwrap())
-        .args(["log", "--name-only", "--no-merges", "--no-renames",
-               &format!("-n{n}"), "--pretty=format:COMMIT:%H"])
+        .args([
+            "log",
+            "--name-only",
+            "--no-merges",
+            "--no-renames",
+            &format!("-n{n}"),
+            "--pretty=format:COMMIT:%H",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
@@ -186,10 +199,14 @@ fn git_log_name_only_parity_with_subprocess_n20() {
             cur_hash = Some(hash.to_string());
         } else {
             let f = line.trim();
-            if !f.is_empty() { cur_files.insert(f.to_string()); }
+            if !f.is_empty() {
+                cur_files.insert(f.to_string());
+            }
         }
     }
-    if let Some(h) = cur_hash { git_commits.push((h, cur_files)); }
+    if let Some(h) = cur_hash {
+        git_commits.push((h, cur_files));
+    }
 
     assert!(
         !gix_commits.is_empty() && !git_commits.is_empty(),

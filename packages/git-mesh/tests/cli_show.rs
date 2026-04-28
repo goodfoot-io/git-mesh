@@ -20,7 +20,10 @@ fn bare_mesh_prints_help() -> Result<()> {
     seed(&repo, "beta")?;
     let out = repo.mesh_stdout::<[&str; 0], &str>([])?;
     // Bare git mesh now prints short help (Usage:), not a mesh listing.
-    assert!(out.contains("Usage:"), "expected Usage: in bare output, got: {out}");
+    assert!(
+        out.contains("Usage:"),
+        "expected Usage: in bare output, got: {out}"
+    );
     Ok(())
 }
 
@@ -152,7 +155,6 @@ fn show_format_commit_placeholders() -> Result<()> {
     assert!(out.starts_with("seed|Test User"), "out={out}");
     Ok(())
 }
-
 
 #[test]
 

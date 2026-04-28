@@ -19,22 +19,29 @@ pub mod locator;
 pub mod op_stream;
 pub mod participants;
 
-pub use apriori::{atom_marginals_resolved, apriori_stats, AtomSessionIndex, AprioriStats};
+pub use apriori::{AprioriStats, AtomSessionIndex, apriori_stats, atom_marginals_resolved};
 pub use band::{confidence_band, viability_label};
-pub use canonical::{build_canonical_ranges, range_iou, CanonicalIndex, CanonicalRange};
-pub use cliques::{build_edge_adjacency, bron_kerbosch, connected_components, edges_within, Adjacency};
-pub use cohesion::{
-    build_idf, cache_range, jaccard, per_edge_cohesion, range_tokens_of, read_anchor,
-    tokens_of, trigram_cohesion, trigrams_of, CanonicalId, Idf, RangeTokens, SourceCache,
+pub use canonical::{CanonicalIndex, CanonicalRange, build_canonical_ranges, range_iou};
+pub use cliques::{
+    Adjacency, bron_kerbosch, build_edge_adjacency, connected_components, edges_within,
 };
-pub use composite::{passes_cohesion_gate, score_candidate, CandidateScore, ComponentBreakdown};
-pub use edges::{score_edges, ComponentScores, Edge};
+pub use cohesion::{
+    CanonicalId, Idf, RangeTokens, SourceCache, build_idf, cache_range, jaccard, per_edge_cohesion,
+    range_tokens_of, read_anchor, tokens_of, trigram_cohesion, trigrams_of,
+};
+pub use composite::{CandidateScore, ComponentBreakdown, passes_cohesion_gate, score_candidate};
+pub use edges::{ComponentScores, Edge, score_edges};
 pub use emit::emit;
-pub use evidence::{build_pair_evidence, EvidenceRecord, PairEvidenceMap, PairKey, PairState, SessionParticipants, Technique};
-pub use history::{load_git_history, pair_history_score, CommitChanges, HistoryIndex};
-pub use locator::{attach_locators, prior_context_atoms, Atom};
-pub use op_stream::{build_op_stream, Op, OpKind, SessionRecord};
-pub use participants::{merge_ranges_per_file, participants as build_participants, Participant, ParticipantKind};
+pub use evidence::{
+    EvidenceRecord, PairEvidenceMap, PairKey, PairState, SessionParticipants, Technique,
+    build_pair_evidence,
+};
+pub use history::{CommitChanges, HistoryIndex, load_git_history, pair_history_score};
+pub use locator::{Atom, attach_locators, prior_context_atoms};
+pub use op_stream::{Op, OpKind, SessionRecord, build_op_stream};
+pub use participants::{
+    Participant, ParticipantKind, merge_ranges_per_file, participants as build_participants,
+};
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -205,7 +212,10 @@ pub fn run_suggest_pipeline(
         .iter()
         .filter_map(|p| {
             let key = canonical::part_key(p);
-            canonical.canonical_id_of.get(&key).map(|&cid| (cid, p.session_sid.clone()))
+            canonical
+                .canonical_id_of
+                .get(&key)
+                .map(|&cid| (cid, p.session_sid.clone()))
         })
         .collect();
     let atom_sessions = atom_marginals_resolved(&resolved);
@@ -237,7 +247,14 @@ pub fn run_suggest_pipeline(
     // all edges; the real floor is enforced below after cohesion is added.
     let mut no_floor_cfg = effective_cfg.clone();
     no_floor_cfg.edge_score_floor = 0.0;
-    let mut edges = score_edges(&pairs, &session_participants, &canonical, &atom_sessions, &history, &no_floor_cfg);
+    let mut edges = score_edges(
+        &pairs,
+        &session_participants,
+        &canonical,
+        &atom_sessions,
+        &history,
+        &no_floor_cfg,
+    );
 
     // ── Stage 11: per-edge cohesion (fill the None seam) ─────────────────────
     // Build source cache and IDF from canonical ranges if trigram is enabled.
@@ -254,9 +271,9 @@ pub fn run_suggest_pipeline(
             .enumerate()
             .filter_map(|(id, r)| {
                 let key = format!("{}#{}-{}", r.path, r.start, r.end);
-                source_cache.get(&key).map(|rt| {
-                    (id, rt.identifiers.iter().cloned().collect::<Vec<_>>())
-                })
+                source_cache
+                    .get(&key)
+                    .map(|rt| (id, rt.identifiers.iter().cloned().collect::<Vec<_>>()))
             })
             .collect();
         build_idf(&range_tokens_for_idf)
@@ -280,7 +297,12 @@ pub fn run_suggest_pipeline(
         // from "computable but zero"). The edge-floor filter only applies the
         // pair_cohesion >= 0.10 gate when cohesion is Some (files exist).
         edge.per_edge_cohesion = match (source_cache.get(&key_a), source_cache.get(&key_b)) {
-            (Some(ta), Some(tb)) => Some(per_edge_cohesion(ta, tb, &idf, effective_cfg.shared_id_saturation)),
+            (Some(ta), Some(tb)) => Some(per_edge_cohesion(
+                ta,
+                tb,
+                &idf,
+                effective_cfg.shared_id_saturation,
+            )),
             _ => None,
         };
     }
@@ -309,9 +331,7 @@ pub fn run_suggest_pipeline(
         }
         // Trigram cohesion gate: only when trigram is enabled AND files were
         // readable. None = files absent → skip gate.
-        if effective_cfg.trigram_enabled
-            && e.per_edge_cohesion.is_some_and(|c| c < 0.10)
-        {
+        if effective_cfg.trigram_enabled && e.per_edge_cohesion.is_some_and(|c| c < 0.10) {
             crate::advice_debug!(
                 "suggester-edge",
                 "a" => e.canonical_a,
@@ -357,7 +377,16 @@ pub fn run_suggest_pipeline(
     let scored: Vec<CandidateScore> = all_cliques
         .iter()
         .map(|ids| {
-            score_candidate(ids, &edges, &adj, &canonical, &source_cache, &idf, &history, &effective_cfg)
+            score_candidate(
+                ids,
+                &edges,
+                &adj,
+                &canonical,
+                &source_cache,
+                &idf,
+                &history,
+                &effective_cfg,
+            )
         })
         .collect();
 

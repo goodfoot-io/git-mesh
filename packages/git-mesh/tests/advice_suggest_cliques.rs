@@ -4,8 +4,7 @@
 //! connectedComponents, bronKerbosch, edgesWithin.
 
 use git_mesh::advice::suggest::{
-    bron_kerbosch, build_edge_adjacency, connected_components, edges_within, Edge,
-    ComponentScores,
+    ComponentScores, Edge, bron_kerbosch, build_edge_adjacency, connected_components, edges_within,
 };
 
 fn make_edge(a: usize, b: usize) -> Edge {
@@ -86,8 +85,12 @@ fn two_disjoint_edges_are_two_components() {
 #[test]
 fn complete_4_node_graph_yields_one_4_clique() {
     let edges: Vec<Edge> = vec![
-        make_edge(0, 1), make_edge(0, 2), make_edge(0, 3),
-        make_edge(1, 2), make_edge(1, 3), make_edge(2, 3),
+        make_edge(0, 1),
+        make_edge(0, 2),
+        make_edge(0, 3),
+        make_edge(1, 2),
+        make_edge(1, 3),
+        make_edge(2, 3),
     ];
     let adj = build_edge_adjacency(&edges);
     let comps = connected_components(&adj);
@@ -101,8 +104,11 @@ fn complete_4_node_graph_yields_one_4_clique() {
 fn two_triangles_sharing_edge_yields_two_cliques() {
     // {0,1,2} and {1,2,3}
     let edges = vec![
-        make_edge(0, 1), make_edge(0, 2), make_edge(1, 2),
-        make_edge(1, 3), make_edge(2, 3),
+        make_edge(0, 1),
+        make_edge(0, 2),
+        make_edge(1, 2),
+        make_edge(1, 3),
+        make_edge(2, 3),
     ];
     let adj = build_edge_adjacency(&edges);
     let comps = connected_components(&adj);
@@ -126,8 +132,12 @@ fn path_graph_yields_only_pair_cliques() {
 fn cliques_respect_max_size_cap() {
     // K4 with max_size=3 must not emit the 4-clique.
     let edges: Vec<Edge> = vec![
-        make_edge(0, 1), make_edge(0, 2), make_edge(0, 3),
-        make_edge(1, 2), make_edge(1, 3), make_edge(2, 3),
+        make_edge(0, 1),
+        make_edge(0, 2),
+        make_edge(0, 3),
+        make_edge(1, 2),
+        make_edge(1, 3),
+        make_edge(2, 3),
     ];
     let adj = build_edge_adjacency(&edges);
     let comps = connected_components(&adj);

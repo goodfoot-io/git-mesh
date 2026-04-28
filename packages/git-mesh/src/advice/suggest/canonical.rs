@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::advice::suggest::participants::Participant;
 use crate::advice::suggest::SuggestConfig;
+use crate::advice::suggest::participants::Participant;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -33,7 +33,10 @@ pub struct CanonicalIndex {
 
 /// Stable key for a participant, mirroring JS `partKey`.
 pub fn part_key(p: &Participant) -> String {
-    format!("{}#{}-{}#{}#{}", p.path, p.m_start, p.m_end, p.session_sid, p.op_index)
+    format!(
+        "{}#{}-{}#{}#{}",
+        p.path, p.m_start, p.m_end, p.session_sid, p.op_index
+    )
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -116,8 +119,16 @@ pub fn build_canonical_ranges(all_parts: &[Participant], cfg: &SuggestConfig) ->
 
         // For each component, compute bounding box and assign canonical id.
         for comp in &components {
-            let lo = comp.iter().map(|&k| all_parts[sorted[k]].m_start).min().unwrap();
-            let hi = comp.iter().map(|&k| all_parts[sorted[k]].m_end).max().unwrap();
+            let lo = comp
+                .iter()
+                .map(|&k| all_parts[sorted[k]].m_start)
+                .min()
+                .unwrap();
+            let hi = comp
+                .iter()
+                .map(|&k| all_parts[sorted[k]].m_end)
+                .max()
+                .unwrap();
             let cid = canonical_ranges.len();
             canonical_ranges.push(CanonicalRange {
                 path: path.to_string(),
@@ -131,7 +142,10 @@ pub fn build_canonical_ranges(all_parts: &[Participant], cfg: &SuggestConfig) ->
         }
     }
 
-    CanonicalIndex { ranges: canonical_ranges, canonical_id_of }
+    CanonicalIndex {
+        ranges: canonical_ranges,
+        canonical_id_of,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -184,7 +198,10 @@ mod tests {
         let b = make_part("a.rs", 10, 30, "s2", 0);
         let iou = range_iou(&a, &b);
         let expected = 11.0 / 30.0;
-        assert!((iou - expected).abs() < 1e-9, "got {iou}, expected {expected}");
+        assert!(
+            (iou - expected).abs() < 1e-9,
+            "got {iou}, expected {expected}"
+        );
     }
 
     #[test]
@@ -246,7 +263,10 @@ mod tests {
             make_part("a.rs", 20, 40, "s3", 2),
         ];
         let idx = build_canonical_ranges(&parts, &cfg());
-        let ids: Vec<usize> = parts.iter().map(|p| idx.canonical_id_of[&part_key(p)]).collect();
+        let ids: Vec<usize> = parts
+            .iter()
+            .map(|p| idx.canonical_id_of[&part_key(p)])
+            .collect();
         assert_eq!(ids[0], ids[1]);
         assert_eq!(ids[1], ids[2]);
     }

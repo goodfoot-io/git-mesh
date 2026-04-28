@@ -356,8 +356,18 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
     let mut out = Vec::new();
     for entry in input.incr_delta {
         match entry {
-            DiffEntry::Modified { path, old_oid, new_oid, hunks }
-            | DiffEntry::ModeChange { path, old_oid, new_oid, hunks } => {
+            DiffEntry::Modified {
+                path,
+                old_oid,
+                new_oid,
+                hunks,
+            }
+            | DiffEntry::ModeChange {
+                path,
+                old_oid,
+                new_oid,
+                hunks,
+            } => {
                 let mut cands = delta_path_partners(input, path, hunks.as_deref());
                 for c in &mut cands {
                     c.old_blob = old_oid.clone();
@@ -365,7 +375,11 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
                 }
                 out.extend(cands);
             }
-            DiffEntry::Added { path, new_oid, hunks } => {
+            DiffEntry::Added {
+                path,
+                new_oid,
+                hunks,
+            } => {
                 let mut cands = delta_path_partners(input, path, hunks.as_deref());
                 for c in &mut cands {
                     c.new_blob = new_oid.clone();
@@ -379,7 +393,13 @@ pub fn detect_delta_intersects_mesh(input: &CandidateInput<'_>) -> Vec<Candidate
                 }
                 out.extend(cands);
             }
-            DiffEntry::Renamed { from, to, new_oid, hunks, .. } => {
+            DiffEntry::Renamed {
+                from,
+                to,
+                new_oid,
+                hunks,
+                ..
+            } => {
                 // When `from` is a meshed path, detect_rename_consequence
                 // will emit an L2 candidate covering the re-record; skip
                 // producing partner candidates here to avoid duplicating
@@ -517,7 +537,6 @@ fn delta_path_partners_inner(
     }
     out
 }
-
 
 /// Emit `Terminal` for `mesh_anchors` rows with Changed/Moved/Terminal status.
 pub fn detect_partner_drift(input: &CandidateInput<'_>) -> Vec<Candidate> {
@@ -812,7 +831,12 @@ pub fn candidate_to_suggestion(c: &Candidate) -> crate::advice::suggestion::Sugg
     Suggestion::new_drift(
         ConfidenceBand::High,
         Viability::Ready,
-        ScoreBreakdown { shared_id: 0.0, co_edit: 0.0, trigram: 0.0, composite: 1.0 },
+        ScoreBreakdown {
+            shared_id: 0.0,
+            co_edit: 0.0,
+            trigram: 0.0,
+            composite: 1.0,
+        },
         participants,
         String::new(),
         meta,
@@ -823,8 +847,14 @@ pub fn candidate_to_suggestion(c: &Candidate) -> crate::advice::suggestion::Sugg
 pub struct PartnerDriftDetector;
 
 impl crate::advice::detector::Detector for PartnerDriftDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
-        Ok(detect_partner_drift(input).iter().map(candidate_to_suggestion).collect())
+    fn detect(
+        &self,
+        input: &CandidateInput<'_>,
+    ) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_partner_drift(input)
+            .iter()
+            .map(candidate_to_suggestion)
+            .collect())
     }
 }
 
@@ -832,8 +862,14 @@ impl crate::advice::detector::Detector for PartnerDriftDetector {
 pub struct ReadIntersectsMeshDetector;
 
 impl crate::advice::detector::Detector for ReadIntersectsMeshDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
-        Ok(detect_read_intersects_mesh(input).iter().map(candidate_to_suggestion).collect())
+    fn detect(
+        &self,
+        input: &CandidateInput<'_>,
+    ) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_read_intersects_mesh(input)
+            .iter()
+            .map(candidate_to_suggestion)
+            .collect())
     }
 }
 
@@ -841,8 +877,14 @@ impl crate::advice::detector::Detector for ReadIntersectsMeshDetector {
 pub struct StagingCrossCutDetector;
 
 impl crate::advice::detector::Detector for StagingCrossCutDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
-        Ok(detect_staging_cross_cut(input).iter().map(candidate_to_suggestion).collect())
+    fn detect(
+        &self,
+        input: &CandidateInput<'_>,
+    ) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_staging_cross_cut(input)
+            .iter()
+            .map(candidate_to_suggestion)
+            .collect())
     }
 }
 
@@ -850,8 +892,14 @@ impl crate::advice::detector::Detector for StagingCrossCutDetector {
 pub struct DeltaIntersectsMeshDetector;
 
 impl crate::advice::detector::Detector for DeltaIntersectsMeshDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
-        Ok(detect_delta_intersects_mesh(input).iter().map(candidate_to_suggestion).collect())
+    fn detect(
+        &self,
+        input: &CandidateInput<'_>,
+    ) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_delta_intersects_mesh(input)
+            .iter()
+            .map(candidate_to_suggestion)
+            .collect())
     }
 }
 
@@ -859,8 +907,14 @@ impl crate::advice::detector::Detector for DeltaIntersectsMeshDetector {
 pub struct RangeShrinkDetector;
 
 impl crate::advice::detector::Detector for RangeShrinkDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
-        Ok(detect_range_shrink(input).iter().map(candidate_to_suggestion).collect())
+    fn detect(
+        &self,
+        input: &CandidateInput<'_>,
+    ) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_range_shrink(input)
+            .iter()
+            .map(candidate_to_suggestion)
+            .collect())
     }
 }
 
@@ -868,8 +922,14 @@ impl crate::advice::detector::Detector for RangeShrinkDetector {
 pub struct RenameConsequenceDetector;
 
 impl crate::advice::detector::Detector for RenameConsequenceDetector {
-    fn detect(&self, input: &CandidateInput<'_>) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
-        Ok(detect_rename_consequence(input).iter().map(candidate_to_suggestion).collect())
+    fn detect(
+        &self,
+        input: &CandidateInput<'_>,
+    ) -> anyhow::Result<Vec<crate::advice::suggestion::Suggestion>> {
+        Ok(detect_rename_consequence(input)
+            .iter()
+            .map(candidate_to_suggestion)
+            .collect())
     }
 }
 
@@ -1027,7 +1087,6 @@ mod tests {
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1059,7 +1118,6 @@ mod tests {
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1115,12 +1173,21 @@ mod tests {
             touch_intervals: &[],
             mesh_anchors: &[r],
             internal_path_prefixes: &[],
-            staging: StagingState { adds: &[], removes: &[] },
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
         };
         let result = detect_partner_drift(&input);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].trigger_path, "", "trigger_path must be empty for partner drift");
-        assert_eq!(result[0].partner_marker, "[CHANGED]", "partner_marker must be [CHANGED]");
+        assert_eq!(
+            result[0].trigger_path, "",
+            "trigger_path must be empty for partner drift"
+        );
+        assert_eq!(
+            result[0].partner_marker, "[CHANGED]",
+            "partner_marker must be [CHANGED]"
+        );
     }
 
     /// detect_partner_drift with Moved status must produce partner_marker == "[MOVED]".
@@ -1135,7 +1202,10 @@ mod tests {
             touch_intervals: &[],
             mesh_anchors: &[r],
             internal_path_prefixes: &[],
-            staging: StagingState { adds: &[], removes: &[] },
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
         };
         let result = detect_partner_drift(&input);
         assert_eq!(result.len(), 1);
@@ -1154,7 +1224,10 @@ mod tests {
             touch_intervals: &[],
             mesh_anchors: &[r],
             internal_path_prefixes: &[],
-            staging: StagingState { adds: &[], removes: &[] },
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
         };
         let result = detect_partner_drift(&input);
         assert_eq!(result.len(), 1);
@@ -1170,7 +1243,6 @@ mod tests {
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         }];
         let input = CandidateInput {
             session_delta: &delta,
@@ -1205,7 +1277,6 @@ mod tests {
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         }];
         let input = CandidateInput {
             session_delta: &delta,
@@ -1232,12 +1303,16 @@ mod tests {
         assert_eq!(result[0].new_path, Some("src/new.rs".to_string()));
         // Command carries the rm/add/commit triple.
         assert!(
-            result[0].command.contains("git mesh rm  ren-mesh src/old.rs"),
+            result[0]
+                .command
+                .contains("git mesh rm  ren-mesh src/old.rs"),
             "command must include rm: {:?}",
             result[0].command
         );
         assert!(
-            result[0].command.contains("git mesh add ren-mesh src/new.rs"),
+            result[0]
+                .command
+                .contains("git mesh add ren-mesh src/new.rs"),
             "command must include add: {:?}",
             result[0].command
         );
@@ -1271,14 +1346,12 @@ mod tests {
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         };
         let modified = DiffEntry::Modified {
             path: "src/uses.ts".to_string(),
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         };
         let delta = [renamed, modified];
         let input = CandidateInput {
@@ -1288,7 +1361,10 @@ mod tests {
             touch_intervals: &[],
             mesh_anchors: &anchors,
             internal_path_prefixes: &[],
-            staging: StagingState { adds: &[], removes: &[] },
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
         };
 
         // (a) delta detector: one Partner candidate with [RENAMED] annotation
@@ -1314,8 +1390,16 @@ mod tests {
         );
         assert_eq!(rename_cands[0].reason_kind, ReasonKind::RenameLiteral);
         assert_eq!(rename_cands[0].density, Density::L2);
-        assert!(rename_cands[0].command.contains("git mesh rm  link src/foo.ts"));
-        assert!(rename_cands[0].command.contains("git mesh add link src/bar.ts"));
+        assert!(
+            rename_cands[0]
+                .command
+                .contains("git mesh rm  link src/foo.ts")
+        );
+        assert!(
+            rename_cands[0]
+                .command
+                .contains("git mesh add link src/bar.ts")
+        );
         assert!(rename_cands[0].command.contains("git mesh commit link"));
     }
 
@@ -1333,7 +1417,6 @@ mod tests {
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         }];
         // Phase C will attach old_lines/new_lines to DiffEntry; for now the
         // detector must detect "anchor end exceeds new blob size" to emit RangeCollapse.
@@ -1439,7 +1522,6 @@ mod tests {
             old_oid: None,
             new_oid: None,
             hunks: None,
-        
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1456,8 +1538,14 @@ mod tests {
         let result = detect_delta_intersects_mesh(&input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].partner_path, "api/charge.ts");
-        assert_eq!(result[0].partner_start, None, "whole-file partner must have None start");
-        assert_eq!(result[0].partner_end, None, "whole-file partner must have None end");
+        assert_eq!(
+            result[0].partner_start, None,
+            "whole-file partner must have None start"
+        );
+        assert_eq!(
+            result[0].partner_end, None,
+            "whole-file partner must have None end"
+        );
     }
 
     // ── blob OID propagation (Bug 2) ─────────────────────────────────────────
@@ -1478,7 +1566,6 @@ mod tests {
             old_oid: Some("aaa0000000000000000000000000000000000001".to_string()),
             new_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
             hunks: None,
-        
         }];
         let input_first = CandidateInput {
             session_delta: &[],
@@ -1487,7 +1574,10 @@ mod tests {
             touch_intervals: &[],
             mesh_anchors: &anchors,
             internal_path_prefixes: &[],
-            staging: StagingState { adds: &[], removes: &[] },
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
         };
         let cands_first = detect_delta_intersects_mesh(&input_first);
         assert_eq!(cands_first.len(), 1);
@@ -1497,7 +1587,6 @@ mod tests {
             old_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
             new_oid: Some("ccc0000000000000000000000000000000000003".to_string()),
             hunks: None,
-        
         }];
         let input_second = CandidateInput {
             session_delta: &[],
@@ -1506,7 +1595,10 @@ mod tests {
             touch_intervals: &[],
             mesh_anchors: &anchors,
             internal_path_prefixes: &[],
-            staging: StagingState { adds: &[], removes: &[] },
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
         };
         let cands_second = detect_delta_intersects_mesh(&input_second);
         assert_eq!(cands_second.len(), 1);
@@ -1533,7 +1625,6 @@ mod tests {
             old_oid: Some("aaa0000000000000000000000000000000000001".to_string()),
             new_oid: Some("bbb0000000000000000000000000000000000002".to_string()),
             hunks: None,
-        
         }];
         let input = CandidateInput {
             session_delta: &[],
@@ -1542,7 +1633,10 @@ mod tests {
             touch_intervals: &[],
             mesh_anchors: &anchors,
             internal_path_prefixes: &[],
-            staging: StagingState { adds: &[], removes: &[] },
+            staging: StagingState {
+                adds: &[],
+                removes: &[],
+            },
         };
         let cands_a = detect_delta_intersects_mesh(&input);
         let cands_b = detect_delta_intersects_mesh(&input);

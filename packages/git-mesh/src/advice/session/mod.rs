@@ -37,7 +37,7 @@ fn open_with_mode(opts: &mut OpenOptions, mode: u32) -> &mut OpenOptions {
     opts
 }
 
-use state::{BaselineState, LastFlushState, ReadRecord, TouchInterval};
+use state::{BaselineState, LastFlushState, ReadRecord, SessionFlags, TouchInterval};
 use store::{LockGuard, LockTimeout};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -84,8 +84,9 @@ impl SessionStore {
         Ok(Self { dir, lock })
     }
 
-    /// Reset the session: truncate all four JSONL files and remove any prior
-    /// `*.objects/` directories. The caller writes new state files separately.
+    /// Reset the session: truncate all JSONL files, remove any prior
+    /// `*.objects/` directories, and remove `flags.state` so that
+    /// per-session print gates are cleared for the new snapshot.
     pub fn reset(&mut self) -> Result<()> {
         // Truncate JSONL files.
         for name in JSONL_FILES {
@@ -98,6 +99,12 @@ impl SessionStore {
             .open(&path)
             .with_context(|| format!("truncate `{}`", path.display()))?;
         }
+        // Remove flags.state so print gates reset for the new session.
+        let flags_path = self.dir.join("flags.state");
+        if flags_path.exists() {
+            std::fs::remove_file(&flags_path)
+                .with_context(|| format!("remove `{}`", flags_path.display()))?;
+        }
         // Remove existing *.objects directories AND any leftover
         // current.objects-<uuid>/ scratch dirs from sessions that crashed
         // mid-render before the rename to last-flush.objects/ landed
@@ -109,14 +116,36 @@ impl SessionStore {
             let entry = entry?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            let is_objects_dir = name_str.ends_with(".objects")
-                || name_str.starts_with("current.objects-");
+            let is_objects_dir =
+                name_str.ends_with(".objects") || name_str.starts_with("current.objects-");
             if is_objects_dir && entry.file_type()?.is_dir() {
                 std::fs::remove_dir_all(entry.path())
                     .with_context(|| format!("remove_dir_all `{}`", entry.path().display()))?;
             }
         }
         Ok(())
+    }
+
+    /// Read `flags.state`. Returns `SessionFlags::default()` when the file is
+    /// absent (i.e. first call after a fresh `snapshot`).
+    pub fn read_flags(&self) -> Result<SessionFlags> {
+        let path = self.dir.join("flags.state");
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(SessionFlags::default());
+            }
+            Err(e) => return Err(e).with_context(|| format!("read `{}`", path.display())),
+        };
+        let flags: SessionFlags = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow::anyhow!("parse `{}`: {e}", path.display()))?;
+        Ok(flags)
+    }
+
+    /// Write `flags.state` atomically under the held session lock.
+    pub fn write_flags(&self, flags: &SessionFlags) -> Result<()> {
+        let bytes = serde_json::to_vec(flags).with_context(|| "serialize SessionFlags")?;
+        store::atomic_write(&self.dir.join("flags.state"), &bytes)
     }
 
     /// Read `baseline.state`. Returns an error if the file is absent or invalid.
@@ -141,8 +170,7 @@ impl SessionStore {
 
     /// Append a `ReadRecord` to `reads.jsonl` under the advisory lock.
     pub fn append_read(&self, record: &ReadRecord, _timeout: LockTimeout) -> Result<()> {
-        let line = serde_json::to_string(record)
-            .with_context(|| "serialize ReadRecord")?;
+        let line = serde_json::to_string(record).with_context(|| "serialize ReadRecord")?;
         store::append_jsonl_line(&self.dir.join("reads.jsonl"), &self.lock, &line)
     }
 
@@ -162,7 +190,8 @@ impl SessionStore {
         };
         use std::io::Seek;
         let mut reader = BufReader::new(f);
-        reader.seek(std::io::SeekFrom::Start(cursor))
+        reader
+            .seek(std::io::SeekFrom::Start(cursor))
             .with_context(|| format!("seek `{}`", path.display()))?;
         // Collect (line_no, line) pairs first so we can know which is final.
         let mut lines: Vec<(u32, String)> = Vec::new();
@@ -212,8 +241,7 @@ impl SessionStore {
 
     /// Append a touch interval to `touches.jsonl` under the held lock.
     pub fn append_touch(&self, t: &TouchInterval) -> Result<()> {
-        let line = serde_json::to_string(t)
-            .with_context(|| "serialize TouchInterval")?;
+        let line = serde_json::to_string(t).with_context(|| "serialize TouchInterval")?;
         store::append_jsonl_line(&self.dir.join("touches.jsonl"), &self.lock, &line)
     }
 
@@ -225,8 +253,7 @@ impl SessionStore {
     /// Append fingerprints to `advice-seen.jsonl` (one per line, JSON string).
     pub fn append_advice_seen(&self, fingerprints: &[String]) -> Result<()> {
         for fp in fingerprints {
-            let line = serde_json::to_string(fp)
-                .with_context(|| "serialize fingerprint")?;
+            let line = serde_json::to_string(fp).with_context(|| "serialize fingerprint")?;
             store::append_jsonl_line(&self.dir.join("advice-seen.jsonl"), &self.lock, &line)?;
         }
         Ok(())
@@ -263,8 +290,7 @@ impl SessionStore {
     /// Append topics to `docs-seen.jsonl` (one per line, JSON string).
     pub fn append_docs_seen(&self, topics: &[String]) -> Result<()> {
         for t in topics {
-            let line = serde_json::to_string(t)
-                .with_context(|| "serialize topic")?;
+            let line = serde_json::to_string(t).with_context(|| "serialize topic")?;
             store::append_jsonl_line(&self.dir.join("docs-seen.jsonl"), &self.lock, &line)?;
         }
         Ok(())
@@ -274,8 +300,7 @@ impl SessionStore {
     /// Used to surface each mesh at most once per advice session.
     pub fn append_meshes_seen(&self, names: &[String]) -> Result<()> {
         for n in names {
-            let line = serde_json::to_string(n)
-                .with_context(|| "serialize mesh name")?;
+            let line = serde_json::to_string(n).with_context(|| "serialize mesh name")?;
             store::append_jsonl_line(&self.dir.join("meshes-seen.jsonl"), &self.lock, &line)?;
         }
         Ok(())
@@ -360,24 +385,17 @@ fn read_jsonl_lines<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T
         if line.is_empty() {
             continue;
         }
-        let v: T = serde_json::from_str(&line).map_err(|e| {
-            anyhow::anyhow!(
-                "parse `{}` line {}: {e}",
-                path.display(),
-                idx + 1
-            )
-        })?;
+        let v: T = serde_json::from_str(&line)
+            .map_err(|e| anyhow::anyhow!("parse `{}` line {}: {e}", path.display(), idx + 1))?;
         out.push(v);
     }
     Ok(out)
 }
 
 fn read_state(path: &Path) -> Result<BaselineState> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("read `{}`", path.display()))?;
-    let st: BaselineState = serde_json::from_slice(&bytes).map_err(|e| {
-        anyhow::anyhow!("parse state file `{}`: {e}", path.display())
-    })?;
+    let bytes = std::fs::read(path).with_context(|| format!("read `{}`", path.display()))?;
+    let st: BaselineState = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("parse state file `{}`: {e}", path.display()))?;
     if st.schema_version != SCHEMA_VERSION {
         bail!(
             "state file `{}` has unknown schema_version {} (expected {})",

@@ -19,7 +19,11 @@ fn band_rank(b: ConfidenceBand) -> usize {
 }
 
 fn cap_band(band: ConfidenceBand, max: ConfidenceBand) -> ConfidenceBand {
-    if band_rank(band) > band_rank(max) { max } else { band }
+    if band_rank(band) > band_rank(max) {
+        max
+    } else {
+        band
+    }
 }
 
 /// Assign a confidence band to a scored candidate.
@@ -58,9 +62,8 @@ pub fn confidence_band(c: &CandidateScore) -> ConfidenceBand {
 /// Ports `viabilityLabel` from `docs/analyze-v4.mjs` line 978.
 pub fn viability_label(c: &CandidateScore, history_available: bool) -> Viability {
     let _ = history_available; // referenced for parity; used implicitly via historical_pair_commits
-    let cohesion_present = c.components.cluster_cohesion >= 0.20
-        || c.components.trigram_score >= 0.18
-        || c.size == 2;
+    let cohesion_present =
+        c.components.cluster_cohesion >= 0.20 || c.components.trigram_score >= 0.18 || c.size == 2;
     if c.composite >= 0.55 && (c.historical_pair_commits >= 2 || cohesion_present) {
         return Viability::Ready;
     }
@@ -86,7 +89,12 @@ mod tests {
     use super::*;
     use crate::advice::suggest::composite::{CandidateScore, ComponentBreakdown};
 
-    fn make_candidate(composite: f64, techniques: usize, density: f64, size: usize) -> CandidateScore {
+    fn make_candidate(
+        composite: f64,
+        techniques: usize,
+        density: f64,
+        size: usize,
+    ) -> CandidateScore {
         CandidateScore {
             canon_ids: (0..size).collect(),
             size,

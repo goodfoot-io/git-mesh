@@ -55,11 +55,31 @@ pub fn fingerprint(c: &Candidate) -> String {
     feed(&mut h, c.reason_kind.as_str());
     feed(&mut h, &c.mesh);
     feed(&mut h, &c.partner_path);
-    feed(&mut h, &c.partner_start.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
-    feed(&mut h, &c.partner_end.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
+    feed(
+        &mut h,
+        &c.partner_start
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "0".to_string()),
+    );
+    feed(
+        &mut h,
+        &c.partner_end
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "0".to_string()),
+    );
     feed(&mut h, &c.trigger_path);
-    feed(&mut h, &c.trigger_start.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
-    feed(&mut h, &c.trigger_end.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string()));
+    feed(
+        &mut h,
+        &c.trigger_start
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "0".to_string()),
+    );
+    feed(
+        &mut h,
+        &c.trigger_end
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "0".to_string()),
+    );
     feed(&mut h, &c.partner_marker);
     feed(&mut h, c.old_path.as_deref().unwrap_or(""));
     feed(&mut h, c.new_path.as_deref().unwrap_or(""));
@@ -210,8 +230,12 @@ mod tests {
         let c = make_candidate();
         let fp = fingerprint(&c);
         assert_eq!(fp.len(), 16, "expected 16 hex chars, got {:?}", fp);
-        assert!(fp.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_uppercase()),
-            "fingerprint must be lowercase hex, got {:?}", fp);
+        assert!(
+            fp.chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_uppercase()),
+            "fingerprint must be lowercase hex, got {:?}",
+            fp
+        );
     }
 
     /// fnv64 is exercised in tests to prevent dead_code warnings.

@@ -4,11 +4,11 @@
 //! containing clique by at least `pair_escape_bonus`. Subsumption suppression
 //! is deterministic.
 
+use crate::advice::candidates::MeshAnchor;
+use crate::advice::suggest::SuggestConfig;
 use crate::advice::suggest::band::{confidence_band, viability_label};
 use crate::advice::suggest::canonical::CanonicalIndex;
-use crate::advice::suggest::composite::{passes_cohesion_gate, CandidateScore};
-use crate::advice::suggest::SuggestConfig;
-use crate::advice::candidates::MeshAnchor;
+use crate::advice::suggest::composite::{CandidateScore, passes_cohesion_gate};
 use crate::advice::suggestion::{ScoreBreakdown, Suggestion};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -53,11 +53,8 @@ pub fn emit(
             .then(a.canon_ids.cmp(&b.canon_ids))
     });
 
-    let mut pairs: Vec<CandidateScore> = candidates
-        .iter()
-        .filter(|c| c.size == 2)
-        .cloned()
-        .collect();
+    let mut pairs: Vec<CandidateScore> =
+        candidates.iter().filter(|c| c.size == 2).cloned().collect();
     pairs.sort_by(|a, b| {
         b.composite
             .partial_cmp(&a.composite)
@@ -69,7 +66,12 @@ pub fn emit(
 
     // Step 1: keep cliques, dropping any that are subsumed by a larger already-kept clique.
     for c in cliques {
-        let ids_str = c.canon_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let ids_str = c
+            .canon_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         if kept.iter().any(|k| is_superset(&k.canon_ids, &c.canon_ids)) {
             crate::advice_debug!(
                 "suggester-drop",
@@ -90,7 +92,12 @@ pub fn emit(
 
     // Step 2: pair escape hatch.
     for p in pairs {
-        let ids_str = p.canon_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let ids_str = p
+            .canon_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let containers: Vec<&CandidateScore> = kept
             .iter()
             .filter(|k| is_superset(&k.canon_ids, &p.canon_ids))
@@ -208,7 +215,14 @@ mod tests {
         }
     }
 
-    fn make_candidate(ids: Vec<usize>, composite: f64, pairwise_min: f64, intersection: f64, pairwise_median: f64, trigram: f64) -> CandidateScore {
+    fn make_candidate(
+        ids: Vec<usize>,
+        composite: f64,
+        pairwise_min: f64,
+        intersection: f64,
+        pairwise_median: f64,
+        trigram: f64,
+    ) -> CandidateScore {
         let size = ids.len();
         CandidateScore {
             canon_ids: ids,
@@ -228,7 +242,11 @@ mod tests {
                 cluster_cohesion: intersection.max(pairwise_median),
                 history_score: 0.5,
             },
-            techniques: vec!["tech-a".to_string(), "tech-b".to_string(), "tech-c".to_string()],
+            techniques: vec![
+                "tech-a".to_string(),
+                "tech-b".to_string(),
+                "tech-c".to_string(),
+            ],
             historical_pair_commits: 2,
             historical_weighted: 0.5,
             same_file_dominance: 1.0 / size as f64,

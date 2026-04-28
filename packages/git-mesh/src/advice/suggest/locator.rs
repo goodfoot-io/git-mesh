@@ -4,8 +4,8 @@
 //! `locator_window` positions that minimises (op_distance + dir_penalty),
 //! then annotate the Edit with the inferred anchor.
 
-use crate::advice::suggest::op_stream::{Op, OpKind};
 use crate::advice::suggest::SuggestConfig;
+use crate::advice::suggest::op_stream::{Op, OpKind};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -71,7 +71,13 @@ pub fn attach_locators(ops: &mut [Op], cfg: &SuggestConfig) {
                 Some(b) => score < b.score,
             };
             if better {
-                best = Some(Best { start_line, end_line, gap, score, fwd });
+                best = Some(Best {
+                    start_line,
+                    end_line,
+                    gap,
+                    score,
+                    fwd,
+                });
             }
         }
 
@@ -97,12 +103,22 @@ pub fn prior_context_atoms(ops: &[Op], edit_index: usize, cfg: &SuggestConfig) -
         let op = &ops[j];
         if op.kind == OpKind::Read && op.ranged {
             if let (Some(start), Some(end)) = (op.start_line, op.end_line) {
-                out.push(Atom { path: op.path.clone(), start, end, op_index: op.op_index });
+                out.push(Atom {
+                    path: op.path.clone(),
+                    start,
+                    end,
+                    op_index: op.op_index,
+                });
             }
         } else if op.kind == OpKind::Edit
             && let (Some(start), Some(end)) = (op.inferred_start, op.inferred_end)
         {
-            out.push(Atom { path: op.path.clone(), start, end, op_index: op.op_index });
+            out.push(Atom {
+                path: op.path.clone(),
+                start,
+                end,
+                op_index: op.op_index,
+            });
         }
     }
     out
@@ -171,7 +187,9 @@ mod tests {
     #[test]
     fn edit_beyond_window_is_unanchored() {
         // Only reads very far away (> locator_window = 6 ops away).
-        let mut ops_vec: Vec<Op> = (0..7).map(|i| make_read("foo.rs", i as u32 + 1, i as u32 + 5, i)).collect();
+        let mut ops_vec: Vec<Op> = (0..7)
+            .map(|i| make_read("foo.rs", i as u32 + 1, i as u32 + 5, i))
+            .collect();
         ops_vec.push(make_edit("foo.rs", 7));
         // op at index 7, nearest read at index 6 → gap = 1, but let's place the
         // edit 8 positions away.
@@ -190,10 +208,7 @@ mod tests {
     fn forward_read_has_penalty_applied() {
         // edit at index 0, read at index 1 (forward, gap=1, score=1+0.4=1.4)
         // read at index 0 of another path won't match; let's use edit before read.
-        let mut ops = vec![
-            make_edit("foo.rs", 0),
-            make_read("foo.rs", 10, 20, 1),
-        ];
+        let mut ops = vec![make_edit("foo.rs", 0), make_read("foo.rs", 10, 20, 1)];
         // Also add a backward read at gap 2 (index -2 doesn't exist, so just
         // verify forward read does get attached when it's the only candidate).
         attach_locators(&mut ops, &cfg());
@@ -203,7 +218,10 @@ mod tests {
 
     #[test]
     fn prior_context_atoms_returns_k_most_recent() {
-        let cfg = SuggestConfig { locator_prior_context_k: 2, ..Default::default() };
+        let cfg = SuggestConfig {
+            locator_prior_context_k: 2,
+            ..Default::default()
+        };
         let ops = vec![
             make_read("a.rs", 1, 10, 0),
             make_read("b.rs", 1, 10, 1),

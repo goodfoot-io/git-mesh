@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::advice::suggest::op_stream::{Op, OpKind};
 use crate::advice::suggest::SuggestConfig;
+use crate::advice::suggest::op_stream::{Op, OpKind};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -156,7 +156,11 @@ pub fn merge_ranges_per_file(parts: &[Participant], cfg: &SuggestConfig) -> Vec<
         .enumerate()
         .map(|(i, p)| {
             let (m_start, m_end) = merged_ranges[i];
-            Participant { m_start, m_end, ..p.clone() }
+            Participant {
+                m_start,
+                m_end,
+                ..p.clone()
+            }
         })
         .collect()
 }

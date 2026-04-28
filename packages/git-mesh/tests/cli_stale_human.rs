@@ -60,7 +60,10 @@ fn human_output_has_summary_line() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("stale of"), "summary 'N stale of M anchors'");
+    assert!(
+        stdout.contains("stale of"),
+        "summary 'N stale of M anchors'"
+    );
     Ok(())
 }
 

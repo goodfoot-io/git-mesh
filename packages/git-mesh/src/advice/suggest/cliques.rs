@@ -124,11 +124,7 @@ fn bk(
     let pivot_neighbors: Vec<CanonicalId> = match pivot {
         Some(&pv) => {
             let empty = BTreeMap::new();
-            adj.get(&pv)
-                .unwrap_or(&empty)
-                .keys()
-                .copied()
-                .collect()
+            adj.get(&pv).unwrap_or(&empty).keys().copied().collect()
         }
         None => Vec::new(),
     };
@@ -143,8 +139,16 @@ fn bk(
     for v in candidates {
         let empty = BTreeMap::new();
         let n_v: &BTreeMap<CanonicalId, usize> = adj.get(&v).unwrap_or(&empty);
-        let p_new: Vec<CanonicalId> = p.iter().copied().filter(|&u| n_v.contains_key(&u)).collect();
-        let x_new: Vec<CanonicalId> = x.iter().copied().filter(|&u| n_v.contains_key(&u)).collect();
+        let p_new: Vec<CanonicalId> = p
+            .iter()
+            .copied()
+            .filter(|&u| n_v.contains_key(&u))
+            .collect();
+        let x_new: Vec<CanonicalId> = x
+            .iter()
+            .copied()
+            .filter(|&u| n_v.contains_key(&u))
+            .collect();
         r.push(v);
         bk(r, p_new, x_new, adj, max_size, result);
         r.pop();
@@ -177,8 +181,8 @@ pub fn edges_within(canon_ids: &[CanonicalId], adj: &Adjacency) -> Vec<EdgeRef> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::advice::suggest::edges::Edge;
     use crate::advice::suggest::edges::ComponentScores;
+    use crate::advice::suggest::edges::Edge;
 
     fn make_edge(a: usize, b: usize) -> Edge {
         Edge {
@@ -212,8 +216,12 @@ mod tests {
     fn complete_4_node_graph_yields_one_4_clique() {
         // K4: nodes 0,1,2,3 with all 6 edges.
         let edges: Vec<Edge> = vec![
-            make_edge(0, 1), make_edge(0, 2), make_edge(0, 3),
-            make_edge(1, 2), make_edge(1, 3), make_edge(2, 3),
+            make_edge(0, 1),
+            make_edge(0, 2),
+            make_edge(0, 3),
+            make_edge(1, 2),
+            make_edge(1, 3),
+            make_edge(2, 3),
         ];
         let adj = build_edge_adjacency(&edges);
         let comps = connected_components(&adj);
@@ -228,8 +236,11 @@ mod tests {
     fn two_triangles_sharing_one_edge_yields_two_cliques() {
         // {0,1,2} and {1,2,3}: edges 01,02,12,13,23.
         let edges = vec![
-            make_edge(0, 1), make_edge(0, 2), make_edge(1, 2),
-            make_edge(1, 3), make_edge(2, 3),
+            make_edge(0, 1),
+            make_edge(0, 2),
+            make_edge(1, 2),
+            make_edge(1, 3),
+            make_edge(2, 3),
         ];
         let adj = build_edge_adjacency(&edges);
         let comps = connected_components(&adj);
@@ -256,8 +267,12 @@ mod tests {
     fn clique_larger_than_max_size_not_emitted() {
         // K4 with max_size=3: only 3-cliques (four of them), not the 4-clique.
         let edges: Vec<Edge> = vec![
-            make_edge(0, 1), make_edge(0, 2), make_edge(0, 3),
-            make_edge(1, 2), make_edge(1, 3), make_edge(2, 3),
+            make_edge(0, 1),
+            make_edge(0, 2),
+            make_edge(0, 3),
+            make_edge(1, 2),
+            make_edge(1, 3),
+            make_edge(2, 3),
         ];
         let adj = build_edge_adjacency(&edges);
         let comps = connected_components(&adj);

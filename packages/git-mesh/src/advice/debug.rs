@@ -37,7 +37,9 @@ pub fn enabled() -> bool {
 /// newlines backslash-escaped, so a downstream split-on-whitespace parser can
 /// reliably tokenise the output.
 fn escape_value(v: &str) -> Cow<'_, str> {
-    if v.bytes().any(|b| matches!(b, b' ' | b'\t' | b'\r' | b'"' | b'\\' | b'\n')) {
+    if v.bytes()
+        .any(|b| matches!(b, b' ' | b'\t' | b'\r' | b'"' | b'\\' | b'\n'))
+    {
         let mut out = String::with_capacity(v.len() + 2);
         out.push('"');
         for c in v.chars() {
@@ -101,14 +103,21 @@ mod tests {
     #[test]
     fn format_line_prefix() {
         let line = format_line("test-tag", &[]);
-        assert!(line.starts_with("git-mesh-advice-debug: test-tag"), "got: {line:?}");
+        assert!(
+            line.starts_with("git-mesh-advice-debug: test-tag"),
+            "got: {line:?}"
+        );
     }
 
     #[test]
     fn format_line_single_newline() {
         let line = format_line("tag", &[("k", "v")]);
         assert!(line.ends_with('\n'), "must end with newline");
-        assert_eq!(line.chars().filter(|&c| c == '\n').count(), 1, "exactly one newline");
+        assert_eq!(
+            line.chars().filter(|&c| c == '\n').count(),
+            1,
+            "exactly one newline"
+        );
     }
 
     #[test]
@@ -121,11 +130,14 @@ mod tests {
 
     #[test]
     fn format_line_detector_hit() {
-        let line = format_line("detect_partner_drift", &[
-            ("mesh", "my-mesh"),
-            ("reason_kind", "Terminal"),
-            ("partner", "src/foo.rs#L1-L10"),
-        ]);
+        let line = format_line(
+            "detect_partner_drift",
+            &[
+                ("mesh", "my-mesh"),
+                ("reason_kind", "Terminal"),
+                ("partner", "src/foo.rs#L1-L10"),
+            ],
+        );
         assert!(line.contains("mesh=my-mesh"), "got: {line:?}");
         assert!(line.contains("reason_kind=Terminal"), "got: {line:?}");
     }
@@ -155,10 +167,7 @@ mod tests {
 
     #[test]
     fn format_line_drop_reason() {
-        let line = format_line("dropped", &[
-            ("mesh", "m"),
-            ("reason", "advice-seen"),
-        ]);
+        let line = format_line("dropped", &[("mesh", "m"), ("reason", "advice-seen")]);
         assert!(line.contains("reason=advice-seen"), "got: {line:?}");
     }
 

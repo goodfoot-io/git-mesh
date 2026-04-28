@@ -288,8 +288,16 @@ pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitC
         for change in &changes {
             use gix::object::tree::diff::ChangeDetached;
             match change {
-                ChangeDetached::Addition { location, entry_mode, .. }
-                | ChangeDetached::Deletion { location, entry_mode, .. } => {
+                ChangeDetached::Addition {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | ChangeDetached::Deletion {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
                     // Only record blob entries; skip tree/directory entries.
                     if !entry_mode.is_blob_or_symlink() {
                         continue;
@@ -300,7 +308,11 @@ pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitC
                             .to_string(),
                     );
                 }
-                ChangeDetached::Modification { location, entry_mode, .. } => {
+                ChangeDetached::Modification {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
                     if !entry_mode.is_blob_or_symlink() {
                         continue;
                     }

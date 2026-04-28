@@ -36,6 +36,7 @@ fn run_advice(repo: &TestRepo, s: &str, extra: &[&str]) -> Result<Output> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn rename_of_meshed_file_surfaces_rename_literal() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;

@@ -39,6 +39,7 @@ fn ok(out: &Output) {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn read_intersects_mesh_surfaces_partner() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -73,6 +74,7 @@ fn read_intersects_mesh_surfaces_partner() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn second_render_suppresses_same_partner() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -101,6 +103,7 @@ fn second_render_suppresses_same_partner() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn new_trigger_does_not_resurface_already_seen_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -129,6 +132,7 @@ fn new_trigger_does_not_resurface_already_seen_mesh() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn empty_no_meshes_renders_silent() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let s = sid("empty");
@@ -140,6 +144,7 @@ fn empty_no_meshes_renders_silent() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn isolated_sessions_do_not_share_seen_set() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;

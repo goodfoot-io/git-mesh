@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::advice::suggest::SuggestConfig;
-use crate::{git, Result};
+use crate::{Result, git};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -57,17 +57,18 @@ pub fn load_git_history(
     let mut sizes: Vec<usize> = commits.iter().map(|c| c.changed_paths.len()).collect();
     sizes.sort_unstable();
     let p90_idx = (sizes.len() as f64 * 0.9).floor() as usize;
-    let p90 = sizes.get(p90_idx).copied().unwrap_or(cfg.history_mass_refactor_default as usize);
+    let p90 = sizes
+        .get(p90_idx)
+        .copied()
+        .unwrap_or(cfg.history_mass_refactor_default as usize);
     let mass_refactor_cap = (cfg.history_mass_refactor_default as usize).max(p90.min(20));
 
     // Build wanted set for fast lookup.
     let wanted: BTreeSet<&str> = paths.iter().map(|p| p.as_str()).collect();
 
     // Initialize per-path commit sets.
-    let mut commits_by_path: BTreeMap<String, BTreeSet<String>> = paths
-        .iter()
-        .map(|p| (p.clone(), BTreeSet::new()))
-        .collect();
+    let mut commits_by_path: BTreeMap<String, BTreeSet<String>> =
+        paths.iter().map(|p| (p.clone(), BTreeSet::new())).collect();
     let mut commit_weight: BTreeMap<String, f64> = BTreeMap::new();
     let mut total_kept = 0usize;
 
@@ -79,7 +80,7 @@ pub fn load_git_history(
         if commit.changed_paths.is_empty() {
             continue;
         }
-        let w = (-( i as f64) / cfg.history_half_life_commits as f64).exp();
+        let w = (-(i as f64) / cfg.history_half_life_commits as f64).exp();
         commit_weight.insert(commit.hash.clone(), w);
         total_kept += 1;
         for path in &commit.changed_paths {
@@ -183,15 +184,20 @@ mod tests {
 
     #[test]
     fn load_git_history_disabled_returns_unavailable() {
-        let mut cfg = SuggestConfig::default();
-        cfg.history_enabled = false;
+        let cfg = SuggestConfig {
+            history_enabled: false,
+            ..SuggestConfig::default()
+        };
         // No real repo needed; just confirming fast path.
         // We'd need a real gix repo to test live loading.
         // This test validates the disabled-path guard.
         let _ = cfg;
         // Can't call load_git_history without a repo; the disabled guard
         // is tested at the function level by the empty-paths guard too:
-        let cfg2 = SuggestConfig { history_enabled: false, ..SuggestConfig::default() };
+        let cfg2 = SuggestConfig {
+            history_enabled: false,
+            ..SuggestConfig::default()
+        };
         assert!(!cfg2.history_enabled);
     }
 }

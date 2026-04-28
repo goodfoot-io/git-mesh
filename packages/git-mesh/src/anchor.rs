@@ -42,7 +42,12 @@ pub fn create_anchor(
     start: u32,
     end: u32,
 ) -> Result<String> {
-    create_anchor_with_extent(repo, anchor_sha, path, AnchorExtent::LineRange { start, end })
+    create_anchor_with_extent(
+        repo,
+        anchor_sha,
+        path,
+        AnchorExtent::LineRange { start, end },
+    )
 }
 
 /// Create an Anchor record at the given extent (line-anchor or whole-file).
@@ -227,8 +232,8 @@ pub fn parse_anchor(text: &str) -> Result<Anchor> {
         }
     }
 
-    let (start, end, blob, path) = extent_line
-        .ok_or_else(|| Error::Parse("anchor blob missing `extent` line".to_string()))?;
+    let (start, end, blob, path) =
+        extent_line.ok_or_else(|| Error::Parse("anchor blob missing `extent` line".to_string()))?;
     let extent = if start == 0 && end == 0 {
         AnchorExtent::WholeFile
     } else {

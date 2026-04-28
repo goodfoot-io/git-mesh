@@ -25,11 +25,7 @@ const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 ///
 /// `extra_env` is an optional slice of `(key, value)` pairs appended to the
 /// child environment (e.g. `&[("GIT_MESH_SUGGEST_TRIGRAM", "0")]`).
-fn run_suggest(
-    advice_dir: &Path,
-    repo_root: &Path,
-    extra_env: &[(&str, &str)],
-) -> Result<String> {
+fn run_suggest(advice_dir: &Path, repo_root: &Path, extra_env: &[(&str, &str)]) -> Result<String> {
     let bin = env!("CARGO_BIN_EXE_git-mesh");
     // `git mesh advice suggest` is a hidden subcommand that does not require a
     // real git repository — it reads sessions from GIT_MESH_ADVICE_DIR and
@@ -54,8 +50,7 @@ fn run_suggest(
             out.status.code()
         );
     }
-    String::from_utf8(out.stdout)
-        .map_err(|e| anyhow::anyhow!("non-utf8 stdout: {e}"))
+    String::from_utf8(out.stdout).map_err(|e| anyhow::anyhow!("non-utf8 stdout: {e}"))
 }
 
 /// Parse every non-empty line of `text` as a `serde_json::Value`.

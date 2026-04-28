@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::advice::suggest::canonical::{part_key, CanonicalIndex};
+use crate::advice::suggest::canonical::{CanonicalIndex, part_key};
 use crate::advice::suggest::locator::prior_context_atoms;
 use crate::advice::suggest::op_stream::OpKind;
 use crate::advice::suggest::participants::Participant;
@@ -66,12 +66,7 @@ pub struct SessionParticipants {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Record one evidence item into `pairs`.
-fn record(
-    pairs: &mut PairEvidenceMap,
-    a: usize,
-    b: usize,
-    ev: EvidenceRecord,
-) {
+fn record(pairs: &mut PairEvidenceMap, a: usize, b: usize, ev: EvidenceRecord) {
     if a == b {
         return;
     }
@@ -149,7 +144,8 @@ pub fn build_pair_evidence(
                     Some(&id) => id,
                     None => continue,
                 };
-                let has_edit = a.kind == crate::advice::suggest::participants::ParticipantKind::Edit
+                let has_edit = a.kind
+                    == crate::advice::suggest::participants::ParticipantKind::Edit
                     || b.kind == crate::advice::suggest::participants::ParticipantKind::Edit;
                 record(
                     &mut pairs,
@@ -243,10 +239,10 @@ pub fn build_pair_evidence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::advice::suggest::SuggestConfig;
     use crate::advice::suggest::canonical::build_canonical_ranges;
     use crate::advice::suggest::op_stream::{Op, OpKind};
     use crate::advice::suggest::participants::{Participant, ParticipantKind};
-    use crate::advice::suggest::SuggestConfig;
 
     fn cfg() -> SuggestConfig {
         SuggestConfig::default()
@@ -309,7 +305,10 @@ mod tests {
         assert_eq!(pairs.len(), 1, "should produce one pair");
         let state = pairs.values().next().unwrap();
         assert!(
-            state.evidence.iter().any(|e| e.technique == Technique::OperationWindow),
+            state
+                .evidence
+                .iter()
+                .any(|e| e.technique == Technique::OperationWindow),
             "evidence should contain operation-window"
         );
     }
@@ -331,7 +330,10 @@ mod tests {
         let state = pairs.values().next().unwrap();
         assert_eq!(state.sessions.len(), 2);
         assert!(
-            state.evidence.iter().any(|e| e.technique == Technique::SessionRecurrence),
+            state
+                .evidence
+                .iter()
+                .any(|e| e.technique == Technique::SessionRecurrence),
             "two sessions must produce session-recurrence evidence"
         );
     }
@@ -345,7 +347,10 @@ mod tests {
         let canonical = build_canonical_ranges(&all_parts, &cfg());
         let sessions = vec![make_session("s1", all_parts)];
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
-        assert!(pairs.is_empty(), "pair beyond window should not be recorded");
+        assert!(
+            pairs.is_empty(),
+            "pair beyond window should not be recorded"
+        );
     }
 
     #[test]
@@ -356,6 +361,9 @@ mod tests {
         let canonical = build_canonical_ranges(&all_parts, &cfg());
         let sessions = vec![make_session("s1", all_parts)];
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
-        assert!(pairs.is_empty(), "same path+anchor should not produce a pair");
+        assert!(
+            pairs.is_empty(),
+            "same path+anchor should not produce a pair"
+        );
     }
 }

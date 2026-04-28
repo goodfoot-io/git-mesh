@@ -4,11 +4,11 @@
 //! the apriori, history, and evidence channels. Per-edge cohesion is a `None`
 //! seam — the cohesion module (Step 3c substep 9) fills it in.
 
-use crate::advice::suggest::apriori::{apriori_stats, AtomSessionIndex};
+use crate::advice::suggest::SuggestConfig;
+use crate::advice::suggest::apriori::{AtomSessionIndex, apriori_stats};
 use crate::advice::suggest::canonical::CanonicalIndex;
 use crate::advice::suggest::evidence::{PairEvidenceMap, SessionParticipants, Technique};
-use crate::advice::suggest::history::{pair_history_score, HistoryIndex};
-use crate::advice::suggest::SuggestConfig;
+use crate::advice::suggest::history::{HistoryIndex, pair_history_score};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -101,8 +101,7 @@ pub fn score_edges(
             op_distances.iter().sum::<f64>() / op_distances.len() as f64
         };
 
-        let (hist_count, hist_weighted) =
-            pair_history_score(history, &a_range.path, &b_range.path);
+        let (hist_count, hist_weighted) = pair_history_score(history, &a_range.path, &b_range.path);
 
         // Component scores in [0,1].
         let window_ops = cfg.window_ops as f64;
@@ -177,13 +176,13 @@ pub fn score_edges(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::advice::suggest::SuggestConfig;
     use crate::advice::suggest::apriori::atom_marginals_resolved;
     use crate::advice::suggest::canonical::build_canonical_ranges;
-    use crate::advice::suggest::evidence::{build_pair_evidence, SessionParticipants};
+    use crate::advice::suggest::evidence::{SessionParticipants, build_pair_evidence};
     use crate::advice::suggest::history::HistoryIndex;
     use crate::advice::suggest::op_stream::{Op, OpKind};
     use crate::advice::suggest::participants::{Participant, ParticipantKind};
-    use crate::advice::suggest::SuggestConfig;
 
     fn cfg() -> SuggestConfig {
         // Lower floor so test edges pass through.
@@ -250,7 +249,10 @@ mod tests {
             .iter()
             .filter_map(|p| {
                 let key = crate::advice::suggest::canonical::part_key(p);
-                canonical.canonical_id_of.get(&key).map(|&id| (id, p.session_sid.clone()))
+                canonical
+                    .canonical_id_of
+                    .get(&key)
+                    .map(|&id| (id, p.session_sid.clone()))
             })
             .collect();
         let atom_sessions = atom_marginals_resolved(&resolved);
@@ -259,11 +261,21 @@ mod tests {
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
         let history = HistoryIndex::default();
 
-        let edges = score_edges(&pairs, &sessions, &canonical, &atom_sessions, &history, &cfg());
+        let edges = score_edges(
+            &pairs,
+            &sessions,
+            &canonical,
+            &atom_sessions,
+            &history,
+            &cfg(),
+        );
         assert_eq!(edges.len(), 1, "should produce one edge");
         let edge = &edges[0];
         assert!(edge.score >= 0.0);
-        assert!(edge.per_edge_cohesion.is_none(), "cohesion seam must be None");
+        assert!(
+            edge.per_edge_cohesion.is_none(),
+            "cohesion seam must be None"
+        );
     }
 
     #[test]
@@ -277,7 +289,10 @@ mod tests {
             .iter()
             .filter_map(|p| {
                 let key = crate::advice::suggest::canonical::part_key(p);
-                canonical.canonical_id_of.get(&key).map(|&id| (id, p.session_sid.clone()))
+                canonical
+                    .canonical_id_of
+                    .get(&key)
+                    .map(|&id| (id, p.session_sid.clone()))
             })
             .collect();
         let atom_sessions = atom_marginals_resolved(&resolved);
@@ -286,7 +301,14 @@ mod tests {
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
         let history = HistoryIndex::default();
 
-        let edges = score_edges(&pairs, &sessions, &canonical, &atom_sessions, &history, &cfg());
+        let edges = score_edges(
+            &pairs,
+            &sessions,
+            &canonical,
+            &atom_sessions,
+            &history,
+            &cfg(),
+        );
         assert!(edges.is_empty(), "same-file pairs must be excluded");
     }
 
@@ -301,7 +323,10 @@ mod tests {
             .iter()
             .filter_map(|p| {
                 let key = crate::advice::suggest::canonical::part_key(p);
-                canonical.canonical_id_of.get(&key).map(|&id| (id, p.session_sid.clone()))
+                canonical
+                    .canonical_id_of
+                    .get(&key)
+                    .map(|&id| (id, p.session_sid.clone()))
             })
             .collect();
         let atom_sessions = atom_marginals_resolved(&resolved);

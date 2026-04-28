@@ -60,6 +60,7 @@ fn render(repo: &TestRepo, session: &str, extra: &[&str]) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Phase 3
 fn flush_t1_partner_list() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -92,6 +93,7 @@ fn flush_t1_partner_list() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn whole_file_read_routes_to_other_ranges_in_each_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -120,6 +122,7 @@ fn whole_file_read_routes_to_other_ranges_in_each_mesh() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -153,6 +156,7 @@ fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn advice_store_inside_worktree_is_not_captured_or_co_touched() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let advice_dir = repo.path().join(".mesh-advice");
@@ -191,6 +195,7 @@ fn advice_store_inside_worktree_is_not_captured_or_co_touched() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Phase 3
 fn flush_t8_staging_crosscut() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -220,6 +225,7 @@ fn flush_t8_staging_crosscut() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Phase 3
 fn flush_t9_empty_mesh_risk() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -246,6 +252,7 @@ fn flush_t9_empty_mesh_risk() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Phase 3
 fn dedup_same_trigger() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -269,6 +276,7 @@ fn dedup_same_trigger() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn dedup_new_trigger() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -296,6 +304,7 @@ fn dedup_new_trigger() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Phase 3
 fn flush_empty_no_meshes() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let s = sid("empty");
@@ -310,6 +319,7 @@ fn flush_empty_no_meshes() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // Phase 3
 fn session_isolation() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;

@@ -348,7 +348,11 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
         // All-zeros OID means the blob is absent (added/deleted side).
         let zero_oid = "0000000000000000000000000000000000000000";
         let parse_oid = |s: &str| -> Option<String> {
-            if s == zero_oid { None } else { Some(s.to_string()) }
+            if s == zero_oid {
+                None
+            } else {
+                Some(s.to_string())
+            }
         };
         let old_oid = parse_oid(src_sha);
         let new_oid = parse_oid(dst_sha);
@@ -368,14 +372,36 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
         let entry = match status_byte {
             'M' => {
                 if src_mode != dst_mode {
-                    DiffEntry::ModeChange { path: path1, old_oid, new_oid, hunks: None }
+                    DiffEntry::ModeChange {
+                        path: path1,
+                        old_oid,
+                        new_oid,
+                        hunks: None,
+                    }
                 } else {
-                    DiffEntry::Modified { path: path1, old_oid, new_oid, hunks: None }
+                    DiffEntry::Modified {
+                        path: path1,
+                        old_oid,
+                        new_oid,
+                        hunks: None,
+                    }
                 }
             }
-            'A' => DiffEntry::Added { path: path1, new_oid, hunks: None },
-            'D' => DiffEntry::Deleted { path: path1, old_oid },
-            'T' => DiffEntry::Modified { path: path1, old_oid, new_oid, hunks: None },
+            'A' => DiffEntry::Added {
+                path: path1,
+                new_oid,
+                hunks: None,
+            },
+            'D' => DiffEntry::Deleted {
+                path: path1,
+                old_oid,
+            },
+            'T' => DiffEntry::Modified {
+                path: path1,
+                old_oid,
+                new_oid,
+                hunks: None,
+            },
             'R' => {
                 // Rename has a second path.
                 let nul = bytes[i..].iter().position(|&b| b == 0).ok_or_else(|| {
@@ -404,9 +430,18 @@ fn parse_raw_diff_z(bytes: &[u8]) -> Result<Vec<DiffEntry>> {
                     .context("raw diff copy target utf8")?
                     .to_string();
                 i += nul + 1;
-                DiffEntry::Added { path: path2, new_oid, hunks: None }
+                DiffEntry::Added {
+                    path: path2,
+                    new_oid,
+                    hunks: None,
+                }
             }
-            _ => DiffEntry::Modified { path: path1, old_oid, new_oid, hunks: None },
+            _ => DiffEntry::Modified {
+                path: path1,
+                old_oid,
+                new_oid,
+                hunks: None,
+            },
         };
         entries.push(entry);
     }

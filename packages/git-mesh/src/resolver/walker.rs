@@ -2,9 +2,9 @@
 //! its anchor commit forward through `anchor..HEAD` by replaying each
 //! commit's name-status and hunk diffs against the tracked location.
 
-use crate::git;
 use crate::anchor::read_anchor as _read_range;
-use crate::types::{CopyDetection, Anchor, AnchorExtent};
+use crate::git;
+use crate::types::{Anchor, AnchorExtent, CopyDetection};
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
 use std::str::FromStr;

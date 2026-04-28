@@ -4,7 +4,7 @@
 
 use crate::Result;
 use crate::git;
-use crate::types::{DriftSource, AnchorResolved};
+use crate::types::{AnchorResolved, DriftSource};
 
 /// Blame the commit in `anchor..HEAD` that produced `current.blob`, when
 /// the drift `source` is HEAD (plan §B2). For non-HEAD drift sources or

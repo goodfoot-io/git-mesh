@@ -1,12 +1,12 @@
 //! Mesh commit pipeline — §6.1, §6.2.
 
+use crate::anchor::{create_anchor_with_extent_skipping_blob_bounds, read_anchor};
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
 use crate::mesh::read::{parse_config_blob, serialize_config_blob};
-use crate::anchor::{create_anchor_with_extent_skipping_blob_bounds, read_anchor};
 use crate::staging::{self, StagedConfig, Staging};
-use crate::types::{Mesh, MeshConfig, AnchorExtent};
+use crate::types::{AnchorExtent, Mesh, MeshConfig};
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
 use gix::objs::Tree;

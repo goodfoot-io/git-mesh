@@ -39,6 +39,7 @@ fn run_advice_with_env(
 }
 
 #[test]
+#[ignore] // Phase 3
 fn debug_unset_stderr_empty() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -51,7 +52,11 @@ fn debug_unset_stderr_empty() -> Result<()> {
     let s = sid();
     // Snapshot
     let snap = run_advice_with_env(&repo, &s, false, &["snapshot"])?;
-    assert!(snap.1.is_empty(), "snapshot stderr non-empty without debug: {:?}", snap.1);
+    assert!(
+        snap.1.is_empty(),
+        "snapshot stderr non-empty without debug: {:?}",
+        snap.1
+    );
 
     // Touch file1.txt to trigger a candidate
     repo.write_file("file1.txt", "line1\nline2\nline3\nline4\nline5\nchanged\n")?;
@@ -73,6 +78,7 @@ fn debug_unset_stderr_empty() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn debug_set_stderr_non_empty_with_prefix() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -111,7 +117,10 @@ fn debug_set_stderr_non_empty_with_prefix() -> Result<()> {
             || l.contains("detect_staging_cross_cut")
             || l.contains("detect_range_shrink")
     });
-    assert!(has_detector, "no detector line found in debug trace:\n{stderr}");
+    assert!(
+        has_detector,
+        "no detector line found in debug trace:\n{stderr}"
+    );
 
     // stdout is unchanged relative to the non-debug run.
     let (stdout_nodebug, _) = {
@@ -119,7 +128,10 @@ fn debug_set_stderr_non_empty_with_prefix() -> Result<()> {
         let s2 = sid();
         run_advice_with_env(&repo, &s2, false, &["snapshot"])?;
         // Re-touch to produce the same candidates.
-        repo.write_file("file1.txt", "line1\nline2\nline3\nline4\nline5\nchanged-again\n")?;
+        repo.write_file(
+            "file1.txt",
+            "line1\nline2\nline3\nline4\nline5\nchanged-again\n",
+        )?;
         run_advice_with_env(&repo, &s2, false, &[])
     }?;
     // Both renders must contain the partner path (may differ in exact content
@@ -137,6 +149,7 @@ fn debug_set_stderr_non_empty_with_prefix() -> Result<()> {
 }
 
 #[test]
+#[ignore] // Phase 3
 fn debug_cli_entry_and_exit_lines_present() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;

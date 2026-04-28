@@ -19,14 +19,7 @@ use support::TestRepo;
 fn add_worktree(repo: &TestRepo, name: &str) -> Result<(tempfile::TempDir, std::path::PathBuf)> {
     let owner = tempfile::tempdir()?;
     let wt = owner.path().join("wt");
-    repo.run_git([
-        "worktree",
-        "add",
-        "-b",
-        name,
-        wt.to_str().unwrap(),
-        "HEAD",
-    ])?;
+    repo.run_git(["worktree", "add", "-b", name, wt.to_str().unwrap(), "HEAD"])?;
     Ok((owner, wt))
 }
 

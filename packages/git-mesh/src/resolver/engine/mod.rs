@@ -1,26 +1,26 @@
 //! Engine orchestration: layer setup, per-anchor resolution, mesh-wide
 //! resolution, acknowledgment + pending wiring, concurrency guard.
 
-pub mod pending;
 pub(crate) mod anchor;
+pub mod pending;
 pub(crate) mod whole_file;
 
 use super::layers::{
     CustomFilters, LayerDiffs, LfsState, read_conflicted_paths, read_index_layer,
     read_index_trailer, read_worktree_layer,
 };
-use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::anchor::read_anchor;
+use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::types::{
-    EngineOptions, LayerSet, MeshResolved, PendingFinding, AnchorExtent, AnchorLocation,
-    AnchorResolved, AnchorStatus,
+    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet,
+    MeshResolved, PendingFinding,
 };
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use pending::{apply_acknowledgment, build_pending_findings};
 use anchor::resolve_anchor_inner;
+use pending::{apply_acknowledgment, build_pending_findings};
 
 /// Engine-level state cached for one `stale` run.
 pub(crate) struct EngineState {
@@ -209,11 +209,7 @@ fn status_rank(a: &AnchorStatus, b: &AnchorStatus) -> std::cmp::Ordering {
 /// `since` is an ancestor of (or equal to) `anchor_sha`. Anchors that
 /// don't parse / aren't reachable fall through as `true` (orphans are
 /// not hidden by `--since`).
-fn anchor_at_or_after(
-    repo: &gix::Repository,
-    anchor_sha: &str,
-    since: gix::ObjectId,
-) -> bool {
+fn anchor_at_or_after(repo: &gix::Repository, anchor_sha: &str, since: gix::ObjectId) -> bool {
     use std::str::FromStr;
     let Ok(anchor_id) = gix::ObjectId::from_str(anchor_sha) else {
         return true;

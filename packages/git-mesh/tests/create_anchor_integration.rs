@@ -5,7 +5,7 @@ mod support;
 
 use anyhow::Result;
 use git_mesh::types::{Anchor, AnchorExtent};
-use git_mesh::{create_anchor, parse_anchor, anchor_ref_path, read_anchor, serialize_anchor};
+use git_mesh::{anchor_ref_path, create_anchor, parse_anchor, read_anchor, serialize_anchor};
 use support::TestRepo;
 
 #[test]

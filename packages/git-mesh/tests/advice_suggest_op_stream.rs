@@ -3,22 +3,36 @@
 //! Tests the public `build_op_stream` API using hand-built `SessionRecord`s.
 
 use git_mesh::advice::session::state::{ReadRecord, TouchInterval};
-use git_mesh::advice::suggest::{build_op_stream, OpKind, SessionRecord, SuggestConfig};
+use git_mesh::advice::suggest::{OpKind, SessionRecord, SuggestConfig, build_op_stream};
 
 fn cfg() -> SuggestConfig {
     SuggestConfig::default()
 }
 
 fn read(path: &str, start: Option<u32>, end: Option<u32>, ts: &str) -> ReadRecord {
-    ReadRecord { path: path.to_string(), start_line: start, end_line: end, ts: ts.to_string() }
+    ReadRecord {
+        path: path.to_string(),
+        start_line: start,
+        end_line: end,
+        ts: ts.to_string(),
+    }
 }
 
 fn touch(path: &str, start: u32, end: u32, ts: &str) -> TouchInterval {
-    TouchInterval { path: path.to_string(), start_line: start, end_line: end, ts: ts.to_string() }
+    TouchInterval {
+        path: path.to_string(),
+        start_line: start,
+        end_line: end,
+        ts: ts.to_string(),
+    }
 }
 
 fn session(reads: Vec<ReadRecord>, touches: Vec<TouchInterval>) -> SessionRecord {
-    SessionRecord { sid: "test".to_string(), reads, touches }
+    SessionRecord {
+        sid: "test".to_string(),
+        reads,
+        touches,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +52,11 @@ fn dump_op_is_dropped_from_stream() {
         vec![],
     );
     let ops = build_op_stream(&s, &cfg());
-    assert!(ops.is_empty(), "dump reads (size >= TREE_DIFF_BURST) must be dropped; got {}", ops.len());
+    assert!(
+        ops.is_empty(),
+        "dump reads (size >= TREE_DIFF_BURST) must be dropped; got {}",
+        ops.len()
+    );
 }
 
 #[test]
@@ -47,10 +65,18 @@ fn drop_op_is_dropped_from_stream() {
     let ts = "2024-01-01T00:00:00Z";
     let s = session(
         vec![],
-        vec![touch("a.rs", 0, 0, ts), touch("b.rs", 0, 0, ts), touch("c.rs", 0, 0, ts)],
+        vec![
+            touch("a.rs", 0, 0, ts),
+            touch("b.rs", 0, 0, ts),
+            touch("c.rs", 0, 0, ts),
+        ],
     );
     let ops = build_op_stream(&s, &cfg());
-    assert!(ops.is_empty(), "dump edits (size >= TREE_DIFF_BURST) must be dropped; got {}", ops.len());
+    assert!(
+        ops.is_empty(),
+        "dump edits (size >= TREE_DIFF_BURST) must be dropped; got {}",
+        ops.len()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -62,9 +88,16 @@ fn adjacent_edits_within_tolerance_are_coalesced() {
     // Two consecutive whole-file edits on the same path → coalesced into one op.
     let ts1 = "2024-01-01T00:00:01Z";
     let ts2 = "2024-01-01T00:00:02Z";
-    let s = session(vec![], vec![touch("foo.rs", 0, 0, ts1), touch("foo.rs", 0, 0, ts2)]);
+    let s = session(
+        vec![],
+        vec![touch("foo.rs", 0, 0, ts1), touch("foo.rs", 0, 0, ts2)],
+    );
     let ops = build_op_stream(&s, &cfg());
-    assert_eq!(ops.len(), 1, "two consecutive same-path edits must coalesce");
+    assert_eq!(
+        ops.len(),
+        1,
+        "two consecutive same-path edits must coalesce"
+    );
     assert_eq!(ops[0].count, 2, "coalesced op must carry count=2");
     assert_eq!(ops[0].kind, OpKind::Edit);
 }
@@ -74,7 +107,10 @@ fn edits_beyond_tolerance_remain_separate() {
     // Two whole-file edits on different paths → not coalesced.
     let ts1 = "2024-01-01T00:00:01Z";
     let ts2 = "2024-01-01T00:00:02Z";
-    let s = session(vec![], vec![touch("a.rs", 0, 0, ts1), touch("b.rs", 0, 0, ts2)]);
+    let s = session(
+        vec![],
+        vec![touch("a.rs", 0, 0, ts1), touch("b.rs", 0, 0, ts2)],
+    );
     let ops = build_op_stream(&s, &cfg());
     assert_eq!(ops.len(), 2, "different-path edits must remain separate");
 }
@@ -88,9 +124,16 @@ fn edit_weight_bump_applied_to_coalesced_interval() {
     let ts3 = "2024-01-01T00:00:03Z";
     let s = session(
         vec![],
-        vec![touch("foo.rs", 0, 0, ts1), touch("foo.rs", 0, 0, ts2), touch("foo.rs", 0, 0, ts3)],
+        vec![
+            touch("foo.rs", 0, 0, ts1),
+            touch("foo.rs", 0, 0, ts2),
+            touch("foo.rs", 0, 0, ts3),
+        ],
     );
     let ops = build_op_stream(&s, &cfg());
     assert_eq!(ops.len(), 1);
-    assert_eq!(ops[0].count, 3, "count must reflect all coalesced edit events");
+    assert_eq!(
+        ops[0].count, 3,
+        "count must reflect all coalesced edit events"
+    );
 }

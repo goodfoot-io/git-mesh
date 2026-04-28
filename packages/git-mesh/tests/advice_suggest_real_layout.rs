@@ -163,7 +163,10 @@ fn suggest_strict_mode_returns_empty_when_no_preferred_key_sessions() {
     let base = tempfile::tempdir().expect("tempdir");
 
     // Only key_a has sessions — no sessions for our current repo's key.
-    write_reads_jsonl(&base.path().join("aaaaaaaaaaaaaaaa").join("sa"), "repo_a/src/main.rs");
+    write_reads_jsonl(
+        &base.path().join("aaaaaaaaaaaaaaaa").join("sa"),
+        "repo_a/src/main.rs",
+    );
 
     let repo_tmp = tempfile::tempdir().expect("repo tempdir");
     Command::new("git")
@@ -201,8 +204,14 @@ fn suggest_strict_mode_returns_empty_when_no_preferred_key_sessions() {
 #[test]
 fn suggest_fixture_mode_loads_all_keys() {
     let base = tempfile::tempdir().expect("tempdir");
-    write_reads_jsonl(&base.path().join("aaaaaaaaaaaaaaaa").join("sa"), "repo_a/src/main.rs");
-    write_reads_jsonl(&base.path().join("bbbbbbbbbbbbbbbb").join("sb"), "repo_b/src/lib.rs");
+    write_reads_jsonl(
+        &base.path().join("aaaaaaaaaaaaaaaa").join("sa"),
+        "repo_a/src/main.rs",
+    );
+    write_reads_jsonl(
+        &base.path().join("bbbbbbbbbbbbbbbb").join("sb"),
+        "repo_b/src/lib.rs",
+    );
 
     let repo_tmp = tempfile::tempdir().expect("repo tempdir");
     Command::new("git")

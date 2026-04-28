@@ -12,8 +12,8 @@ use crate::cli::{StaleArgs, StaleFormat};
 use crate::resolver::{build_pending_findings, resolve_mesh, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
-    DriftSource, EngineOptions, Finding, LayerSet, MeshResolved, PendingDrift, PendingFinding,
-    AnchorExtent, AnchorLocation, AnchorStatus, StagedOpRef, UnavailableReason,
+    AnchorExtent, AnchorLocation, AnchorStatus, DriftSource, EngineOptions, Finding, LayerSet,
+    MeshResolved, PendingDrift, PendingFinding, StagedOpRef, UnavailableReason,
 };
 use anyhow::Result;
 use serde_json::{Value, json};

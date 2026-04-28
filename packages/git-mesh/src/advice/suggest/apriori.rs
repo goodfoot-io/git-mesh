@@ -106,7 +106,10 @@ mod tests {
     fn support_is_fraction_of_total_sessions() {
         let pair = make_pair_state(&["s1", "s2"]);
         let mut index = AtomSessionIndex::new();
-        index.insert(0, ["s1", "s2", "s3"].iter().map(|s| s.to_string()).collect());
+        index.insert(
+            0,
+            ["s1", "s2", "s3"].iter().map(|s| s.to_string()).collect(),
+        );
         index.insert(1, ["s1", "s2"].iter().map(|s| s.to_string()).collect());
         let stats = apriori_stats(&pair, &index, 4);
         // support = 2/4 = 0.5

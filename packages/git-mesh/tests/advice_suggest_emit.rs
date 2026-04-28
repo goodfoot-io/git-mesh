@@ -2,9 +2,11 @@
 //!
 //! Ports Section 16 of `docs/analyze-v4.mjs`: isSuperset and emit.
 
-use std::collections::BTreeMap;
-use git_mesh::advice::suggest::{emit, CanonicalIndex, CanonicalRange, CandidateScore, ComponentBreakdown, SuggestConfig};
+use git_mesh::advice::suggest::{
+    CandidateScore, CanonicalIndex, CanonicalRange, ComponentBreakdown, SuggestConfig, emit,
+};
 use git_mesh::advice::suggestion::{ConfidenceBand, Viability};
+use std::collections::BTreeMap;
 
 fn cfg() -> SuggestConfig {
     SuggestConfig::default()
@@ -24,7 +26,14 @@ fn make_canonical(n: usize) -> CanonicalIndex {
     }
 }
 
-fn make_candidate(ids: Vec<usize>, composite: f64, pw_min: f64, intersect: f64, pw_med: f64, trigram: f64) -> CandidateScore {
+fn make_candidate(
+    ids: Vec<usize>,
+    composite: f64,
+    pw_min: f64,
+    intersect: f64,
+    pw_med: f64,
+    trigram: f64,
+) -> CandidateScore {
     let size = ids.len();
     CandidateScore {
         canon_ids: ids,
@@ -44,7 +53,11 @@ fn make_candidate(ids: Vec<usize>, composite: f64, pw_min: f64, intersect: f64, 
             cluster_cohesion: intersect.max(pw_med),
             history_score: 0.5,
         },
-        techniques: vec!["tech-a".to_string(), "tech-b".to_string(), "tech-c".to_string()],
+        techniques: vec![
+            "tech-a".to_string(),
+            "tech-b".to_string(),
+            "tech-c".to_string(),
+        ],
         historical_pair_commits: 2,
         historical_weighted: 0.5,
         same_file_dominance: 1.0 / size as f64,
@@ -100,7 +113,11 @@ fn pair_escapes_when_composite_beats_container_by_bonus() {
     // pair composite = 0.71 ≥ 0.50 + 0.20 = 0.70
     let pair = make_candidate(vec![0, 1], 0.71, 0.0, 0.0, 0.0, 0.0);
     let result = emit(vec![clique, pair], &canonical, &cfg(), true);
-    assert_eq!(result.len(), 2, "pair must escape because it beats container by ≥ bonus");
+    assert_eq!(
+        result.len(),
+        2,
+        "pair must escape because it beats container by ≥ bonus"
+    );
 }
 
 #[test]
@@ -136,7 +153,12 @@ fn suggestion_serde_version_witness_is_first_field() {
     let s = Suggestion::new(
         ConfidenceBand::Medium,
         Viability::Ready,
-        ScoreBreakdown { shared_id: 0.1, co_edit: 0.2, trigram: 0.3, composite: 0.6 },
+        ScoreBreakdown {
+            shared_id: 0.1,
+            co_edit: 0.2,
+            trigram: 0.3,
+            composite: 0.6,
+        },
         vec![],
         "test label".to_string(),
     );

@@ -7,13 +7,13 @@
 
 use std::collections::BTreeSet;
 
+use crate::advice::suggest::SuggestConfig;
 use crate::advice::suggest::canonical::CanonicalIndex;
-use crate::advice::suggest::cliques::{edges_within, Adjacency};
+use crate::advice::suggest::cliques::{Adjacency, edges_within};
 use crate::advice::suggest::cohesion::{
-    intersection_cohesion, pairwise_cohesion_stats, trigram_cohesion, CanonicalId, SourceCache,
+    CanonicalId, SourceCache, intersection_cohesion, pairwise_cohesion_stats, trigram_cohesion,
 };
 use crate::advice::suggest::history::HistoryIndex;
-use crate::advice::suggest::SuggestConfig;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -104,7 +104,11 @@ pub fn score_candidate(
         // the JS collects `e.shared_sessions` (which is a Set in the JS) per edge.
         // In Rust, Edge::shared_sessions is already a count (usize). We take the max
         // as the closest approximation without propagating the session-ID set.
-        in_edges.iter().map(|e| e.shared_sessions).max().unwrap_or(0)
+        in_edges
+            .iter()
+            .map(|e| e.shared_sessions)
+            .max()
+            .unwrap_or(0)
     };
 
     let mean_edge_score = if in_edges.is_empty() {
@@ -133,13 +137,14 @@ pub fn score_candidate(
         .iter()
         .filter_map(|&id| canonical.ranges.get(id))
         .collect();
-    let mut file_counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut file_counts: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
     for r in &ranges {
         *file_counts.entry(r.path.as_str()).or_default() += 1;
     }
     let distinct_files = file_counts.len();
-    let max_path_share = file_counts.values().copied().max().unwrap_or(0) as f64
-        / ranges.len().max(1) as f64;
+    let max_path_share =
+        file_counts.values().copied().max().unwrap_or(0) as f64 / ranges.len().max(1) as f64;
     let top_dirs: BTreeSet<String> = ranges
         .iter()
         .map(|r| {
@@ -170,11 +175,24 @@ pub fn score_candidate(
             .collect();
         let trig = trigram_cohesion(&trigram_map);
 
-        let (iw, it) = intersection_cohesion(canon_ids, source_cache, canonical, idf, cfg.shared_id_saturation);
-        let pw = pairwise_cohesion_stats(canon_ids, source_cache, canonical, idf, cfg.shared_id_saturation);
+        let (iw, it) = intersection_cohesion(
+            canon_ids,
+            source_cache,
+            canonical,
+            idf,
+            cfg.shared_id_saturation,
+        );
+        let pw = pairwise_cohesion_stats(
+            canon_ids,
+            source_cache,
+            canonical,
+            idf,
+            cfg.shared_id_saturation,
+        );
         (trig, iw, it, pw)
     } else {
-        let zero = pairwise_cohesion_stats(&[], source_cache, canonical, idf, cfg.shared_id_saturation);
+        let zero =
+            pairwise_cohesion_stats(&[], source_cache, canonical, idf, cfg.shared_id_saturation);
         (0.0, 0.0, vec![], zero)
     };
 
@@ -219,7 +237,10 @@ pub fn score_candidate(
     let hist_count = if in_edges.is_empty() {
         0
     } else {
-        (in_edges.iter().map(|e| e.history_pair_commits as f64).sum::<f64>()
+        (in_edges
+            .iter()
+            .map(|e| e.history_pair_commits as f64)
+            .sum::<f64>()
             / in_edges.len() as f64)
             .round() as u32
     };
@@ -230,8 +251,8 @@ pub fn score_candidate(
     };
 
     // Composite weights (sum to 1.0 per the v4 plan).
-    let diversity_factor =
-        (distinct_files as f64 / ranges.len().max(1) as f64) * if cross_package { 1.0 } else { 0.9 };
+    let diversity_factor = (distinct_files as f64 / ranges.len().max(1) as f64)
+        * if cross_package { 1.0 } else { 0.9 };
     let composite = 0.18 * mean_edge_score
         + 0.10 * density
         + 0.10 * (sessions as f64).min(3.0) / 3.0
@@ -312,7 +333,13 @@ mod tests {
         SuggestConfig::default()
     }
 
-    fn make_candidate(size: usize, pairwise_min: f64, intersection: f64, pairwise_median: f64, trigram: f64) -> CandidateScore {
+    fn make_candidate(
+        size: usize,
+        pairwise_min: f64,
+        intersection: f64,
+        pairwise_median: f64,
+        trigram: f64,
+    ) -> CandidateScore {
         CandidateScore {
             canon_ids: (0..size).collect(),
             size,
