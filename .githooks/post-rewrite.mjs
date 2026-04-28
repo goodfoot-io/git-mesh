@@ -1,7 +1,7 @@
 // src/workspace/post-rewrite.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 
 // ../../../public/packages/sdk/src/config/logger.ts
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
@@ -634,7 +634,23 @@ function resolveWorkspaceLogFile() {
 
 // src/workspace/shared.ts
 import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 var debug = process.env["CARDS_DEBUG"] === "1";
+function readCardBoundCardId(worktreeRoot) {
+  try {
+    const content = readFileSync2(join2(worktreeRoot, ".cards", "CARD_ID"), "utf-8").trim();
+    return content.length > 0 ? content : "empty";
+  } catch (error) {
+    if (error.code === "ENOENT") return "missing";
+    if (debug)
+      process.stderr.write(
+        `cards-hook: failed to read .cards/CARD_ID: ${error instanceof Error ? error.message : String(error)}
+`
+      );
+    return "unreadable";
+  }
+}
 var SHA_PATTERN = /^[0-9a-f]{40}$/i;
 function isValidSha(sha) {
   return SHA_PATTERN.test(sha);
@@ -715,7 +731,7 @@ async function resolveSessionId(logger2) {
 // src/workspace/post-rewrite.ts
 async function main(stdinContent) {
   const logger2 = new Logger({ logFilePath: resolveWorkspaceLogFile() });
-  const input = stdinContent ?? readFileSync2("/dev/stdin", "utf-8");
+  const input = stdinContent ?? readFileSync3("/dev/stdin", "utf-8");
   const pairs = [];
   for (const line of input.split("\n")) {
     const trimmed = line.trim();
@@ -729,10 +745,10 @@ async function main(stdinContent) {
     logger2.close();
     return;
   }
-  const discoveryPath = process.env["CARDS_DISCOVERY_PATH"] ?? join2(homedir2(), ".cards", "cards-api.json");
+  const discoveryPath = process.env["CARDS_DISCOVERY_PATH"] ?? join3(homedir2(), ".cards", "cards-api.json");
   let config;
   try {
-    config = JSON.parse(readFileSync2(discoveryPath, "utf-8"));
+    config = JSON.parse(readFileSync3(discoveryPath, "utf-8"));
   } catch (error) {
     if (debug)
       process.stderr.write(
@@ -752,8 +768,15 @@ async function main(stdinContent) {
   const baseUrl = `http://${config.host}:${config.port}`;
   const token = config.accessToken;
   const sessionId = await resolveSessionId(logger2);
-  const cardId = process.env["CARD_ID"];
-  logger2.info("workspace/post-rewrite: running", { cardId: cardId ?? null, pairCount: pairs.length });
+  const { execFileSync: execFileSync3 } = await import("node:child_process");
+  const worktreePath = execFileSync3("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const cardIdResult = readCardBoundCardId(worktreePath);
+  const cardId = cardIdResult !== "missing" && cardIdResult !== "empty" && cardIdResult !== "unreadable" ? cardIdResult : null;
+  logger2.info("workspace/post-rewrite: running", {
+    cardId,
+    markerState: cardId !== null ? "present" : cardIdResult,
+    pairCount: pairs.length
+  });
   if (cardId) {
     await processRewriteForCard(baseUrl, token, cardId, pairs, sessionId, logger2);
     logger2.close();
@@ -764,8 +787,6 @@ async function main(stdinContent) {
     logger2.close();
     return;
   }
-  const { execFileSync: execFileSync3 } = await import("node:child_process");
-  const worktreePath = execFileSync3("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   for (const pid of agentPids) {
     const pidCardId = await getPidCardId(pid);
     if (!pidCardId) continue;

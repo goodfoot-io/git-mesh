@@ -1,8 +1,8 @@
 // src/workspace/post-commit.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join2, resolve } from "node:path";
+import { join as join3, resolve } from "node:path";
 
 // ../../../public/packages/sdk/src/config/logger.ts
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
@@ -660,7 +660,23 @@ function resolveWorkspaceLogFile() {
 
 // src/workspace/shared.ts
 import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 var debug = process.env["CARDS_DEBUG"] === "1";
+function readCardBoundCardId(worktreeRoot) {
+  try {
+    const content = readFileSync2(join2(worktreeRoot, ".cards", "CARD_ID"), "utf-8").trim();
+    return content.length > 0 ? content : "empty";
+  } catch (error) {
+    if (error.code === "ENOENT") return "missing";
+    if (debug)
+      process.stderr.write(
+        `cards-hook: failed to read .cards/CARD_ID: ${error instanceof Error ? error.message : String(error)}
+`
+      );
+    return "unreadable";
+  }
+}
 var SHA_PATTERN = /^[0-9a-f]{40}$/i;
 function isValidSha(sha) {
   return SHA_PATTERN.test(sha);
@@ -751,14 +767,14 @@ async function resolveSessionId(logger2) {
 async function checkpointSessionStream(reposPath, cardId, sha, getCleanEnv, logger2) {
   if (!reposPath) return;
   try {
-    const cardRepoPath = join2(reposPath, cardId);
+    const cardRepoPath = join3(reposPath, cardId);
     if (!existsSync2(cardRepoPath)) return;
     const sessionId = await resolveSessionId(logger2);
     if (!sessionId) return;
-    const streamRel = join2("streams", "claude-code-session", `${sessionId}.jsonl`);
-    if (!existsSync2(join2(cardRepoPath, streamRel))) return;
+    const streamRel = join3("streams", "claude-code-session", `${sessionId}.jsonl`);
+    if (!existsSync2(join3(cardRepoPath, streamRel))) return;
     const metaRel = `${streamRel}.meta.json`;
-    const filesToAdd = existsSync2(join2(cardRepoPath, metaRel)) ? [streamRel, metaRel] : [streamRel];
+    const filesToAdd = existsSync2(join3(cardRepoPath, metaRel)) ? [streamRel, metaRel] : [streamRel];
     const cleanEnv = getCleanEnv();
     execFileSync3("git", ["add", ...filesToAdd], { cwd: cardRepoPath, stdio: "pipe", env: cleanEnv, timeout: 5e3 });
     execFileSync3("git", ["commit", "--no-gpg-sign", "-m", `Checkpoint stream: ${sessionId}.jsonl (workspace ${sha})`], {
@@ -777,10 +793,10 @@ async function checkpointSessionStream(reposPath, cardId, sha, getCleanEnv, logg
 }
 async function main() {
   const logger2 = new Logger({ logFilePath: resolveWorkspaceLogFile() });
-  const discoveryPath = process.env["CARDS_DISCOVERY_PATH"] ?? join2(homedir2(), ".cards", "cards-api.json");
+  const discoveryPath = process.env["CARDS_DISCOVERY_PATH"] ?? join3(homedir2(), ".cards", "cards-api.json");
   let config;
   try {
-    config = JSON.parse(readFileSync2(discoveryPath, "utf-8"));
+    config = JSON.parse(readFileSync3(discoveryPath, "utf-8"));
   } catch (error) {
     if (debug)
       process.stderr.write(
@@ -799,7 +815,7 @@ async function main() {
   }
   const rawGitDir = execFileSync3("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim();
   const absGitDir = resolve(rawGitDir);
-  if (existsSync2(join2(absGitDir, "rebase-merge")) || existsSync2(join2(absGitDir, "rebase-apply"))) {
+  if (existsSync2(join3(absGitDir, "rebase-merge")) || existsSync2(join3(absGitDir, "rebase-apply"))) {
     logger2.info("workspace/post-commit: rebase in progress, skipping attribution");
     logger2.close();
     return;
@@ -819,8 +835,13 @@ async function main() {
     cleanEnv ??= buildCleanEnv();
     return cleanEnv;
   };
-  const cardId = process.env["CARD_ID"];
-  logger2.info("workspace/post-commit: running", { sha, cardId: cardId ?? null });
+  const cardIdResult = readCardBoundCardId(worktreePath);
+  const cardId = cardIdResult !== "missing" && cardIdResult !== "empty" && cardIdResult !== "unreadable" ? cardIdResult : null;
+  logger2.info("workspace/post-commit: running", {
+    sha,
+    cardId,
+    markerState: cardId !== null ? "present" : cardIdResult
+  });
   const sessionId = await resolveSessionId(logger2);
   logger2.info("workspace/post-commit: session ID resolution complete", {
     sessionId: sessionId ?? "null",

@@ -119,7 +119,7 @@ fn baseline_topic_block_renders_verbatim() {
 fn t2_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["editing-across-files".into()], true);
     assert_all_lines_commented(&out);
-    assert!(out.contains("# When a range in a mesh changes, the other ranges in the same mesh may"));
+    assert!(out.contains("# When an anchor in a mesh changes, the other anchors in the same mesh"));
     assert!(out.contains("# A second `git mesh add` over the identical (path, extent) is a"));
     assert!(out.contains("#   git mesh add <name> <path>#L<s>-L<e>"));
     assert!(out.contains("#   git mesh commit <name>"));
@@ -128,7 +128,7 @@ fn t2_topic_block_renders_verbatim() {
 #[test]
 fn t3_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["renames".into()], true);
-    assert!(out.contains("# A related range contains the old path as a literal string."));
+    assert!(out.contains("# A related anchor contains the old path as a literal string."));
     assert!(out.contains("#   git mesh rm  <name> <old-path>"));
     assert!(out.contains("#   git mesh add <name> <new-path>"));
 }
@@ -136,7 +136,7 @@ fn t3_topic_block_renders_verbatim() {
 #[test]
 fn t4_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["shrinking-ranges".into()], true);
-    assert!(out.contains("# The edit reduced a range to far fewer lines than were recorded."));
+    assert!(out.contains("# The edit reduced a line-range anchor to far fewer lines than were"));
     assert!(out.contains("#   git mesh rm  <name> <path>#L<old-s>-L<old-e>"));
     assert!(out.contains("#   git mesh add <name> <path>#L<new-s>-L<new-e>"));
 }
@@ -144,7 +144,7 @@ fn t4_topic_block_renders_verbatim() {
 #[test]
 fn t5_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["narrow-or-retire".into()], true);
-    assert!(out.contains("# Most ranges in this mesh no longer match what was recorded."));
+    assert!(out.contains("# Most anchors in this mesh no longer match what was recorded."));
     assert!(out.contains("#   git mesh rm     <name> <path>"));
     assert!(out.contains("#   git mesh delete <name>"));
     assert!(out.contains("#   git mesh revert <name> <commit-ish>"));
@@ -153,7 +153,7 @@ fn t5_topic_block_renders_verbatim() {
 #[test]
 fn t6_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["exported-symbols".into()], true);
-    assert!(out.contains("# An exported name changed inside one range."));
+    assert!(out.contains("# An exported name changed inside one anchor."));
     assert!(out.contains("#   git mesh add <name> <path>#L<s>-L<e>"));
 }
 
@@ -169,7 +169,7 @@ fn t7_topic_block_renders_verbatim() {
 #[test]
 fn t8_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["cross-mesh-overlap".into()], true);
-    assert!(out.contains("# A range staged on one mesh overlaps a range already recorded on"));
+    assert!(out.contains("# An anchor staged on one mesh overlaps an anchor already recorded on"));
     assert!(out.contains("#   git mesh restore <name>"));
     assert!(out.contains("#   git mesh delete  <name>"));
 }
@@ -177,7 +177,7 @@ fn t8_topic_block_renders_verbatim() {
 #[test]
 fn t9_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["empty-meshes".into()], true);
-    assert!(out.contains("# The staged removal would leave this mesh with no ranges."));
+    assert!(out.contains("# The staged removal would leave this mesh with no anchors."));
     assert!(out.contains("#   git mesh add    <name> <path>[#L<s>-L<e>]"));
     assert!(out.contains("#   git mesh delete <name>"));
 }
@@ -185,10 +185,10 @@ fn t9_topic_block_renders_verbatim() {
 #[test]
 fn t11_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["terminal-states".into()], true);
-    assert!(out.contains("# A terminal marker means the resolver cannot evaluate this range at all."));
+    assert!(out.contains("# A terminal marker means the resolver cannot evaluate this anchor at all."));
     assert!(out.contains("# [ORPHANED]  — the recorded commit is unreachable."));
     assert!(out.contains("# [CONFLICT]  — the file is mid-merge. Finish the merge first."));
-    assert!(out.contains("# [SUBMODULE] — the range points inside a submodule"));
+    assert!(out.contains("# [SUBMODULE] — the anchor points inside a submodule"));
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ fn documentation_appends_t1_and_t2_hints_after_output() {
     let t2 = candidate_to_suggestion(&t2_c);
 
     let out = render::render(&[t1, t2], &[], true);
-    let t1_hint = "to re-record a range after edits";
+    let t1_hint = "to re-record an anchor after edits";
     let t2_hint = "to re-record a partner that needed matching edits";
     assert_eq!(out.matches(t1_hint).count(), 1, "t1 hint must appear once: {out}");
     assert_eq!(out.matches(t2_hint).count(), 1, "t2 hint must appear once: {out}");
@@ -239,7 +239,7 @@ fn documentation_with_t8_does_not_duplicate_topic_block() {
     let hint = "to resolve a cross-mesh overlap";
     assert_eq!(out.matches(hint).count(), 1, "t8 hint must appear once");
     assert!(
-        !out.contains("# A range staged on one mesh overlaps a range already recorded on"),
+        !out.contains("# An anchor staged on one mesh overlaps an anchor already recorded on"),
         "topic block must not be duplicated by --documentation: {out}"
     );
 }

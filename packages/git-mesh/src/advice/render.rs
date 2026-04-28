@@ -324,7 +324,7 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
             let removed = meta.partner_clause.strip_prefix("removed:").unwrap_or("");
             let addrs: Vec<&str> = removed.split(',').filter(|s| !s.is_empty()).collect();
             out.push_str(&format!(
-                "# The staged removal would leave {} with no ranges.\n",
+                "# The staged removal would leave {} with no anchors.\n",
                 mesh
             ));
             for addr in &addrs {
@@ -332,7 +332,7 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
             }
             if !meta.command.is_empty() {
                 out.push_str("#\n");
-                out.push_str("# To either add a replacement range or retire the mesh:\n");
+                out.push_str("# To either add a replacement anchor or retire the mesh:\n");
                 for line in meta.command.lines() {
                     out.push_str("#   ");
                     out.push_str(line);
@@ -451,12 +451,13 @@ fn truncate_line_plain(line: &str) -> String {
 // suite asserts the literal text fragments.
 const TOPIC_BASELINE: &str = "\
 A mesh is a lightweight contract for an agreement that no schema, type,
-or test already enforces. It anchors line ranges (or whole files)
-across the repo and carries a durable `why` that defines the subsystem
-those ranges collectively form.
+or test already enforces. It binds anchors — line-range anchors
+(`path#L<s>-L<e>`) or whole-file anchors — across the repo and carries
+a durable `why` that defines the subsystem those anchors collectively
+form.
 
 The `why` is load-bearing identity, not commentary. It names the
-subsystem, flow, or concern and says plainly what the ranges do across
+subsystem, flow, or concern and says plainly what the anchors do across
 it — e.g. \"Checkout request flow that carries a charge attempt from
 the browser to the Stripe-backed server.\" It is evergreen, inherited
 across routine re-anchors, and is the line printed after `<name> mesh:`
@@ -465,17 +466,18 @@ in source comments, commit messages, CODEOWNERS, and PR descriptions —
 not in the why.
 
 Inspect a mesh:
-  git mesh show <name>           # ranges, why, history
+  git mesh show <name>           # anchors, why, history
   git mesh ls <path>             # meshes that touch a file
-  git mesh stale                 # ranges whose bytes have drifted
+  git mesh stale                 # anchors whose bytes have drifted
   git mesh why <name>            # read the why
 ";
 
 const TOPIC_T2: &str = "\
-When a range in a mesh changes, the other ranges in the same mesh may
-need matching changes. The excerpt below is the related range — the
-code on the other side of the relationship. Compare, then either update
-it or accept that the relationship has shifted and re-record the mesh.
+When an anchor in a mesh changes, the other anchors in the same mesh
+may need matching changes. The excerpt below is the related anchor —
+the content on the other side of the relationship. Compare, then either
+update it or accept that the relationship has shifted and re-record
+the mesh.
 
 A second `git mesh add` over the identical (path, extent) is a
 re-record — last-write-wins, no `rm` needed:
@@ -485,7 +487,7 @@ re-record — last-write-wins, no `rm` needed:
 ";
 
 const TOPIC_T3: &str = "\
-A related range contains the old path as a literal string. A renamed
+A related anchor contains the old path as a literal string. A renamed
 file still works for callers that import it by symbol, but hard-coded
 paths — markup src, fetch URLs, doc links — do not follow a rename.
 Update the literal, or move the mesh to the new path:
@@ -496,9 +498,10 @@ Update the literal, or move the mesh to the new path:
 ";
 
 const TOPIC_T4: &str = "\
-The edit reduced a range to far fewer lines than were recorded. The
-mesh now pins less code than the relationship was about. When the line
-span changes, remove the old range first, then add the new one:
+The edit reduced a line-range anchor to far fewer lines than were
+recorded. The mesh now pins less code than the relationship was about.
+When the line span changes, remove the old anchor first, then add the
+new one:
 
   git mesh rm  <name> <path>#L<old-s>-L<old-e>
   git mesh add <name> <path>#L<new-s>-L<new-e>
@@ -506,20 +509,20 @@ span changes, remove the old range first, then add the new one:
 ";
 
 const TOPIC_T5: &str = "\
-Most ranges in this mesh no longer match what was recorded. When most
+Most anchors in this mesh no longer match what was recorded. When most
 of a mesh has drifted, the relationship itself has usually changed.
-Narrow the mesh to the ranges still in play, or retire it:
+Narrow the mesh to the anchors still in play, or retire it:
 
-  git mesh rm     <name> <path>          # drop a range
+  git mesh rm     <name> <path>          # drop an anchor
   git mesh delete <name>                 # retire the mesh
   git mesh revert <name> <commit-ish>    # restore a prior correct state
 ";
 
 const TOPIC_T6: &str = "\
-An exported name changed inside one range. Other ranges reference the
-old name as a literal string, which a rename-aware refactor tool will
-not reach. Update the references, then re-record both sides in the
-same commit:
+An exported name changed inside one anchor. Other anchors reference
+the old name as a literal string, which a rename-aware refactor tool
+will not reach. Update the references, then re-record both sides in
+the same commit:
 
   git mesh add <name> <path>#L<s>-L<e>
   git mesh commit <name>
@@ -535,17 +538,17 @@ strictly better than a mesh over the same surface.
 
 Record:
   git mesh add <mesh-name> <path-1> <path-2> [...]
-  git mesh why <mesh-name> -m \"What the ranges do together.\"
+  git mesh why <mesh-name> -m \"What the anchors do together.\"
   git mesh commit <mesh-name>
 
 Name with a kebab-case slug that titles the subsystem, optionally
 prefixed by a category: billing/, platform/, experiments/, auth/.
-One relationship per mesh — if ranges split into two reasons to change
+One relationship per mesh — if anchors split into two reasons to change
 together, record two meshes.
 ";
 
 const TOPIC_T8: &str = "\
-A range staged on one mesh overlaps a range already recorded on
+An anchor staged on one mesh overlaps an anchor already recorded on
 another mesh in the same file. Both meshes will observe edits to the
 shared bytes independently. Confirm both relationships are real; if
 they describe the same thing, collapse them:
@@ -555,8 +558,8 @@ they describe the same thing, collapse them:
 ";
 
 const TOPIC_T9: &str = "\
-The staged removal would leave this mesh with no ranges. A mesh with
-nothing in it cannot surface drift. Either add a replacement range in
+The staged removal would leave this mesh with no anchors. A mesh with
+nothing in it cannot surface drift. Either add a replacement anchor in
 the same commit, or retire the mesh:
 
   git mesh add    <name> <path>[#L<s>-L<e>]
@@ -564,7 +567,7 @@ the same commit, or retire the mesh:
 ";
 
 const TOPIC_T11: &str = "\
-A terminal marker means the resolver cannot evaluate this range at all.
+A terminal marker means the resolver cannot evaluate this anchor at all.
 
 [ORPHANED]  — the recorded commit is unreachable. Usually a force-push
               or a partial clone. Fetch and re-record if needed:
@@ -574,9 +577,9 @@ A terminal marker means the resolver cannot evaluate this range at all.
 
 [CONFLICT]  — the file is mid-merge. Finish the merge first.
 
-[SUBMODULE] — the range points inside a submodule, which mesh does not
-              open. Pin the submodule root or a parent-repo path that
-              witnesses the same relationship:
+[SUBMODULE] — the anchor points inside a submodule, which mesh does
+              not open. Pin the submodule root or a parent-repo path
+              that witnesses the same relationship:
                 git mesh rm  <name> <submodule>/inner/file.ts#L10-L20
                 git mesh add <name> <submodule>
                 git mesh commit <name>
@@ -627,7 +630,7 @@ fn render_doc_topic(topic: &str) -> String {
 fn render_hint_for_reason(reason: &str) -> Option<String> {
     let body: &str = match reason {
         "partner" => {
-            "to re-record a range after edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
+            "to re-record an anchor after edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
         }
         "write_across" => {
             "to re-record a partner that needed matching edits, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
