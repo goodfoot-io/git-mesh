@@ -49,18 +49,18 @@ fn ok(out: &Output) {
     );
 }
 
-fn render(repo: &TestRepo, session: &str, extra: &[&str]) -> Result<String> {
-    let out = run_advice(repo, session, extra)?;
-    ok(&out);
-    Ok(String::from_utf8(out.stdout)?)
+fn stdout(out: &Output) -> String {
+    String::from_utf8(out.stdout.clone()).expect("utf8 stdout")
 }
 
 // ---------------------------------------------------------------------------
 // T1 — partner list (L0): read ∩ mesh surfaces partner anchors.
+//
+// The `read` verb emits BasicOutput immediately for first-time matching
+// meshes (spec: READ rule). No separate flush step needed.
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Phase 3
 fn flush_t1_partner_list() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -71,29 +71,30 @@ fn flush_t1_partner_list() -> Result<()> {
 
     let s = sid("t1");
     ok(&run_advice(&repo, &s, &["snapshot"])?);
-    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
-
-    let stdout = render(&repo, &s, &[])?;
+    // Use a range anchor that overlaps the mesh anchor on file1.txt L1-L5.
+    // read_overlaps requires Range-vs-Range (cross-kind is no-match).
+    let out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&out);
+    let text = stdout(&out);
     assert!(
-        stdout.contains("# m1 mesh: two-file partnership"),
-        "expected mesh header with why, got:\n{stdout}"
+        text.contains("# m1 mesh: two-file partnership"),
+        "expected mesh header with why, got:\n{text}"
     );
     assert!(
-        stdout.contains("# - file2.txt#L1-L5"),
-        "expected partner row, got:\n{stdout}"
+        text.contains("# - file2.txt#L1-L5"),
+        "expected partner row, got:\n{text}"
     );
     assert!(
-        stdout.contains("# - file1.txt#L1-L5"),
-        "trigger anchor must appear in the bullet list, got:\n{stdout}"
+        text.contains("# - file1.txt#L1-L5"),
+        "trigger anchor must appear in the bullet list, got:\n{text}"
     );
-    for line in stdout.lines() {
+    for line in text.lines() {
         assert!(line.starts_with('#'), "line not prefixed: {line:?}");
     }
     Ok(())
 }
 
 #[test]
-#[ignore] // Phase 3
 fn whole_file_read_routes_to_other_ranges_in_each_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -105,24 +106,24 @@ fn whole_file_read_routes_to_other_ranges_in_each_mesh() -> Result<()> {
 
     let s = sid("whole-read");
     ok(&run_advice(&repo, &s, &["snapshot"])?);
-    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
-
-    let stdout = render(&repo, &s, &[])?;
+    // Range anchor overlapping file1.txt#L1-L2 (first anchor on file1.txt).
+    let out = run_advice(&repo, &s, &["read", "file1.txt#L1-L2"])?;
+    ok(&out);
+    let text = stdout(&out);
     assert!(
-        stdout.contains("# whole mesh: whole-file routing"),
-        "got:\n{stdout}"
+        text.contains("# whole mesh: whole-file routing"),
+        "got:\n{text}"
     );
     assert!(
-        !stdout.contains("# triggered by"),
-        "triggered-by line must not be emitted; got:\n{stdout}"
+        !text.contains("# triggered by"),
+        "triggered-by line must not be emitted; got:\n{text}"
     );
-    assert!(stdout.contains("# - file1.txt#L5-L6"), "got:\n{stdout}");
-    assert!(stdout.contains("# - file2.txt#L1-L2"), "got:\n{stdout}");
+    assert!(text.contains("# - file1.txt#L5-L6"), "got:\n{text}");
+    assert!(text.contains("# - file2.txt#L1-L2"), "got:\n{text}");
     Ok(())
 }
 
 #[test]
-#[ignore] // Phase 3
 fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -138,25 +139,25 @@ fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
         "changed\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
 
-    let stdout = render(&repo, &s, &[])?;
+    // EDIT rule: milestone detects the modified file1.txt and emits BasicOutput
+    // for the mesh whose anchor overlaps it (spec: §EDIT rule).
+    let out = run_advice(&repo, &s, &["milestone"])?;
+    ok(&out);
+    let text = stdout(&out);
+    assert!(text.contains("# delta mesh: delta routing"), "got:\n{text}");
     assert!(
-        stdout.contains("# delta mesh: delta routing"),
-        "got:\n{stdout}"
+        !text.contains("# triggered by"),
+        "triggered-by line must not be emitted; got:\n{text}"
     );
+    assert!(text.contains("# - file2.txt#L1-L5"), "got:\n{text}");
     assert!(
-        !stdout.contains("# triggered by"),
-        "triggered-by line must not be emitted; got:\n{stdout}"
-    );
-    assert!(stdout.contains("# - file2.txt#L1-L5"), "got:\n{stdout}");
-    assert!(
-        stdout.contains("# - file1.txt#L1-L5"),
-        "trigger anchor must appear in the bullet list, got:\n{stdout}"
+        text.contains("# - file1.txt#L1-L5"),
+        "trigger anchor must appear in the bullet list, got:\n{text}"
     );
     Ok(())
 }
 
 #[test]
-#[ignore] // Phase 3
 fn advice_store_inside_worktree_is_not_captured_or_co_touched() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let advice_dir = repo.path().join(".mesh-advice");
@@ -173,8 +174,11 @@ fn advice_store_inside_worktree_is_not_captured_or_co_touched() -> Result<()> {
     };
 
     ok(&run(&["snapshot"])?);
+    // No edits made — milestone must produce empty stdout and no stderr on
+    // every call (the internal advice store must not trigger fallback or
+    // repeat output).
     for _ in 0..4 {
-        let out = run(&[])?;
+        let out = run(&["milestone"])?;
         ok(&out);
         assert!(
             out.stderr.is_empty(),
@@ -195,7 +199,6 @@ fn advice_store_inside_worktree_is_not_captured_or_co_touched() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Phase 3
 fn flush_t8_staging_crosscut() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -210,12 +213,14 @@ fn flush_t8_staging_crosscut() -> Result<()> {
 
     let s = sid("t8");
     ok(&run_advice(&repo, &s, &["snapshot"])?);
-    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
-
-    let stdout = render(&repo, &s, &[])?;
+    // Range anchor overlapping the committed mesh-a anchor (file1.txt#L1-L5)
+    // and the staged mesh-b anchor (file1.txt#L3-L7).
+    let out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&out);
+    let text = stdout(&out);
     assert!(
-        stdout.contains("mesh-a") || stdout.contains("mesh-b"),
-        "expected staging cross-cut output, got:\n{stdout}"
+        text.contains("mesh-a") || text.contains("mesh-b"),
+        "expected staging cross-cut output, got:\n{text}"
     );
     Ok(())
 }
@@ -225,7 +230,6 @@ fn flush_t8_staging_crosscut() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Phase 3
 fn flush_t9_empty_mesh_risk() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -237,12 +241,13 @@ fn flush_t9_empty_mesh_risk() -> Result<()> {
 
     let s = sid("t9");
     ok(&run_advice(&repo, &s, &["snapshot"])?);
-    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
-
-    let stdout = render(&repo, &s, &[])?;
+    // Range anchor overlapping the soon-empty anchor (file1.txt#L1-L5).
+    let out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&out);
+    let text = stdout(&out);
     assert!(
-        stdout.contains("soon-empty") || stdout.contains("empty"),
-        "expected empty-mesh-risk output, got:\n{stdout}"
+        text.contains("soon-empty") || text.contains("empty"),
+        "expected empty-mesh-risk output, got:\n{text}"
     );
     Ok(())
 }
@@ -252,7 +257,6 @@ fn flush_t9_empty_mesh_risk() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Phase 3
 fn dedup_same_trigger() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -263,20 +267,26 @@ fn dedup_same_trigger() -> Result<()> {
 
     let s = sid("dedup-same");
     ok(&run_advice(&repo, &s, &["snapshot"])?);
-    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
-    let first = render(&repo, &s, &[])?;
-    assert!(!first.is_empty(), "first render should produce output");
 
-    let second = render(&repo, &s, &[])?;
+    // First read: mesh "dd" not yet seen → emits BasicOutput.
+    let first_out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&first_out);
+    let first = stdout(&first_out);
+    assert!(!first.is_empty(), "first read should produce output");
+
+    // Second read of same anchor: mesh "dd" already in meshes-seen → no output
+    // (spec: READ rule dedup on meshes-seen set).
+    let second_out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&second_out);
+    let second = stdout(&second_out);
     assert!(
         second.is_empty(),
-        "second render with same trigger must be empty, got:\n{second}"
+        "second read with same trigger must be empty, got:\n{second}"
     );
     Ok(())
 }
 
 #[test]
-#[ignore] // Phase 3
 fn dedup_new_trigger() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -287,11 +297,16 @@ fn dedup_new_trigger() -> Result<()> {
 
     let s = sid("dedup-new");
     ok(&run_advice(&repo, &s, &["snapshot"])?);
-    ok(&run_advice(&repo, &s, &["read", "file1.txt"])?);
-    let _ = render(&repo, &s, &[])?;
 
-    ok(&run_advice(&repo, &s, &["read", "file2.txt"])?);
-    let third = render(&repo, &s, &[])?;
+    // Read file1 → mesh "dd2" seen, emitted.
+    let out1 = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&out1);
+
+    // Read file2 → mesh "dd2" already in meshes-seen → no re-emit
+    // (spec: READ rule, mesh already surfaced this session).
+    let out2 = run_advice(&repo, &s, &["read", "file2.txt#L1-L5"])?;
+    ok(&out2);
+    let third = stdout(&out2);
     assert!(
         third.is_empty(),
         "mesh already surfaced this session must not re-surface on a new trigger; got:\n{third}"
@@ -304,13 +319,15 @@ fn dedup_new_trigger() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Phase 3
 fn flush_empty_no_meshes() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let s = sid("empty");
     ok(&run_advice(&repo, &s, &["snapshot"])?);
-    let stdout = render(&repo, &s, &[])?;
-    assert!(stdout.is_empty(), "expected empty output, got:\n{stdout}");
+    // No meshes exist → milestone with no edits must produce empty stdout.
+    let out = run_advice(&repo, &s, &["milestone"])?;
+    ok(&out);
+    let text = stdout(&out);
+    assert!(text.is_empty(), "expected empty output, got:\n{text}");
     Ok(())
 }
 
@@ -319,7 +336,6 @@ fn flush_empty_no_meshes() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // Phase 3
 fn session_isolation() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -332,18 +348,113 @@ fn session_isolation() -> Result<()> {
     let s2 = sid("iso-b");
 
     ok(&run_advice(&repo, &s1, &["snapshot"])?);
-    ok(&run_advice(&repo, &s1, &["read", "file1.txt"])?);
-    let a1 = render(&repo, &s1, &[])?;
+    let a1_out = run_advice(&repo, &s1, &["read", "file1.txt#L1-L5"])?;
+    ok(&a1_out);
+    let a1 = stdout(&a1_out);
     assert!(!a1.is_empty());
-    let a2 = render(&repo, &s1, &[])?;
-    assert!(a2.is_empty(), "A's second render should be empty");
 
+    // Second read from session 1 → mesh in meshes-seen → empty.
+    let a2_out = run_advice(&repo, &s1, &["read", "file1.txt#L1-L5"])?;
+    ok(&a2_out);
+    let a2 = stdout(&a2_out);
+    assert!(a2.is_empty(), "A's second read should be empty");
+
+    // Session 2 starts fresh: its meshes-seen is independent.
     ok(&run_advice(&repo, &s2, &["snapshot"])?);
-    ok(&run_advice(&repo, &s2, &["read", "file1.txt"])?);
-    let b1 = render(&repo, &s2, &[])?;
+    let b1_out = run_advice(&repo, &s2, &["read", "file1.txt#L1-L5"])?;
+    ok(&b1_out);
+    let b1 = stdout(&b1_out);
     assert!(
         !b1.is_empty(),
         "session B should see fresh output despite A's prior render"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance signal 2: `read` then `milestone` announces a mesh at most once.
+//
+// After `read <anchor>` emits BasicOutput for a FRESH mesh, a subsequent
+// `milestone` (with no file edits) must NOT re-emit the same mesh —
+// meshes-seen is shared across verbs within a session.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signal2_read_then_milestone_announces_mesh_once() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "sig2", "file1.txt", 1, 5, None)?;
+    append_add(&gix, "sig2", "file2.txt", 1, 5, None)?;
+    set_why(&gix, "sig2", "signal-2 mesh")?;
+    commit_mesh(&gix, "sig2")?;
+
+    let s = sid("sig2");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+
+    // `read` for a FRESH mesh: emits BasicOutput and marks sig2 as seen.
+    let read_out = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&read_out);
+    let read_text = stdout(&read_out);
+    assert!(
+        read_text.contains("# sig2 mesh: signal-2 mesh"),
+        "read must emit BasicOutput for first-time matching FRESH mesh, got:\n{read_text}"
+    );
+
+    // `milestone` with no file edits: sig2 is in meshes-seen (not stale) →
+    // must not re-emit (spec: EDIT rule, mesh already seen and fresh → skip).
+    let ms_out = run_advice(&repo, &s, &["milestone"])?;
+    ok(&ms_out);
+    let ms_text = stdout(&ms_out);
+    assert!(
+        ms_text.is_empty(),
+        "milestone after read of FRESH mesh must produce no output; got:\n{ms_text}"
+    );
+
+    // Combined: the mesh was announced exactly once across both calls.
+    let combined = format!("{read_text}{ms_text}");
+    let count = combined.matches("# sig2 mesh:").count();
+    assert_eq!(
+        count, 1,
+        "mesh must be announced exactly once across read + milestone, count={count}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance signal 6: bash-only file write is detected by next `milestone`.
+//
+// A direct write to a tracked file (no Read/Edit tool — just file I/O) is
+// invisible to the `read` verb but shows up as a diff when `milestone`
+// compares the baseline snapshot against the current workspace tree.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signal6_bash_only_edit_detected_by_milestone() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "sig6", "file1.txt", 1, 5, None)?;
+    append_add(&gix, "sig6", "file2.txt", 1, 5, None)?;
+    set_why(&gix, "sig6", "signal-6 mesh")?;
+    commit_mesh(&gix, "sig6")?;
+
+    let s = sid("sig6");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+
+    // Direct file write — simulates a Bash `printf >> file1.txt` with no
+    // preceding Read/Edit tool call.
+    repo.write_file(
+        "file1.txt",
+        "bash-edit\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    // `milestone` detects file1.txt in the session delta (EDIT rule) and emits
+    // BasicOutput for sig6 (whose anchor overlaps the modified file).
+    let ms_out = run_advice(&repo, &s, &["milestone"])?;
+    ok(&ms_out);
+    let ms_text = stdout(&ms_out);
+    assert!(
+        ms_text.contains("# sig6 mesh: signal-6 mesh"),
+        "milestone must emit BasicOutput when a meshed file was modified by a bash-only write; got:\n{ms_text}"
     );
     Ok(())
 }

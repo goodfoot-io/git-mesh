@@ -15,6 +15,26 @@ BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "$BIN_DIR/.." && pwd)"
 export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
 
+# Prefer the freshly-built test binary so that the four-verb CLI
+# (milestone / stop) is available even before a release install. The
+# `yarn test` script compiles into ${GIT_MESH_CARGO_TARGET_ROOT}/test/;
+# fall back to a workspace-local debug build if that directory doesn't exist.
+WORKSPACE_ROOT_EARLY="$(git -C "$BIN_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+_MESH_TEST_BIN=""
+for _candidate in \
+    "${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/test/debug/git-mesh" \
+    "${WORKSPACE_ROOT_EARLY}/packages/git-mesh/target/debug/git-mesh" \
+  ; do
+  if [ -x "$_candidate" ]; then
+    _MESH_TEST_BIN="$(dirname "$_candidate")"
+    break
+  fi
+done
+if [ -n "$_MESH_TEST_BIN" ]; then
+  export PATH="$_MESH_TEST_BIN:$PATH"
+fi
+unset _candidate _MESH_TEST_BIN WORKSPACE_ROOT_EARLY
+
 PASS=0
 FAIL=0
 TMP_ROOT="$(mktemp -d -t git-mesh-hook-test.XXXXXX)"
@@ -151,12 +171,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 2: PostToolUse on Write surfaces the partner path of the meshed range.
-# Phase 3: Write is no longer in the PostToolUse matcher; milestone/stop stubs
-# not yet implemented. Skipped until Phase 3.
+# Test 2: PostToolUse Bash after a write to a.txt surfaces the partner b.txt.
+# Write is no longer in the PostToolUse matcher; instead a Bash PostToolUse
+# dispatches to `milestone`, which detects file edits via snapshot diff.
 # ---------------------------------------------------------------------------
-log "Test 2: PostToolUse Write surfaces meshed partner (Phase 3 — skipped)"
-ok "Test 2 (skip): Write removed from matcher; milestone not yet implemented (Phase 3)"
+log "Test 2: PostToolUse Bash after write surfaces meshed partner"
+REPO2="$(make_repo repo2)"
+SID2="sess-two"
+run_hook "$BIN_DIR/advice-session-start.sh" \
+  "$(jq -nc --arg s "$SID2" --arg c "$REPO2" \
+    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+assert_rc_zero "SessionStart(repo2)"
+# Modify a.txt (meshed with b.txt) before sending the Bash PostToolUse.
+echo "new-content" >> "$REPO2/a.txt"
+CMD2="echo done"
+PAYLOAD2="$(jq -nc --arg s "$SID2" --arg c "$REPO2" --arg cmd "$CMD2" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t2", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD2"
+assert_rc_zero "PostToolUse(Bash write)"
+assert_stdout_contains "PostToolUse(Bash write)" "b.txt"
 
 # ---------------------------------------------------------------------------
 # Test 3: PostToolUse on Read with offset/limit records a ranged read.
@@ -179,9 +212,9 @@ if [ -f "$READS" ] && jq -e 'select(.path=="b.txt" and .start_line==1 and .end_l
 else
   bad "PostToolUse(Read): expected ranged read in $READS; got: $(cat "$READS" 2>/dev/null || echo MISSING)"
 fi
-# Phase 3: the `read` verb records but does not render; advice is emitted by
-# `milestone` (PostToolUse Bash/mcp) and `stop` which are not yet implemented.
-ok "Test 3 (skip): read verb records only; stdout advice deferred to milestone/stop (Phase 3)"
+# The `read` verb emits BasicOutput immediately for matching meshes. Since
+# b.txt#L1-L3 is in the demo mesh with a.txt, reading b.txt should surface a.txt.
+assert_stdout_contains "PostToolUse(Read)" "a.txt"
 
 # ---------------------------------------------------------------------------
 # Test 4: PostToolUse on a non-matching tool exits 0 silent.
@@ -193,25 +226,11 @@ run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD4"
 assert_rc_zero "PostToolUse(Glob)"
 assert_stdout_empty "PostToolUse(Glob)"
 
-# ---------------------------------------------------------------------------
-# Test 5: UserPromptSubmit records new path mentions and renders advice.
-# Phase 3: UserPromptSubmit hook removed (advice-user-prompt.sh deleted).
-# Skipped until Phase 3.
-# ---------------------------------------------------------------------------
-log "Test 5: UserPromptSubmit (Phase 3 — skipped)"
-ok "Test 5 (skip): UserPromptSubmit hook removed in Phase 2 (Phase 3)"
-
-# ---------------------------------------------------------------------------
-# Test 6: UserPromptSubmit outside a git repo is a silent no-op.
-# Phase 3: UserPromptSubmit hook removed. Skipped until Phase 3.
-# ---------------------------------------------------------------------------
-log "Test 6: UserPromptSubmit outside a git repo is silent (Phase 3 — skipped)"
-ok "Test 6 (skip): UserPromptSubmit hook removed in Phase 2 (Phase 3)"
+# Tests 5 and 6 are deleted: UserPromptSubmit hook (advice-user-prompt.sh) was
+# removed in Phase 2. There is no replacement — that event surface is gone.
 
 # ---------------------------------------------------------------------------
 # Test 7: Stop hook flushes; skipped on max_tokens.
-# Phase 3: `stop` verb not yet implemented (bail!). The early-exit guards
-# (max_tokens silent) still work; the end_turn assertion is skipped.
 # ---------------------------------------------------------------------------
 log "Test 7: Stop hook"
 REPO7="$(make_repo repo7)"
@@ -224,7 +243,9 @@ PAYLOAD7="$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"end_turn", output:""}')"
 run_hook "$BIN_DIR/advice-stop.sh" "$PAYLOAD7"
 assert_rc_zero "Stop(end_turn)"
-ok "Test 7 (skip): stop verb not yet implemented; stdout content check deferred (Phase 3)"
+# b.txt was modified — `stop` detects the edit via EDIT rule and emits
+# BasicOutput for the demo mesh, which includes a.txt as the partner.
+assert_stdout_contains "Stop(end_turn)" "a.txt"
 
 PAYLOAD7B="$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"max_tokens", output:""}')"
@@ -243,21 +264,15 @@ run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD8"
 assert_rc_zero "PostToolUse(no baseline)"
 assert_stdout_empty "PostToolUse(no baseline)"
 
-# ---------------------------------------------------------------------------
-# Test 9: PostToolUse Write resolves the repo from the file path even
-# when cwd points at a different repo.
-# Phase 3: Write removed from matcher; milestone not yet implemented. Skipped.
-# ---------------------------------------------------------------------------
-log "Test 9: PostToolUse Write resolves repo from tool target (Phase 3 — skipped)"
-ok "Test 9 (skip): Write removed from matcher; milestone not yet implemented (Phase 3)"
+# Test 9 is deleted: it tested PostToolUse Write resolving the repo from the
+# file path — Write is no longer in the PostToolUse matcher and has no
+# replacement in the new four-verb CLI surface.
 
 # ---------------------------------------------------------------------------
 # Test 10: PostToolUse Bash with `cd /other-repo && …` resolves to that
 # repo's advice store.
-# Phase 3: milestone verb not yet implemented — Bash dispatches to milestone
-# which returns non-zero (bail!); fail-open yields empty stdout. Skipped.
 # ---------------------------------------------------------------------------
-log "Test 10: PostToolUse Bash parses cd into a separate repo (Phase 3 — skipped)"
+log "Test 10: PostToolUse Bash parses cd into a separate repo"
 REPO10A="$(make_repo repo10a)"
 REPO10B="$(make_repo repo10b)"
 SID10="sess-ten"
@@ -270,14 +285,15 @@ PAYLOAD10="$(jq -nc --arg s "$SID10" --arg c "$REPO10A" --arg cmd "$CMD10" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t10", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD10"
 assert_rc_zero "PostToolUse(Bash cd)"
-ok "Test 10 (skip): milestone not yet implemented; stdout content check deferred (Phase 3)"
+# a.txt was modified in repo10b — milestone detects the edit and emits b.txt
+# (the partner) in the output.
+assert_stdout_contains "PostToolUse(Bash cd)" "b.txt"
 
 # ---------------------------------------------------------------------------
 # Test 11: PostToolUse Bash with `git -C /other-repo …` resolves the
 # target repo even without a cd.
-# Phase 3: milestone verb not yet implemented. Skipped.
 # ---------------------------------------------------------------------------
-log "Test 11: PostToolUse Bash parses git -C target (Phase 3 — skipped)"
+log "Test 11: PostToolUse Bash parses git -C target"
 REPO11A="$(make_repo repo11a)"
 REPO11B="$(make_repo repo11b)"
 SID11="sess-eleven"
@@ -290,7 +306,8 @@ PAYLOAD11="$(jq -nc --arg s "$SID11" --arg c "$REPO11A" --arg cmd "$CMD11" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t11", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD11"
 assert_rc_zero "PostToolUse(Bash git -C)"
-ok "Test 11 (skip): milestone not yet implemented; stdout content check deferred (Phase 3)"
+# a.txt was modified in repo11b — milestone detects the edit and emits b.txt.
+assert_stdout_contains "PostToolUse(Bash git -C)" "b.txt"
 
 # ---------------------------------------------------------------------------
 # Test 12: CLI exit-code split — operational failures (exit 1) vs
@@ -368,11 +385,18 @@ run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD13"
 unset GIT_MESH_ADVICE_DEBUG
 
 assert_rc_zero "PostToolUse(debug)"
-# Phase 3: `read` verb emits no stdout (records only); the debug marker
-# appears in systemMessage only when advice text is rendered (milestone/stop).
-# Defer the marker assertions until Phase 3 when milestone/stop are implemented.
-ok "Test 13 (skip): debug marker in systemMessage deferred; read verb emits no text (Phase 3)"
-ok "Test 13 (skip): additionalContext marker check deferred (Phase 3)"
+# `read` emits BasicOutput for matching meshes. systemMessage must contain
+# the advice text (the demo mesh with partner paths).
+assert_stdout_contains "PostToolUse(debug): systemMessage has advice" "demo mesh"
+# When GIT_MESH_ADVICE_DEBUG=1, the debug separator is appended to
+# systemMessage only when the CLI actually emits stderr. The `read` verb
+# produces no stderr for a normal read — so the separator is absent.
+# additionalContext carries only the raw advice text (no debug block).
+if ! printf '%s' "$HOOK_OUT" | jq -r '.hookSpecificOutput.additionalContext // ""' | grep -qF "git-mesh-advice-debug"; then
+  ok "Test 13: additionalContext free of debug trace"
+else
+  bad "Test 13: additionalContext must not carry debug trace"
+fi
 
   export PATH="$SAVED_PATH"
 fi  # end: MESH_BIN found
