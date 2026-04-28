@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-mesh-monorepo",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/goodfoot-io/git-mesh.git"
