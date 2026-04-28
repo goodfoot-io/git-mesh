@@ -15,7 +15,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Read|Bash|mcp__.*",
+        "matcher": "Read|Edit|Write|MultiEdit|Bash|mcp__.*",
         "hooks": [
           {
             "type": "command",
