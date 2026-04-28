@@ -9,6 +9,7 @@
 
 set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
+trap 'rm -f -- "${_ADVICE_DEBUG_FILE:-}" 2>/dev/null' EXIT
 
 read_hook_input
 

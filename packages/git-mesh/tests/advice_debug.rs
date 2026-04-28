@@ -152,10 +152,17 @@ fn debug_cli_entry_and_exit_lines_present() -> Result<()> {
 
     let (_, stderr) = run_advice_with_env(&repo, &s, true, &[])?;
 
+    // Verify cli-entry carries the correct sid= kv pair — this confirms that
+    // format_line actually serialises key-value pairs, not just the tag.
+    let cli_entry_line = stderr
+        .lines()
+        .find(|l| l.contains("cli-entry"))
+        .expect("no cli-entry line in trace");
     assert!(
-        stderr.lines().any(|l| l.contains("cli-entry")),
-        "no cli-entry line in trace:\n{stderr}"
+        cli_entry_line.contains(&format!("sid={s}")),
+        "cli-entry line missing expected sid={s}; got: {cli_entry_line}"
     );
+
     assert!(
         stderr.lines().any(|l| l.contains("cli-exit")),
         "no cli-exit line in trace:\n{stderr}"

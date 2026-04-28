@@ -4,6 +4,7 @@
 //! one line to stderr prefixed `git-mesh-advice-debug:`. Disabled by default
 //! with a single cached `OnceLock<bool>` read.
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -11,6 +12,13 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 /// Returns `true` when `GIT_MESH_ADVICE_DEBUG` is set to `1` or `true`
 /// (case-insensitive, whitespace-trimmed). The result is cached for the
 /// lifetime of the process.
+///
+/// **Caching note:** the env var is read exactly once via [`OnceLock`] and
+/// the result is frozen for the process lifetime. In-process tests that call
+/// `std::env::set_var` after the first call to `enabled()` will not observe
+/// the change. Integration tests that need to toggle the flag must spawn a
+/// child process (e.g. via `Command::new(env!("CARGO_BIN_EXE_git-mesh"))`)
+/// rather than relying on `set_var`.
 pub fn enabled() -> bool {
     *ENABLED.get_or_init(|| {
         std::env::var("GIT_MESH_ADVICE_DEBUG")
@@ -20,6 +28,31 @@ pub fn enabled() -> bool {
             })
             .unwrap_or(false)
     })
+}
+
+/// Escape a value for inclusion in a debug line.
+///
+/// Bare values pass through unchanged. Values containing a space, tab, `"`,
+/// `\`, or newline are wrapped in double quotes with internal `"`, `\`, and
+/// newlines backslash-escaped, so a downstream split-on-whitespace parser can
+/// reliably tokenise the output.
+fn escape_value(v: &str) -> Cow<'_, str> {
+    if v.bytes().any(|b| matches!(b, b' ' | b'\t' | b'"' | b'\\' | b'\n')) {
+        let mut out = String::with_capacity(v.len() + 2);
+        out.push('"');
+        for c in v.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                _ => out.push(c),
+            }
+        }
+        out.push('"');
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(v)
+    }
 }
 
 /// Build a single debug line.
@@ -34,7 +67,7 @@ pub(crate) fn format_line(tag: &str, kvs: &[(&str, &str)]) -> String {
         line.push(' ');
         line.push_str(k);
         line.push('=');
-        line.push_str(v);
+        line.push_str(&escape_value(v));
     }
     line.push('\n');
     line
@@ -93,6 +126,29 @@ mod tests {
         ]);
         assert!(line.contains("mesh=my-mesh"), "got: {line:?}");
         assert!(line.contains("reason_kind=Terminal"), "got: {line:?}");
+    }
+
+    #[test]
+    fn escape_value_bare_passthrough() {
+        // A plain value with no special characters is returned as-is (Borrowed).
+        let v = "src/foo.rs";
+        assert_eq!(escape_value(v), v);
+    }
+
+    #[test]
+    fn escape_value_space_quoted() {
+        // A value containing a space must be wrapped in double quotes.
+        let v = "my dir/file.rs";
+        let got = escape_value(v);
+        assert_eq!(got, "\"my dir/file.rs\"");
+    }
+
+    #[test]
+    fn escape_value_embedded_quote_and_newline() {
+        // Internal `"` and `\n` must be backslash-escaped inside the quotes.
+        let v = "say \"hi\"\nbye";
+        let got = escape_value(v);
+        assert_eq!(got, "\"say \\\"hi\\\"\\nbye\"");
     }
 
     #[test]

@@ -442,6 +442,8 @@ fn run_advice_render(
                 let key = topic.to_string();
                 if !docs_seen.contains(&key) {
                     emitted_topics.insert(key);
+                } else {
+                    crate::advice_debug!("dropped", "reason" => "docs-seen", "topic" => key);
                 }
             }
         }

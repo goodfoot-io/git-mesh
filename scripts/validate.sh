@@ -5,6 +5,7 @@ set -o pipefail
   yarn typecheck &&
   yarn lint &&
   yarn test &&
+  yarn test:hooks &&
   SKIP_INSTALL=1 yarn build
 } 2>&1 | tee yarn-validate-output.log
 

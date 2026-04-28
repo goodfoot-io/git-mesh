@@ -372,7 +372,11 @@ for candidate in \
 done
 
 if [ -z "$MESH_BIN" ]; then
-  ok "Test 13 (skip): debug-instrumented binary not found; run 'cargo build' in packages/git-mesh first"
+  ok "Test 13 (skip): no candidate binary path exists; run 'cargo build' in packages/git-mesh first"
+elif ! { MESH_HELP="$("$MESH_BIN" --help 2>&1)"; printf '%s' "$MESH_HELP" | grep -q 'advice'; }; then
+  # Binary exists but predates the advice subcommand — this is a hard failure,
+  # not a skip. A stale build should not silently pass the test suite.
+  bad "Test 13: binary at $MESH_BIN exists but does not expose the 'advice' subcommand — rebuild with 'cargo build' in packages/git-mesh"
 else
   SAVED_PATH="$PATH"
   export PATH="$(dirname "$MESH_BIN"):$PATH"
