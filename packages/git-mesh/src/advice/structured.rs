@@ -65,17 +65,18 @@ pub enum Action {
     WholeFile { path: String },
 }
 
-/// Return true when `action` overlaps `anchor` according to the
-/// structured-English spec's overlap predicate:
+/// Return true when `action` overlaps `anchor` on the **read** path.
 ///
+/// Rules:
 /// - `Action::Range` matches only `AnchorExtent::LineRange` anchors on the
 ///   same path where the line spans intersect (`max(starts) <= min(ends)`).
 /// - `Action::WholeFile` matches only `AnchorExtent::WholeFile` anchors on
 ///   the same path.
 ///
 /// Cross-kind matches (range action vs whole-file anchor, or vice versa) are
-/// intentionally excluded: the spec treats them as distinct coverage types.
-pub fn overlaps(action: &Action, anchor: &AnchorResolved) -> bool {
+/// intentionally excluded: the spec treats them as distinct coverage types
+/// and `read` actions always carry exact extent information.
+pub fn read_overlaps(action: &Action, anchor: &AnchorResolved) -> bool {
     let anchor_path = anchor.anchored.path.to_string_lossy();
     match (action, &anchor.anchored.extent) {
         (
@@ -102,6 +103,44 @@ pub fn overlaps(action: &Action, anchor: &AnchorResolved) -> bool {
         }
         // Cross-kind: no match.
         _ => false,
+    }
+}
+
+/// Return true when `action` overlaps `anchor` on the **edit** path.
+///
+/// Same as [`read_overlaps`] for range actions. For `Action::WholeFile`,
+/// matches **both** whole-file and range anchors on the same path, because
+/// snapshot-derived edits carry no hunk bounds — `Action::WholeFile` is a
+/// fallback that means "something changed in this file" and any anchor on
+/// the path is potentially affected.
+pub fn edit_overlaps(action: &Action, anchor: &AnchorResolved) -> bool {
+    let anchor_path = anchor.anchored.path.to_string_lossy();
+    match (action, &anchor.anchored.extent) {
+        // Range action: same strict intersection as read_overlaps.
+        (
+            Action::Range {
+                path,
+                start: a_start,
+                end: a_end,
+            },
+            AnchorExtent::LineRange {
+                start: r_start,
+                end: r_end,
+            },
+        ) => {
+            if path.as_str() != anchor_path.as_ref() {
+                return false;
+            }
+            let lo = (*a_start).max(*r_start);
+            let hi = (*a_end).min(*r_end);
+            lo <= hi
+        }
+        // Range action vs whole-file anchor: no match (same as read_overlaps).
+        (Action::Range { .. }, AnchorExtent::WholeFile) => false,
+        // Whole-file action: matches both whole-file AND range anchors on same path.
+        // This is the relaxed companion: snapshot-derived edits lack hunk bounds,
+        // so any anchor on the path is considered potentially affected.
+        (Action::WholeFile { path }, _) => path.as_str() == anchor_path.as_ref(),
     }
 }
 
