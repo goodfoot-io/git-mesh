@@ -32,7 +32,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     name = "git-mesh",
     about = "Track implicit semantic dependencies in a git repo.",
     version,
-    after_help = "A mesh holds the anchors — line-range or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that names the relationship between them in one sentence: what they form, what one promises, what one governs, what one cites.\n\nBare invocations:\n  git mesh                 list every mesh in the repo\n  git mesh <name>          show one mesh (anchors, why, config)"
+    after_help = "A mesh holds the anchors — line-range or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that names the relationship between them in one sentence: what they form, what one promises, what one governs, what one cites.\n\nBare invocations:\n  git mesh <name>          show one mesh (anchors, why, config)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -178,6 +178,23 @@ pub struct ShowArgs {
 pub struct LsArgs {
     /// Optional `<path>` or `<path>#L<start>-L<end>` to filter by.
     pub target: Option<String>,
+
+    /// Emit one tab-separated row per anchor instead of human blocks.
+    #[arg(long)]
+    pub porcelain: bool,
+
+    /// Filter meshes whose name, why, or anchor addresses match a regex
+    /// (case-insensitive by default; use `(?-i)` to re-enable case sensitivity).
+    #[arg(long, value_name = "REGEX")]
+    pub search: Option<String>,
+
+    /// Skip the first N meshes (after filtering, before --limit).
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub offset: usize,
+
+    /// Cap output at N meshes (after filtering and --offset).
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]

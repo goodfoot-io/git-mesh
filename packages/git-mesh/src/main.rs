@@ -1,7 +1,7 @@
 //! `git-mesh` CLI entrypoint.
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use git_mesh::cli::{self, Cli, Commands, ShowArgs};
 use git_mesh::validation::RESERVED_MESH_NAMES;
 
@@ -48,8 +48,9 @@ fn run() -> Result<i32> {
     // Repo discovery happens after parsing so `--help`, `--version`, and
     // any other clap-handled flag works outside a git repo.
     if args.len() == 1 {
-        let repo = discover_repo()?;
-        return cli::show::run_list(&repo);
+        Cli::command().print_help()?;
+        println!();
+        return Ok(0);
     }
     let first = &args[1];
     let is_flag = first.starts_with('-');
@@ -95,7 +96,11 @@ fn run() -> Result<i32> {
     let repo = discover_repo()?;
     match cli.command {
         Some(cmd) => cli::dispatch(&repo, cmd),
-        None => cli::show::run_list(&repo),
+        None => {
+            Cli::command().print_help()?;
+            println!();
+            Ok(0)
+        }
     }
 }
 

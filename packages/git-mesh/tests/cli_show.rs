@@ -14,13 +14,13 @@ fn seed(repo: &TestRepo, name: &str) -> Result<()> {
 
 #[test]
 
-fn bare_mesh_lists_all_meshes() -> Result<()> {
+fn bare_mesh_prints_help() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "alpha")?;
     seed(&repo, "beta")?;
     let out = repo.mesh_stdout::<[&str; 0], &str>([])?;
-    assert!(out.contains("alpha"));
-    assert!(out.contains("beta"));
+    // Bare git mesh now prints short help (Usage:), not a mesh listing.
+    assert!(out.contains("Usage:"), "expected Usage: in bare output, got: {out}");
     Ok(())
 }
 

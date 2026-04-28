@@ -6,6 +6,7 @@ build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.102"
+regex = "1"
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 fs4 = "0.13"

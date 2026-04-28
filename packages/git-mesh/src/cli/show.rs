@@ -2,12 +2,14 @@
 
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::range::read_range;
+use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Range, RangeExtent};
 use crate::{
-    MeshCommitInfo, list_mesh_names, ls_all, ls_by_path, ls_by_path_range, mesh_commit_info,
-    mesh_commit_info_at, mesh_log, read_mesh, read_mesh_at,
+    MeshCommitInfo, list_mesh_names, mesh_commit_info, mesh_commit_info_at, mesh_log, read_mesh,
+    read_mesh_at,
 };
 use anyhow::Result;
+use regex::RegexBuilder;
 
 // ---------------------------------------------------------------------------
 // Format-string types
@@ -261,22 +263,178 @@ pub(crate) fn render_tokens(
 }
 
 // ---------------------------------------------------------------------------
-// Public run functions
+// Listing pipeline types and helpers
 // ---------------------------------------------------------------------------
 
-pub fn run_list(repo: &gix::Repository) -> Result<i32> {
-    let names = list_mesh_names(repo)?;
-    if names.is_empty() {
-        println!("no meshes");
-        return Ok(0);
-    }
-    for name in names {
-        let m = read_mesh(repo, &name)?;
-        let summary = m.message.lines().next().unwrap_or_default();
-        println!("{name}\t{} anchors\t{summary}", m.ranges.len());
-    }
-    Ok(0)
+#[derive(Debug, PartialEq, Eq)]
+enum MeshState {
+    Committed,
+    Staged,
+    Pending,
 }
+
+struct AnchorEntry {
+    path: String,
+    extent: RangeExtent,
+}
+
+struct MeshListing {
+    name: String,
+    why: String,
+    anchors: Vec<AnchorEntry>,
+    state: MeshState,
+}
+
+fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
+    let committed_names = list_mesh_names(repo)?;
+    let staged_names = list_staged_mesh_names(repo)?;
+
+    let mut listings: Vec<MeshListing> = Vec::new();
+
+    // Collect committed meshes.
+    for name in &committed_names {
+        let mesh = read_mesh(repo, name)?;
+        let mut anchors = Vec::new();
+        for range_id in &mesh.ranges {
+            let r = read_range(repo, range_id)?;
+            anchors.push(AnchorEntry {
+                path: r.path,
+                extent: r.extent,
+            });
+        }
+        // Determine if this committed mesh also has staged ops.
+        let state = if staged_names.iter().any(|s| s == name) {
+            let staging = read_staging(repo, name)?;
+            if staging.adds.is_empty()
+                && staging.removes.is_empty()
+                && staging.configs.is_empty()
+                && staging.why.is_none()
+            {
+                MeshState::Committed
+            } else {
+                MeshState::Staged
+            }
+        } else {
+            MeshState::Committed
+        };
+        let why = mesh.message.trim_end_matches('\n').to_string();
+        listings.push(MeshListing {
+            name: name.clone(),
+            why,
+            anchors,
+            state,
+        });
+    }
+
+    // Collect staging-only (pending) meshes.
+    for name in &staged_names {
+        if committed_names.iter().any(|c| c == name) {
+            continue; // already handled above
+        }
+        let staging = read_staging(repo, name)?;
+        let why = staging.why.unwrap_or_default();
+        let anchors = staging
+            .adds
+            .into_iter()
+            .map(|a| AnchorEntry {
+                path: a.path,
+                extent: a.extent,
+            })
+            .collect();
+        listings.push(MeshListing {
+            name: name.clone(),
+            why,
+            anchors,
+            state: MeshState::Pending,
+        });
+    }
+
+    Ok(listings)
+}
+
+fn apply_path_filter(listings: &mut Vec<MeshListing>, target: &str) -> Result<()> {
+    if target.contains("#L") {
+        let (path, s, e) = parse_range_address(target)?;
+        listings.retain(|l| {
+            l.anchors.iter().any(|a| {
+                if a.path != path {
+                    return false;
+                }
+                match a.extent {
+                    RangeExtent::Whole => true,
+                    RangeExtent::Lines { start, end } => start <= e && end >= s,
+                }
+            })
+        });
+    } else {
+        listings.retain(|l| l.anchors.iter().any(|a| a.path == target));
+    }
+    Ok(())
+}
+
+fn apply_search(listings: &mut Vec<MeshListing>, re: &regex::Regex) {
+    listings.retain(|l| {
+        if re.is_match(&l.name) {
+            return true;
+        }
+        for line in l.why.lines() {
+            if re.is_match(line) {
+                return true;
+            }
+        }
+        for a in &l.anchors {
+            if re.is_match(&a.path) {
+                return true;
+            }
+            let addr = render_range_address(&a.path, a.extent);
+            if re.is_match(&addr) {
+                return true;
+            }
+        }
+        false
+    });
+}
+
+fn render_blocks(page: &[MeshListing]) {
+    for (i, listing) in page.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let marker = match listing.state {
+            MeshState::Committed => String::new(),
+            MeshState::Staged => " (staged)".to_string(),
+            MeshState::Pending => " (pending)".to_string(),
+        };
+        println!("{}{}:", listing.name, marker);
+        for line in listing.why.lines() {
+            if line.is_empty() {
+                println!();
+            } else {
+                println!("  {line}");
+            }
+        }
+        for a in &listing.anchors {
+            let addr = render_range_address(&a.path, a.extent);
+            println!("  - {addr}");
+        }
+    }
+}
+
+fn render_porcelain(page: &[MeshListing]) {
+    for listing in page {
+        for a in &listing.anchors {
+            let range_str = match a.extent {
+                RangeExtent::Lines { start, end } => format!("{start}-{end}"),
+                RangeExtent::Whole => "0-0".to_string(),
+            };
+            println!("{}\t{}\t{}", listing.name, a.path, range_str);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public run functions
+// ---------------------------------------------------------------------------
 
 pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     if args.log {
@@ -356,20 +514,41 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 }
 
 pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
-    let entries = match args.target {
-        None => ls_all(repo)?,
-        Some(t) => {
-            if t.contains("#L") {
-                let (path, s, e) = parse_range_address(&t)?;
-                ls_by_path_range(repo, &path, s, e)?
-            } else {
-                ls_by_path(repo, &t)?
+    let mut listings = collect_listings(repo)?;
+
+    if let Some(ref t) = args.target {
+        apply_path_filter(&mut listings, t)?;
+    }
+
+    if let Some(ref pat) = args.search {
+        match RegexBuilder::new(pat).case_insensitive(true).build() {
+            Ok(re) => apply_search(&mut listings, &re),
+            Err(err) => {
+                eprintln!("git-mesh: invalid --search pattern `{pat}`: {err}");
+                return Ok(2);
             }
         }
-    };
-    for e in entries {
-        println!("{}\t{}\t{}-{}", e.path, e.mesh_name, e.start, e.end);
     }
+
+    listings.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let page: Vec<_> = listings
+        .into_iter()
+        .skip(args.offset)
+        .take(args.limit.unwrap_or(usize::MAX))
+        .collect();
+
+    if page.is_empty() {
+        println!("no meshes");
+        return Ok(0);
+    }
+
+    if args.porcelain {
+        render_porcelain(&page);
+    } else {
+        render_blocks(&page);
+    }
+
     Ok(0)
 }
 

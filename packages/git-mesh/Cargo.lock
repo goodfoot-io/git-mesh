@@ -565,6 +565,7 @@ dependencies = [
  "gix",
  "libc",
  "predicates",
+ "regex",
  "serde",
  "serde_json",
  "sha2",
