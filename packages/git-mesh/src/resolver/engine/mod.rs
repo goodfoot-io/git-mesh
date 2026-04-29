@@ -301,7 +301,17 @@ fn resolve_mesh_with_state(
     })
 }
 
-pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
+fn mesh_is_stale(m: &MeshResolved) -> bool {
+    m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
+}
+
+/// Resolve every mesh in the repository, sorted worst-status-first.
+/// Used by the advice engine, which needs routing context for all meshes
+/// regardless of drift state.
+pub(crate) fn all_meshes(
+    repo: &gix::Repository,
+    options: EngineOptions,
+) -> Result<Vec<MeshResolved>> {
     let names = {
         let _perf = crate::perf::span("resolver.list-meshes");
         list_mesh_names(repo)?
@@ -332,6 +342,13 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
         status_rank(&max_b, &max_a)
     });
     Ok(out)
+}
+
+pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
+    Ok(all_meshes(repo, options)?
+        .into_iter()
+        .filter(mesh_is_stale)
+        .collect())
 }
 
 fn status_rank(a: &AnchorStatus, b: &AnchorStatus) -> std::cmp::Ordering {

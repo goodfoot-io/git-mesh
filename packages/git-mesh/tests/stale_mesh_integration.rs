@@ -815,3 +815,63 @@ fn stale_meshes_sorts_worst_first_smoke() -> Result<()> {
     );
     Ok(())
 }
+
+/// A clean mesh (all anchors Fresh, no pending) must be excluded from `stale_meshes`.
+#[test]
+fn stale_meshes_excludes_clean_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "clean-only")?;
+    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
+    assert!(
+        !all.iter().any(|m| m.name == "clean-only"),
+        "clean mesh must not appear in stale_meshes output"
+    );
+    Ok(())
+}
+
+/// A mesh with one Changed anchor must be included in `stale_meshes`.
+#[test]
+fn stale_meshes_includes_changed_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "drifty")?;
+    repo.write_file(
+        "file1.txt",
+        "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("mutate")?;
+    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
+    assert!(
+        all.iter().any(|m| m.name == "drifty"
+            && m.anchors.iter().any(|a| a.status == AnchorStatus::Changed)),
+        "changed mesh must appear in stale_meshes output"
+    );
+    Ok(())
+}
+
+/// When a repo has both a clean mesh and a stale mesh, only the stale mesh appears.
+#[test]
+fn stale_meshes_filters_clean_leaves_stale() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // "quiet" anchors lines 6-10 (stable); "noisy" anchors lines 1-5 (mutated below).
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "quiet", "file1.txt", 6, 10, None)?;
+    set_why(&gix, "quiet", "stable anchor")?;
+    commit_mesh(&gix, "quiet")?;
+    seed_line_range_mesh(&repo, "noisy")?;
+    // Mutate only line 1 — "noisy" drifts, "quiet" (lines 6-10) stays clean.
+    repo.write_file(
+        "file1.txt",
+        "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("mutate")?;
+    let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
+    assert!(
+        all.iter().any(|m| m.name == "noisy"),
+        "stale mesh must appear"
+    );
+    assert!(
+        !all.iter().any(|m| m.name == "quiet"),
+        "clean mesh must not appear"
+    );
+    Ok(())
+}

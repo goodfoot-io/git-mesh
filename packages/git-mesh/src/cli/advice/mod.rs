@@ -234,7 +234,7 @@ fn run_advice_render(
     // Step 8: load mesh state. Treat any error as empty (greenfield: a
     // missing mesh-state directory is not a render failure).
     let mesh_anchors: Vec<MeshAnchor> =
-        match crate::resolver::stale_meshes(repo, default_engine_options()) {
+        match crate::resolver::all_meshes(repo, default_engine_options()) {
             Ok(meshes) => meshes
                 .into_iter()
                 .flat_map(|m| {
@@ -1206,7 +1206,7 @@ fn run_advice_read(repo: &gix::Repository, session_id: String, anchor: String) -
     })?;
 
     // Load mesh state. Treat any error as empty (greenfield).
-    let meshes = crate::resolver::stale_meshes(repo, default_engine_options()).unwrap_or_default();
+    let meshes = crate::resolver::all_meshes(repo, default_engine_options()).unwrap_or_default();
 
     // Load per-session dedup sets.
     let meshes_seen = store.meshes_seen_set()?;
@@ -1389,7 +1389,7 @@ fn run_advice_milestone(repo: &gix::Repository, session_id: String) -> Result<i3
     let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
 
     // Step 6: load mesh state.
-    let meshes = crate::resolver::stale_meshes(repo, default_engine_options()).unwrap_or_default();
+    let meshes = crate::resolver::all_meshes(repo, default_engine_options()).unwrap_or_default();
 
     // Step 7: load per-session dedup sets.
     let meshes_seen = store.meshes_seen_set()?;
@@ -1736,7 +1736,7 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
     let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
 
     // Step 5: load mesh state.
-    let meshes = crate::resolver::stale_meshes(repo, default_engine_options()).unwrap_or_default();
+    let meshes = crate::resolver::all_meshes(repo, default_engine_options()).unwrap_or_default();
 
     // Step 6: load per-session dedup sets.
     let meshes_seen = store.meshes_seen_set()?;

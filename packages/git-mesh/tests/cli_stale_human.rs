@@ -12,6 +12,14 @@ fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Seed a mesh anchoring lines 6-10, which the `drift` helper does not mutate.
+fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
+    repo.mesh_stdout(["add", name, "file1.txt#L6-L10"])?;
+    repo.mesh_stdout(["why", name, "-m", "seed stable"])?;
+    repo.mesh_stdout(["commit", name])?;
+    Ok(())
+}
+
 fn drift(repo: &TestRepo, msg: &str) -> Result<String> {
     repo.write_file(
         "file1.txt",
@@ -185,5 +193,43 @@ fn workspace_scan_without_name() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale"])?;
     assert_eq!(out.status.code(), Some(1));
+    Ok(())
+}
+
+/// Without `--name`, a clean mesh must not appear in output; only the drifted mesh shows.
+#[test]
+fn workspace_scan_omits_clean_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_stable(&repo, "quiet-mesh")?; // anchors lines 6-10 — unaffected by drift
+    seed(&repo, "drifted-mesh")?; // anchors lines 1-5 — will drift
+    drift(&repo, "mutate")?;
+    let out = repo.run_mesh(["stale"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("drifted-mesh"), "drifted mesh must appear in output");
+    assert!(!stdout.contains("quiet-mesh"), "clean mesh must not appear in output");
+    assert_eq!(out.status.code(), Some(1), "exit 1 because drifted mesh has drift");
+    Ok(())
+}
+
+/// Without `--name`, when all meshes are clean, exit 0 and output is empty.
+#[test]
+fn workspace_scan_all_clean_exit_zero() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "a")?;
+    seed(&repo, "b")?;
+    let out = repo.run_mesh(["stale"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.trim().is_empty(), "output must be empty when all meshes are clean");
+    assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
+    Ok(())
+}
+
+/// With `--name`, a clean mesh must still be shown (explicit request bypasses filter).
+#[test]
+fn named_lookup_returns_clean_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "quiet")?;
+    let out = repo.run_mesh(["stale", "quiet"])?;
+    assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())
 }
