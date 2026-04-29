@@ -1,15 +1,10 @@
-//! `#`-prefixed markdown renderer for advice flushes.
+//! Plain-prose renderer for advice flushes.
 //!
-//! Every output line is prefixed with `#` so the result reads as a comment
-//! in any shell, log, or diff view. Excerpts are fenced with triple
-//! backticks (or four, when the excerpt itself contains ```), language
-//! inferred from the partner path's extension.
-//!
-//! The public entry point `render` consumes `Vec<Suggestion>`. Each
-//! suggestion encodes its type in the `meta` field:
-//!
-//! - Drift-detector suggestions: `meta` is `Some(DriftMeta)`.
-//! - N-ary suggester suggestions: `meta` is `None`.
+//! Output is structured English: a per-mesh BASIC_OUTPUT header that names
+//! the active anchor up front, followed by bullet lines for the non-active
+//! anchors. Documentation-topic blocks emitted under `--documentation` are
+//! wrapped in `<documentation>...</documentation>` so a downstream reader
+//! can route or collapse them as a unit. No line is `# `-prefixed.
 
 use crate::advice::suggestion::{DriftMeta, Suggestion};
 
@@ -36,8 +31,6 @@ pub fn render(
 
     let mut blocks: Vec<String> = Vec::new();
 
-    // Partition into cross-cutting (NewMesh, StagingCrossCut, EmptyMesh) and
-    // per-mesh suggestions, mirroring the previous Candidate-based split.
     let (per_mesh_suggs, cross_cutting_suggs): (Vec<&Suggestion>, Vec<&Suggestion>) =
         suggestions.iter().partition(|s| {
             let reason = drift_reason(s);
@@ -47,7 +40,6 @@ pub fn render(
             )
         });
 
-    // Group per-mesh suggestions by mesh name (from participants[0].name).
     let mut by_mesh: std::collections::BTreeMap<String, Vec<&Suggestion>> =
         std::collections::BTreeMap::new();
     for s in &per_mesh_suggs {
@@ -60,7 +52,6 @@ pub fn render(
         by_mesh.entry(mesh_name).or_default().push(s);
     }
 
-    // Flush-scoped excerpt dedup (path, start, end).
     let mut seen_excerpts: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
         std::collections::BTreeSet::new();
 
@@ -72,15 +63,13 @@ pub fn render(
         blocks.push(render_cross_cutting_suggestion(s));
     }
 
+    let mut doc_block = String::new();
     if documentation {
-        // Doc-topic preamble — only when --documentation is requested.
         for topic in new_doc_topics {
-            blocks.push(render_doc_topic(topic));
+            doc_block.push_str(&render_doc_topic(topic));
         }
 
-        // §12.11 — per-reason hint appendix. Deduped per flush by reason-kind.
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut appendix = String::new();
         for s in suggestions {
             let Some(reason) = drift_reason(s) else {
                 continue;
@@ -91,28 +80,43 @@ pub fn render(
             let Some(hint) = render_hint_for_reason(&reason) else {
                 continue;
             };
-            appendix.push_str(&hint);
-        }
-        if !appendix.is_empty() {
-            blocks.push(appendix);
+            doc_block.push_str(&hint);
         }
     }
+    if !doc_block.is_empty() {
+        let mut wrapped = String::from("<documentation>\n");
+        wrapped.push_str(&doc_block);
+        if !wrapped.ends_with('\n') {
+            wrapped.push('\n');
+        }
+        wrapped.push_str("</documentation>\n");
+        blocks.push(wrapped);
+    }
 
-    // Blank (comment-only) lines between blocks.
     let mut out = String::new();
     for (i, b) in blocks.iter().enumerate() {
         if i > 0 {
-            out.push_str("#\n");
+            out.push('\n');
         }
         out.push_str(b);
     }
     out
 }
 
-/// Extract the reason-kind string from a drift-detector suggestion.
-/// Returns None for n-ary suggester suggestions (where `s.meta` is None).
 fn drift_reason(s: &Suggestion) -> Option<String> {
     s.meta.as_ref().map(|m| m.reason_kind.clone())
+}
+
+/// Format the optional status clause `(MARKER[, clause])`. Returns an empty
+/// string for FRESH (no marker, no clause).
+fn format_status(marker: &str, clause: &str) -> String {
+    let bare = marker.trim_start_matches('[').trim_end_matches(']');
+    match (bare.is_empty(), clause.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!("({clause})"),
+        (false, true) => format!("({bare})"),
+        (false, false) => format!("({bare}, {clause})"),
+    }
 }
 
 fn render_mesh_block(
@@ -120,49 +124,61 @@ fn render_mesh_block(
     suggs: &[&Suggestion],
     seen_excerpts: &mut std::collections::BTreeSet<(String, Option<i64>, Option<i64>)>,
 ) -> String {
-    // Determine the mesh why from the first participant of the first suggestion.
     let why = suggs
         .first()
         .and_then(|s| s.participants.first())
         .map(|p| p.why.as_str())
         .unwrap_or("");
 
-    let mut out = String::new();
-    out.push_str(&format!("# {mesh} mesh: {why}\n"));
+    // Active anchor: the trigger of the user's action. For drift suggestions
+    // with a non-empty `meta.touched_path`, that path/range is active. For
+    // partner-drift (touched_path empty), the partner is the active anchor.
+    // For n-ary suggestions (no meta), participants[0] is active.
+    let first = suggs.first();
+    let active = first.and_then(|s| active_anchor(s));
 
-    // For each suggestion in this block, render its content.
-    // Drift suggestions carry DriftMeta in label; n-ary suggestions do not.
+    let mut out = String::new();
+    if let Some((addr, status)) = &active {
+        if status.is_empty() {
+            out.push_str(&format!("{addr} is in the {mesh} mesh: {why}\n"));
+        } else {
+            out.push_str(&format!("{addr} {status} is in the {mesh} mesh: {why}\n"));
+        }
+    } else {
+        out.push_str(&format!("{mesh} mesh: {why}\n"));
+    }
+
+    let active_key: Option<(String, Option<i64>, Option<i64>)> =
+        first.and_then(|s| active_anchor_key(s));
+
     let mut seen_bullet: std::collections::BTreeSet<(String, Option<i64>, Option<i64>)> =
         std::collections::BTreeSet::new();
+    if let Some(k) = &active_key {
+        seen_bullet.insert(k.clone());
+    }
 
     for s in suggs {
         if let Some(meta) = s.meta.as_ref() {
             let meta = meta.clone();
-            // Drift suggestion: participants[0] = partner, participants[1] = trigger (optional).
-            let partner = s.participants.first();
-
-            // Partner bullet.
-            if let Some(p) = partner {
+            // Partner bullet (skip if partner is the active anchor).
+            if let Some(p) = s.participants.first() {
                 let p_path = p.path.to_string_lossy().to_string();
                 let (ps, pe) = partner_range_from_meta(s, &meta);
                 let key = (p_path.clone(), ps, pe);
                 if seen_bullet.insert(key) {
                     let addr = format_addr(&p_path, ps, pe);
-                    let mut line = format!("# - {addr}");
-                    if !meta.partner_marker.is_empty() {
-                        line.push(' ');
-                        line.push_str(&meta.partner_marker);
-                    }
-                    if !meta.partner_clause.is_empty() {
-                        line.push_str(" — ");
-                        line.push_str(&meta.partner_clause);
-                    }
+                    let status = format_status(&meta.partner_marker, &meta.partner_clause);
+                    let line = if status.is_empty() {
+                        format!("- {addr}")
+                    } else {
+                        format!("- {addr} {status}")
+                    };
                     out.push_str(&truncate_line(&line));
                     out.push('\n');
                 }
             }
 
-            // Touched bullet.
+            // Touched bullet (skip if touched is the active anchor).
             if !meta.touched_path.is_empty() {
                 let key = (
                     meta.touched_path.clone(),
@@ -172,7 +188,7 @@ fn render_mesh_block(
                 if seen_bullet.insert(key) {
                     let addr =
                         format_addr(&meta.touched_path, meta.touched_start, meta.touched_end);
-                    let line = format!("# - {addr}");
+                    let line = format!("- {addr}");
                     out.push_str(&truncate_line(&line));
                     out.push('\n');
                 }
@@ -194,13 +210,13 @@ fn render_mesh_block(
                     if seen_excerpts.insert(key) {
                         let body = read_excerpt_from_meta(&meta);
                         if !body.is_empty() {
-                            out.push_str("#\n");
+                            out.push('\n');
                             let addr = format_addr(
                                 &meta.excerpt_of_path,
                                 meta.excerpt_start,
                                 meta.excerpt_end,
                             );
-                            out.push_str(&format!("# {addr}\n"));
+                            out.push_str(&format!("{addr}\n"));
                             out.push_str(&body);
                         }
                     }
@@ -209,18 +225,21 @@ fn render_mesh_block(
 
             // Commands (L2).
             if meta.density == 2 && !meta.command.is_empty() {
-                out.push_str("#\n");
+                out.push('\n');
                 let lead = command_lead_in_for_reason(&meta.reason_kind);
-                out.push_str(&format!("# {lead}\n"));
+                out.push_str(&format!("{lead}\n"));
                 for line in meta.command.lines() {
-                    out.push_str("#   ");
+                    out.push_str("  ");
                     out.push_str(line);
                     out.push('\n');
                 }
             }
         } else {
-            // N-ary suggestion: render each participant as a bullet.
+            // N-ary suggestion: render each non-active participant as a bullet.
             for (i, p) in s.participants.iter().enumerate() {
+                if i == 0 {
+                    continue;
+                }
                 let p_path = p.path.to_string_lossy().to_string();
                 let (ps, pe) = if p.whole {
                     (None, None)
@@ -228,9 +247,9 @@ fn render_mesh_block(
                     (Some(p.start as i64), Some(p.end as i64))
                 };
                 let key = (p_path.clone(), ps, pe);
-                if i > 0 && seen_bullet.insert(key) {
+                if seen_bullet.insert(key) {
                     let addr = format_addr(&p_path, ps, pe);
-                    let line = format!("# - {addr}");
+                    let line = format!("- {addr}");
                     out.push_str(&truncate_line(&line));
                     out.push('\n');
                 }
@@ -241,14 +260,60 @@ fn render_mesh_block(
     out
 }
 
-/// For drift suggestions, get the partner (participants[0]) start/end,
-/// preferring the DriftMeta-aware whole-file flag from the candidate.
+/// Return `(addr, status)` for the active anchor of a suggestion, or `None`
+/// when no active anchor can be identified.
+fn active_anchor(s: &Suggestion) -> Option<(String, String)> {
+    if let Some(meta) = s.meta.as_ref() {
+        if !meta.touched_path.is_empty() {
+            // The user's action; no per-anchor status carries here today.
+            let addr = format_addr(&meta.touched_path, meta.touched_start, meta.touched_end);
+            return Some((addr, String::new()));
+        }
+        // Partner-drift: partner is the active anchor and carries the marker.
+        let p = s.participants.first()?;
+        let p_path = p.path.to_string_lossy().to_string();
+        let (ps, pe) = partner_range_from_meta(s, meta);
+        let addr = format_addr(&p_path, ps, pe);
+        let status = format_status(&meta.partner_marker, &meta.partner_clause);
+        return Some((addr, status));
+    }
+    // N-ary: participants[0] is the trigger.
+    let p = s.participants.first()?;
+    let p_path = p.path.to_string_lossy().to_string();
+    let (ps, pe) = if p.whole {
+        (None, None)
+    } else {
+        (Some(p.start as i64), Some(p.end as i64))
+    };
+    Some((format_addr(&p_path, ps, pe), String::new()))
+}
+
+fn active_anchor_key(s: &Suggestion) -> Option<(String, Option<i64>, Option<i64>)> {
+    if let Some(meta) = s.meta.as_ref() {
+        if !meta.touched_path.is_empty() {
+            return Some((
+                meta.touched_path.clone(),
+                meta.touched_start,
+                meta.touched_end,
+            ));
+        }
+        let p = s.participants.first()?;
+        let (ps, pe) = partner_range_from_meta(s, meta);
+        return Some((p.path.to_string_lossy().to_string(), ps, pe));
+    }
+    let p = s.participants.first()?;
+    let (ps, pe) = if p.whole {
+        (None, None)
+    } else {
+        (Some(p.start as i64), Some(p.end as i64))
+    };
+    Some((p.path.to_string_lossy().to_string(), ps, pe))
+}
+
 fn partner_range_from_meta(s: &Suggestion, _meta: &DriftMeta) -> (Option<i64>, Option<i64>) {
     participant_range(s, 0)
 }
 
-/// Get (start, end) for participant at index `idx` in a suggestion,
-/// returning (None, None) for whole-file pins.
 fn participant_range(s: &Suggestion, idx: usize) -> (Option<i64>, Option<i64>) {
     let Some(p) = s.participants.get(idx) else {
         return (None, None);
@@ -262,16 +327,14 @@ fn participant_range(s: &Suggestion, idx: usize) -> (Option<i64>, Option<i64>) {
 
 fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
     let Some(meta) = s.meta.as_ref() else {
-        // N-ary cross-cutting — simple list.
         let mut out = String::new();
-        out.push_str("# mesh recommendation:\n");
+        out.push_str("mesh recommendation:\n");
         for p in &s.participants {
-            out.push_str(&format!("# - {}\n", p.path.display()));
+            out.push_str(&format!("- {}\n", p.path.display()));
         }
         return out;
     };
 
-    // Reconstruct from DriftMeta — mirrors the previous render_cross_cutting(Candidate).
     let partner_path = s
         .participants
         .first()
@@ -292,17 +355,17 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
     let mut out = String::new();
     match meta.reason_kind.as_str() {
         REASON_NEW_MESH => {
-            out.push_str("# Possible new mesh over:\n");
-            out.push_str(&format!("# - {}\n", trigger_path));
-            out.push_str(&format!("# - {}\n", partner_path));
+            out.push_str("Possible new mesh over:\n");
+            out.push_str(&format!("- {}\n", trigger_path));
+            out.push_str(&format!("- {}\n", partner_path));
             if !meta.partner_clause.is_empty() {
-                out.push_str(&format!("# {}.\n", meta.partner_clause));
+                out.push_str(&format!("{}.\n", meta.partner_clause));
             }
             if !meta.command.is_empty() {
-                out.push_str("#\n");
-                out.push_str("# To record a new mesh:\n");
+                out.push('\n');
+                out.push_str("To record a new mesh:\n");
                 for line in meta.command.lines() {
-                    out.push_str("#   ");
+                    out.push_str("  ");
                     out.push_str(line);
                     out.push('\n');
                 }
@@ -322,11 +385,11 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
                     let s_start = trigger_start.unwrap_or(0);
                     let s_end = trigger_end.unwrap_or(0);
                     out.push_str(&format!(
-                        "# {staged_mesh} [STAGED] overlaps {other_mesh} at {path}#L{is_}-L{ie}.\n"
+                        "{staged_mesh} (STAGED) overlaps {other_mesh} at {path}#L{is_}-L{ie}.\n"
                     ));
-                    out.push_str(&format!("# - {other_mesh}: {path}#L{os}-L{oe}\n"));
+                    out.push_str(&format!("- {other_mesh}: {path}#L{os}-L{oe}\n"));
                     out.push_str(&format!(
-                        "# - {staged_mesh} [STAGED]: {path}#L{s_start}-L{s_end}\n"
+                        "- {staged_mesh} (STAGED): {path}#L{s_start}-L{s_end}\n"
                     ));
                 }
                 Some("content_differs") if parts.len() >= 6 => {
@@ -336,23 +399,23 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
                     let os = parts[4];
                     let oe = parts[5];
                     out.push_str(&format!(
-                        "# {staged_mesh} [STAGED] re-records {path}#L{os}-L{oe} with content that differs from {other_mesh}.\n"
+                        "{staged_mesh} (STAGED) re-records {path}#L{os}-L{oe} with content that differs from {other_mesh}.\n"
                     ));
-                    out.push_str(&format!("# - {other_mesh}: {path}#L{os}-L{oe}\n"));
-                    out.push_str(&format!("# - {staged_mesh} [STAGED]: {path}#L{os}-L{oe}\n"));
+                    out.push_str(&format!("- {other_mesh}: {path}#L{os}-L{oe}\n"));
+                    out.push_str(&format!("- {staged_mesh} (STAGED): {path}#L{os}-L{oe}\n"));
                 }
                 _ => {
-                    out.push_str(&format!("# {} [STAGED]\n", mesh));
+                    out.push_str(&format!("{} (STAGED)\n", mesh));
                     if !meta.partner_clause.is_empty() {
-                        out.push_str(&format!("# {}.\n", meta.partner_clause));
+                        out.push_str(&format!("{}.\n", meta.partner_clause));
                     }
                 }
             }
             if !meta.command.is_empty() {
-                out.push_str("#\n");
-                out.push_str("# To resolve:\n");
+                out.push('\n');
+                out.push_str("To resolve:\n");
                 for line in meta.command.lines() {
-                    out.push_str("#   ");
+                    out.push_str("  ");
                     out.push_str(line);
                     out.push('\n');
                 }
@@ -362,17 +425,17 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
             let removed = meta.partner_clause.strip_prefix("removed:").unwrap_or("");
             let addrs: Vec<&str> = removed.split(',').filter(|s| !s.is_empty()).collect();
             out.push_str(&format!(
-                "# The staged removal would leave {} with no anchors.\n",
+                "The staged removal would leave {} with no anchors.\n",
                 mesh
             ));
             for addr in &addrs {
-                out.push_str(&format!("# - {}: removing {addr}\n", mesh));
+                out.push_str(&format!("- {}: removing {addr}\n", mesh));
             }
             if !meta.command.is_empty() {
-                out.push_str("#\n");
-                out.push_str("# To either add a replacement anchor or retire the mesh:\n");
+                out.push('\n');
+                out.push_str("To either add a replacement anchor or retire the mesh:\n");
                 for line in meta.command.lines() {
-                    out.push_str("#   ");
+                    out.push_str("  ");
                     out.push_str(line);
                     out.push('\n');
                 }
@@ -430,14 +493,13 @@ fn read_excerpt_from_meta(meta: &DriftMeta) -> String {
     let lang = lang_for(&meta.excerpt_of_path);
     let fence = if body.contains("```") { "````" } else { "```" };
     let mut out = String::new();
-    out.push_str(&format!("# {fence}{lang}\n"));
+    out.push_str(&format!("{fence}{lang}\n"));
     for line in body.lines().take(10) {
-        let t = truncate_line_plain(line);
-        out.push_str("# ");
+        let t = truncate_line(line);
         out.push_str(&t);
         out.push('\n');
     }
-    out.push_str(&format!("# {fence}\n"));
+    out.push_str(&format!("{fence}\n"));
     out
 }
 
@@ -473,20 +535,8 @@ fn truncate_line(line: &str) -> String {
     }
 }
 
-fn truncate_line_plain(line: &str) -> String {
-    let max = MAX_LINE - 2; // account for "# " prefix
-    if line.chars().count() <= max {
-        line.to_string()
-    } else {
-        let mut s: String = line.chars().take(max - 1).collect();
-        s.push('…');
-        s
-    }
-}
-
-// §12.12 doc-topic blocks, verbatim modulo the `# ` prefix added by
-// `render_doc_topic`. Each block is a single source of truth — the test
-// suite asserts the literal text fragments.
+// §12.12 doc-topic blocks. Each block is a single source of truth — the
+// test suite asserts the literal text fragments.
 const TOPIC_BASELINE: &str = "\
 A mesh is a lightweight contract for an agreement that no schema, type,
 or test already enforces. It binds anchors — line-anchor anchors
@@ -647,22 +697,12 @@ pub(crate) fn topic_body(topic: &str) -> Option<&'static str> {
 }
 
 fn render_doc_topic(topic: &str) -> String {
-    // §12.12 — full multi-paragraph block, every line `# `-prefixed
-    // (blank lines become a bare `#`, matching the §12.2 comment-prefix
-    // rule). Unknown topics produce empty output rather than a stub —
-    // fail-closed.
     let Some(body) = topic_body(topic) else {
         return String::new();
     };
-    let mut out = String::new();
-    for line in body.lines() {
-        if line.is_empty() {
-            out.push_str("#\n");
-        } else {
-            out.push_str("# ");
-            out.push_str(line);
-            out.push('\n');
-        }
+    let mut out = String::from(body);
+    if !out.ends_with('\n') {
+        out.push('\n');
     }
     out
 }
@@ -704,7 +744,7 @@ fn render_hint_for_reason(reason: &str) -> Option<String> {
         }
         _ => return None,
     };
-    Some(format!("# {body}\n"))
+    Some(format!("{body}\n"))
 }
 
 #[cfg(test)]
@@ -713,8 +753,6 @@ mod tests {
     use crate::advice::candidates::candidate_to_suggestion;
     use crate::advice::suggestion::Suggestion;
 
-    /// Build a minimal drift Suggestion via candidate_to_suggestion, mirroring
-    /// the old `cand()` helper that built a Candidate.
     fn sugg(mesh: &str, partner: &str) -> Suggestion {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
         let c = Candidate {
@@ -751,35 +789,48 @@ mod tests {
     }
 
     #[test]
-    fn every_line_prefixed_with_hash() {
+    fn no_line_starts_with_hash_prefix() {
         let s = sugg("m1", "b.rs");
         let out = render(&[s], &[], false);
         for line in out.lines() {
             assert!(
-                line.starts_with('#'),
-                "line does not start with #: {line:?}"
+                !line.starts_with("# "),
+                "rendered output must not be `# `-prefixed: {line:?}"
             );
         }
     }
 
     #[test]
-    fn mesh_header_and_partner_address() {
+    fn header_names_active_anchor_then_mesh_then_why() {
+        // No touched_path → partner-drift: partner is the active anchor.
         let s = sugg("m1", "b.rs");
         let out = render(&[s], &[], false);
-        assert!(out.contains("# m1 mesh: why text"));
-        assert!(out.contains("# - b.rs#L1-L10"));
+        assert!(
+            out.contains("b.rs#L1-L10 is in the m1 mesh: why text"),
+            "got:\n{out}"
+        );
     }
 
     #[test]
-    fn blank_comment_lines_between_blocks() {
+    fn active_anchor_excluded_from_bullets() {
+        let s = sugg("m1", "b.rs");
+        let out = render(&[s], &[], false);
+        assert!(
+            !out.contains("- b.rs#L1-L10"),
+            "active anchor must not appear in bullet list: {out}"
+        );
+    }
+
+    #[test]
+    fn blank_line_between_blocks() {
         let s1 = sugg("m1", "b.rs");
         let s2 = sugg("m2", "c.rs");
         let out = render(&[s1, s2], &[], false);
-        assert!(out.contains("#\n"));
+        assert!(out.contains("\n\n"), "blocks must be blank-line separated: {out}");
     }
 
     #[test]
-    fn marker_appended_when_present() {
+    fn marker_appears_in_parens_on_active_anchor() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
         let c = Candidate {
             mesh: "m1".into(),
@@ -808,11 +859,17 @@ mod tests {
         };
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
-        assert!(out.contains("[CHANGED]"));
+        assert!(
+            out.contains("b.rs#L1-L10 (CHANGED) is in the m1 mesh: why text"),
+            "marker must appear in parens on the header: {out}"
+        );
+        assert!(
+            !out.contains("[CHANGED]"),
+            "bracketed marker form must be gone: {out}"
+        );
     }
 
-    /// Bare render (documentation=false) must NOT emit any doc-topic preamble
-    /// (Bug 3). The terminal-states topic must be absent.
+    /// Bare render (documentation=false) must NOT emit any doc-topic preamble.
     #[test]
     fn bare_render_does_not_emit_doc_topic_preamble() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
@@ -848,14 +905,14 @@ mod tests {
             "bare render must not emit terminal-states topic; got:\n{out}"
         );
         assert!(
-            !out.contains("[ORPHANED]"),
-            "bare render must not emit terminal-states body; got:\n{out}"
+            !out.contains("<documentation>"),
+            "bare render must not emit <documentation> tag; got:\n{out}"
         );
     }
 
-    /// --documentation render must emit the doc-topic preamble (Bug 3).
+    /// --documentation render must wrap the doc-topic preamble in <documentation> tags.
     #[test]
-    fn documentation_render_emits_doc_topic_preamble() {
+    fn documentation_render_wraps_doc_block_in_documentation_tag() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
         let c = Candidate {
             mesh: "m1".into(),
@@ -884,16 +941,22 @@ mod tests {
         };
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &["terminal-states".into()], true);
+        assert!(out.contains("<documentation>"), "must open <documentation>: {out}");
+        assert!(out.contains("</documentation>"), "must close </documentation>: {out}");
         assert!(
             out.contains("A terminal marker"),
-            "--documentation render must emit terminal-states topic; got:\n{out}"
+            "must include doc-topic body: {out}"
         );
+        let open = out.find("<documentation>").unwrap();
+        let close = out.find("</documentation>").unwrap();
+        let body_pos = out.find("A terminal marker").unwrap();
+        assert!(open < body_pos && body_pos < close, "body must sit inside tags: {out}");
     }
 
-    /// Partner-drift candidate (trigger_path empty) must render as
-    /// `# - a/one.rs [CHANGED]` with NO `# triggered by` line (Bug 4).
+    /// Partner-drift: trigger empty, partner is the active anchor and carries
+    /// its marker on the header. No bullets.
     #[test]
-    fn partner_drift_renders_bullet_with_marker_no_triggered_by() {
+    fn partner_drift_renders_active_header_with_marker_no_bullets() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
         let c = Candidate {
             mesh: "my-mesh".into(),
@@ -902,7 +965,7 @@ mod tests {
             partner_path: "a/one.rs".into(),
             partner_start: None,
             partner_end: None,
-            trigger_path: String::new(), // empty — partner drift
+            trigger_path: String::new(),
             trigger_start: None,
             trigger_end: None,
             touched_path: String::new(),
@@ -923,20 +986,17 @@ mod tests {
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
         assert!(
-            out.contains("# - a/one.rs [CHANGED]"),
-            "must render partner bullet with marker; got:\n{out}"
+            out.contains("a/one.rs (CHANGED) is in the my-mesh mesh: why text"),
+            "must render partner as active anchor with paren-wrapped marker; got:\n{out}"
         );
         assert!(
-            !out.contains("# triggered by"),
-            "must not emit triggered-by line for empty trigger_path; got:\n{out}"
+            !out.contains("- a/one.rs"),
+            "active anchor must not appear in bullets; got:\n{out}"
         );
     }
 
-    /// Bug 5: a candidate with partner_marker="[RENAMED]" and partner_clause
-    /// "was src/foo.ts" must render as:
-    ///   `# - src/bar.ts [RENAMED] — was src/foo.ts`
     #[test]
-    fn renamed_partner_renders_marker_and_clause() {
+    fn renamed_partner_renders_marker_and_clause_in_parens() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
         let c = Candidate {
             mesh: "link".into(),
@@ -966,15 +1026,14 @@ mod tests {
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
         assert!(
-            out.contains("# - src/bar.ts [RENAMED] — was src/foo.ts"),
-            "must render renamed partner with marker and clause; got:\n{out}"
+            out.contains("src/bar.ts (RENAMED, was src/foo.ts) is in the link mesh: why text"),
+            "must render renamed partner with marker and clause in parens; got:\n{out}"
         );
+        assert!(!out.contains(" — "), "em-dash separator must be gone; got:\n{out}");
     }
 
-    /// Bug 5: an L2 RenameLiteral candidate with a command must emit the
-    /// command block with the correct lead-in.
     #[test]
-    fn rename_literal_l2_renders_command_block() {
+    fn rename_literal_l2_renders_command_block_unprefixed() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
         let c = Candidate {
             mesh: "link".into(),
@@ -1006,25 +1065,23 @@ mod tests {
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
         assert!(
-            out.contains("# to re-record after the rename, run:"),
+            out.contains("to re-record after the rename, run:"),
             "must emit rename lead-in; got:\n{out}"
         );
         assert!(
-            out.contains("#   git mesh rm  link src/foo.ts"),
-            "must emit rm command; got:\n{out}"
+            out.contains("  git mesh rm  link src/foo.ts"),
+            "must emit rm command with two-space indent; got:\n{out}"
         );
         assert!(
-            out.contains("#   git mesh add link src/bar.ts"),
+            out.contains("  git mesh add link src/bar.ts"),
             "must emit add command; got:\n{out}"
         );
         assert!(
-            out.contains("#   git mesh commit link"),
+            out.contains("  git mesh commit link"),
             "must emit commit command; got:\n{out}"
         );
     }
 
-    /// A whole-file partner (partner_start=None, partner_end=None) must render
-    /// as a bare path with no `#L…` suffix (Bug 1).
     #[test]
     fn whole_file_partner_renders_without_line_suffix() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
@@ -1055,9 +1112,10 @@ mod tests {
         };
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
+        // Partner is the active anchor here (touched_path empty).
         assert!(
-            out.contains("# - api/charge.ts\n"),
-            "whole-file partner must render as bare path; got:\n{out}"
+            out.contains("api/charge.ts is in the checkout-flow mesh: why text"),
+            "whole-file partner must render in header without line suffix; got:\n{out}"
         );
         assert!(
             !out.contains("api/charge.ts#L"),
@@ -1066,11 +1124,7 @@ mod tests {
     }
 
     /// Regression: rendered output must never contain the word "group" (case-insensitive,
-    /// whole word) in user-visible text, for any ReasonKind at any density level
-    /// (L0, L1, L2), with or without --documentation. This covers the L1 excerpt
-    /// branch (density >= 1) and the L2 command-lead-in branch (density == 2) in
-    /// addition to the base L0 path.
-    /// Internal symbol names (REASON_NEW_MESH, new_mesh, etc.) are not rendered to output.
+    /// whole word) in user-visible text, for any ReasonKind at any density level.
     #[test]
     fn no_group_word_in_rendered_output() {
         use crate::advice::candidates::{Candidate, Density as CDensity, ReasonKind as CRK};
@@ -1089,7 +1143,6 @@ mod tests {
         ];
         let re = regex_word_group();
 
-        // Create a temp file with enough lines so excerpt reads succeed for L1/L2.
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
         let tmp_path = tmp.path().to_str().unwrap().to_string();
         {
@@ -1135,7 +1188,6 @@ mod tests {
                 let s = candidate_to_suggestion(&c);
                 let topics: Vec<String> =
                     kind.doc_topic().into_iter().map(str::to_string).collect();
-                // Without --documentation
                 let out_bare = render(std::slice::from_ref(&s), &[], false);
                 assert!(
                     !re(&out_bare),
@@ -1144,7 +1196,6 @@ mod tests {
                     density,
                     out_bare
                 );
-                // With --documentation
                 let out_doc = render(&[s], &topics, true);
                 assert!(
                     !re(&out_doc),
@@ -1157,8 +1208,6 @@ mod tests {
         }
     }
 
-    /// Returns a simple pattern that matches the word "group" (case-insensitive,
-    /// whole-word boundaries using ASCII word-character assumptions).
     fn regex_word_group() -> impl Fn(&str) -> bool {
         |text: &str| {
             let lower = text.to_lowercase();

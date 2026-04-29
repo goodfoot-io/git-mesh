@@ -150,13 +150,10 @@ pub fn edit_overlaps(action: &Action, anchor: &AnchorResolved) -> bool {
 /// `BASIC_OUTPUT` template:
 ///
 /// ```text
-/// # <mesh_name> mesh: <why>
-/// # - <active_anchor>  [<status> — if not fresh]
-/// # - <non_active_anchor_1>
-/// # - <non_active_anchor_2>
+/// <active_anchor> [(<status>)] is in the <mesh_name> mesh: <why>
+/// - <non_active_anchor_1>
+/// - <non_active_anchor_2>
 /// ```
-///
-/// Matches the format already emitted by `advice/render.rs`'s mesh block.
 pub struct BasicOutput {
     /// The anchor whose action triggered this output.
     pub active_anchor: String,
@@ -172,20 +169,21 @@ pub struct BasicOutput {
 
 impl fmt::Display for BasicOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "# {} mesh: {}", self.mesh_name, self.why)?;
-
-        // Active anchor line.
-        if let Some(status) = &self.status_if_not_fresh {
-            writeln!(f, "# - {} — {status}", self.active_anchor)?;
-        } else {
-            writeln!(f, "# - {}", self.active_anchor)?;
+        match &self.status_if_not_fresh {
+            Some(status) => writeln!(
+                f,
+                "{} ({status}) is in the {} mesh: {}",
+                self.active_anchor, self.mesh_name, self.why
+            )?,
+            None => writeln!(
+                f,
+                "{} is in the {} mesh: {}",
+                self.active_anchor, self.mesh_name, self.why
+            )?,
         }
-
-        // Non-active anchor lines.
         for anchor in &self.non_active_anchors {
-            writeln!(f, "# - {anchor}")?;
+            writeln!(f, "- {anchor}")?;
         }
-
         Ok(())
     }
 }
@@ -220,15 +218,16 @@ pub fn reconciliation_instructions(mesh: &MeshResolved) -> String {
         .collect();
 
     let mut out = String::new();
-    out.push_str("# Reconcile the following meshes after your edits:\n");
-    out.push_str(&format!("# — {} mesh: {}\n", mesh.name, mesh.message));
+    out.push_str("Reconcile the following meshes after your edits:\n");
+    out.push_str(&format!("{} mesh: {}\n", mesh.name, mesh.message));
     for line in &stale_anchors {
-        out.push_str(&format!("# {line}\n"));
+        out.push_str(line);
+        out.push('\n');
     }
-    out.push_str("#\n");
-    out.push_str("# To re-record an anchor after edits, run:\n");
-    out.push_str("#   git mesh add <name> <path>#L<s>-L<e>\n");
-    out.push_str("#   git mesh commit <name>\n");
+    out.push('\n');
+    out.push_str("To re-record an anchor after edits, run:\n");
+    out.push_str("  git mesh add <name> <path>#L<s>-L<e>\n");
+    out.push_str("  git mesh commit <name>\n");
     out
 }
 
@@ -244,16 +243,16 @@ pub fn reconciliation_instructions(mesh: &MeshResolved) -> String {
 /// Phase 3 ships.
 pub fn creation_instructions(anchors: &[&AnchorResolved]) -> String {
     let mut out = String::new();
-    out.push_str("# Use `git mesh` to document implicit semantic dependencies.\n");
-    out.push_str("# Potential candidates:\n");
+    out.push_str("Use `git mesh` to document implicit semantic dependencies.\n");
+    out.push_str("Potential candidates:\n");
     for a in anchors {
-        out.push_str(&format!("# - {}\n", format_anchor_resolved(a)));
+        out.push_str(&format!("- {}\n", format_anchor_resolved(a)));
     }
-    out.push_str("#\n");
-    out.push_str("# To record a candidate mesh, run:\n");
-    out.push_str("#   git mesh add <mesh-name> <path-1> <path-2>\n");
-    out.push_str("#   git mesh why <mesh-name> -m \"What the anchors do together.\"\n");
-    out.push_str("#   git mesh commit <mesh-name>\n");
+    out.push('\n');
+    out.push_str("To record a candidate mesh, run:\n");
+    out.push_str("  git mesh add <mesh-name> <path-1> <path-2>\n");
+    out.push_str("  git mesh why <mesh-name> -m \"What the anchors do together.\"\n");
+    out.push_str("  git mesh commit <mesh-name>\n");
     out
 }
 

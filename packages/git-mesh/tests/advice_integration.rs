@@ -77,19 +77,19 @@ fn flush_t1_partner_list() -> Result<()> {
     ok(&out);
     let text = stdout(&out);
     assert!(
-        text.contains("# m1 mesh: two-file partnership"),
-        "expected mesh header with why, got:\n{text}"
+        text.contains("file1.txt#L1-L5 is in the m1 mesh: two-file partnership"),
+        "expected header naming active anchor, got:\n{text}"
     );
     assert!(
-        text.contains("# - file2.txt#L1-L5"),
-        "expected partner row, got:\n{text}"
+        text.contains("- file2.txt#L1-L5"),
+        "expected partner bullet, got:\n{text}"
     );
     assert!(
-        text.contains("# - file1.txt#L1-L5"),
-        "trigger anchor must appear in the bullet list, got:\n{text}"
+        !text.contains("- file1.txt#L1-L5"),
+        "active anchor must not appear in the bullet list, got:\n{text}"
     );
     for line in text.lines() {
-        assert!(line.starts_with('#'), "line not prefixed: {line:?}");
+        assert!(!line.starts_with("# "), "line is `# `-prefixed: {line:?}");
     }
     Ok(())
 }
@@ -111,15 +111,15 @@ fn whole_file_read_routes_to_other_ranges_in_each_mesh() -> Result<()> {
     ok(&out);
     let text = stdout(&out);
     assert!(
-        text.contains("# whole mesh: whole-file routing"),
+        text.contains("is in the whole mesh: whole-file routing"),
         "got:\n{text}"
     );
     assert!(
-        !text.contains("# triggered by"),
+        !text.contains("triggered by"),
         "triggered-by line must not be emitted; got:\n{text}"
     );
-    assert!(text.contains("# - file1.txt#L5-L6"), "got:\n{text}");
-    assert!(text.contains("# - file2.txt#L1-L2"), "got:\n{text}");
+    assert!(text.contains("- file1.txt#L5-L6"), "got:\n{text}");
+    assert!(text.contains("- file2.txt#L1-L2"), "got:\n{text}");
     Ok(())
 }
 
@@ -144,15 +144,15 @@ fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
     let out = run_advice(&repo, &s, &["milestone"])?;
     ok(&out);
     let text = stdout(&out);
-    assert!(text.contains("# delta mesh: delta routing"), "got:\n{text}");
+    assert!(text.contains("is in the delta mesh: delta routing"), "got:\n{text}");
     assert!(
-        !text.contains("# triggered by"),
+        !text.contains("triggered by"),
         "triggered-by line must not be emitted; got:\n{text}"
     );
-    assert!(text.contains("# - file2.txt#L1-L5"), "got:\n{text}");
+    assert!(text.contains("- file2.txt#L1-L5"), "got:\n{text}");
     assert!(
-        text.contains("# - file1.txt#L1-L5"),
-        "trigger anchor must appear in the bullet list, got:\n{text}"
+        !text.contains("- file1.txt#L1-L5"),
+        "active anchor must not appear in the bullet list, got:\n{text}"
     );
     Ok(())
 }
@@ -396,7 +396,7 @@ fn signal2_read_then_milestone_announces_mesh_once() -> Result<()> {
     ok(&read_out);
     let read_text = stdout(&read_out);
     assert!(
-        read_text.contains("# sig2 mesh: signal-2 mesh"),
+        read_text.contains("is in the sig2 mesh: signal-2 mesh"),
         "read must emit BasicOutput for first-time matching FRESH mesh, got:\n{read_text}"
     );
 
@@ -412,7 +412,7 @@ fn signal2_read_then_milestone_announces_mesh_once() -> Result<()> {
 
     // Combined: the mesh was announced exactly once across both calls.
     let combined = format!("{read_text}{ms_text}");
-    let count = combined.matches("# sig2 mesh:").count();
+    let count = combined.matches("is in the sig2 mesh:").count();
     assert_eq!(
         count, 1,
         "mesh must be announced exactly once across read + milestone, count={count}"
@@ -453,7 +453,7 @@ fn signal6_bash_only_edit_detected_by_milestone() -> Result<()> {
     ok(&ms_out);
     let ms_text = stdout(&ms_out);
     assert!(
-        ms_text.contains("# sig6 mesh: signal-6 mesh"),
+        ms_text.contains("is in the sig6 mesh: signal-6 mesh"),
         "milestone must emit BasicOutput when a meshed file was modified by a bash-only write; got:\n{ms_text}"
     );
     Ok(())
@@ -488,7 +488,7 @@ fn stop_emits_stale_mesh_after_milestone_session_delta() -> Result<()> {
     ok(&ms_out);
     let ms_text = stdout(&ms_out);
     assert!(
-        ms_text.contains("# f1-mesh mesh:"),
+        ms_text.contains("is in the f1-mesh mesh:"),
         "milestone must emit f1-mesh when file is modified; got:\n{ms_text}"
     );
 
@@ -500,7 +500,7 @@ fn stop_emits_stale_mesh_after_milestone_session_delta() -> Result<()> {
     ok(&stop_out);
     let stop_text = stdout(&stop_out);
     assert!(
-        stop_text.contains("# f1-mesh mesh:"),
+        stop_text.contains("is in the f1-mesh mesh:"),
         "stop must re-emit the stale f1-mesh via session_delta even after milestone; \
          got:\n{stop_text}"
     );

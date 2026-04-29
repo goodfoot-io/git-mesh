@@ -93,11 +93,13 @@ fn l1_suggestion() -> Suggestion {
     candidate_to_suggestion(&l1_candidate())
 }
 
-fn assert_all_lines_commented(out: &str) {
+fn assert_doc_block_wrapped(out: &str) {
+    assert!(out.contains("<documentation>"), "missing <documentation> open tag:\n{out}");
+    assert!(out.contains("</documentation>"), "missing </documentation> close tag:\n{out}");
     for line in out.lines() {
         assert!(
-            line.starts_with('#'),
-            "line does not start with #: {line:?}\nfull output:\n{out}"
+            !line.starts_with("# "),
+            "line is `# `-prefixed: {line:?}\nfull output:\n{out}"
         );
     }
 }
@@ -105,95 +107,95 @@ fn assert_all_lines_commented(out: &str) {
 #[test]
 fn baseline_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["baseline".into()], true);
-    assert_all_lines_commented(&out);
+    assert_doc_block_wrapped(&out);
     assert!(
-        out.contains("# A mesh is a lightweight contract for an agreement that no schema, type,")
+        out.contains("A mesh is a lightweight contract for an agreement that no schema, type,")
     );
-    assert!(out.contains("# The `why` is load-bearing identity, not commentary."));
-    assert!(out.contains("# Inspect a mesh:"));
-    assert!(out.contains("#   git mesh show <name>"));
-    assert!(out.contains("#   git mesh ls <path>"));
-    assert!(out.contains("#   git mesh stale"));
-    assert!(out.contains("#   git mesh why <name>"));
+    assert!(out.contains("The `why` is load-bearing identity, not commentary."));
+    assert!(out.contains("Inspect a mesh:"));
+    assert!(out.contains("  git mesh show <name>"));
+    assert!(out.contains("  git mesh ls <path>"));
+    assert!(out.contains("  git mesh stale"));
+    assert!(out.contains("  git mesh why <name>"));
 }
 
 #[test]
 fn t2_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["editing-across-files".into()], true);
-    assert_all_lines_commented(&out);
-    assert!(out.contains("# When an anchor in a mesh changes, the other anchors in the same mesh"));
-    assert!(out.contains("# A second `git mesh add` over the identical (path, extent) is a"));
-    assert!(out.contains("#   git mesh add <name> <path>#L<s>-L<e>"));
-    assert!(out.contains("#   git mesh commit <name>"));
+    assert_doc_block_wrapped(&out);
+    assert!(out.contains("When an anchor in a mesh changes, the other anchors in the same mesh"));
+    assert!(out.contains("A second `git mesh add` over the identical (path, extent) is a"));
+    assert!(out.contains("  git mesh add <name> <path>#L<s>-L<e>"));
+    assert!(out.contains("  git mesh commit <name>"));
 }
 
 #[test]
 fn t3_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["renames".into()], true);
-    assert!(out.contains("# A related anchor contains the old path as a literal string."));
-    assert!(out.contains("#   git mesh rm  <name> <old-path>"));
-    assert!(out.contains("#   git mesh add <name> <new-path>"));
+    assert!(out.contains("A related anchor contains the old path as a literal string."));
+    assert!(out.contains("  git mesh rm  <name> <old-path>"));
+    assert!(out.contains("  git mesh add <name> <new-path>"));
 }
 
 #[test]
 fn t4_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["shrinking-ranges".into()], true);
-    assert!(out.contains("# The edit reduced a line-anchor anchor to far fewer lines than were"));
-    assert!(out.contains("#   git mesh rm  <name> <path>#L<old-s>-L<old-e>"));
-    assert!(out.contains("#   git mesh add <name> <path>#L<new-s>-L<new-e>"));
+    assert!(out.contains("The edit reduced a line-anchor anchor to far fewer lines than were"));
+    assert!(out.contains("  git mesh rm  <name> <path>#L<old-s>-L<old-e>"));
+    assert!(out.contains("  git mesh add <name> <path>#L<new-s>-L<new-e>"));
 }
 
 #[test]
 fn t5_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["narrow-or-retire".into()], true);
-    assert!(out.contains("# Most anchors in this mesh no longer match what was recorded."));
-    assert!(out.contains("#   git mesh rm     <name> <path>"));
-    assert!(out.contains("#   git mesh delete <name>"));
-    assert!(out.contains("#   git mesh revert <name> <commit-ish>"));
+    assert!(out.contains("Most anchors in this mesh no longer match what was recorded."));
+    assert!(out.contains("  git mesh rm     <name> <path>"));
+    assert!(out.contains("  git mesh delete <name>"));
+    assert!(out.contains("  git mesh revert <name> <commit-ish>"));
 }
 
 #[test]
 fn t6_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["exported-symbols".into()], true);
-    assert!(out.contains("# An exported name changed inside one anchor."));
-    assert!(out.contains("#   git mesh add <name> <path>#L<s>-L<e>"));
+    assert!(out.contains("An exported name changed inside one anchor."));
+    assert!(out.contains("  git mesh add <name> <path>#L<s>-L<e>"));
 }
 
 #[test]
 fn t7_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["recording-a-mesh".into()], true);
-    assert!(out.contains("# These files move together: the session has touched them together and"));
-    assert!(out.contains("# Record:"));
-    assert!(out.contains("#   git mesh add <mesh-name> <path-1> <path-2> [...]"));
-    assert!(out.contains("# Name hierarchically with kebab-case segments separated by `/` —"));
-    assert!(out.contains("# recommended shape `<category>/<subcategory>/<identifier-slug>`, e.g."));
+    assert!(out.contains("These files move together: the session has touched them together and"));
+    assert!(out.contains("Record:"));
+    assert!(out.contains("  git mesh add <mesh-name> <path-1> <path-2> [...]"));
+    assert!(out.contains("Name hierarchically with kebab-case segments separated by `/` —"));
+    assert!(out.contains("recommended shape `<category>/<subcategory>/<identifier-slug>`, e.g."));
 }
 
 #[test]
 fn t8_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["cross-mesh-overlap".into()], true);
-    assert!(out.contains("# An anchor staged on one mesh overlaps an anchor already recorded on"));
-    assert!(out.contains("#   git mesh restore <name>"));
-    assert!(out.contains("#   git mesh delete  <name>"));
+    assert!(out.contains("An anchor staged on one mesh overlaps an anchor already recorded on"));
+    assert!(out.contains("  git mesh restore <name>"));
+    assert!(out.contains("  git mesh delete  <name>"));
 }
 
 #[test]
 fn t9_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["empty-meshes".into()], true);
-    assert!(out.contains("# The staged removal would leave this mesh with no anchors."));
-    assert!(out.contains("#   git mesh add    <name> <path>[#L<s>-L<e>]"));
-    assert!(out.contains("#   git mesh delete <name>"));
+    assert!(out.contains("The staged removal would leave this mesh with no anchors."));
+    assert!(out.contains("  git mesh add    <name> <path>[#L<s>-L<e>]"));
+    assert!(out.contains("  git mesh delete <name>"));
 }
 
 #[test]
 fn t11_topic_block_renders_verbatim() {
     let out = render::render(&[l1_suggestion()], &["terminal-states".into()], true);
     assert!(
-        out.contains("# A terminal marker means the resolver cannot evaluate this anchor at all.")
+        out.contains("A terminal marker means the resolver cannot evaluate this anchor at all.")
     );
-    assert!(out.contains("# [ORPHANED]  — the recorded commit is unreachable."));
-    assert!(out.contains("# [CONFLICT]  — the file is mid-merge. Finish the merge first."));
-    assert!(out.contains("# [SUBMODULE] — the anchor points inside a submodule"));
+    assert!(out.contains("[ORPHANED]  — the recorded commit is unreachable."));
+    assert!(out.contains("[CONFLICT]  — the file is mid-merge. Finish the merge first."));
+    assert!(out.contains("[SUBMODULE] — the anchor points inside a submodule"));
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +235,7 @@ fn documentation_appends_t1_and_t2_hints_after_output() {
         1,
         "t2 hint must appear once: {out}"
     );
-    let body_pos = out.find("# m1 mesh:").expect("mesh body present");
+    let body_pos = out.find("is in the m1 mesh:").expect("mesh body present");
     let t1_pos = out.find(t1_hint).expect("t1 hint present");
     let t2_pos = out.find(t2_hint).expect("t2 hint present");
     assert!(t1_pos > body_pos, "t1 hint must follow body");
@@ -254,7 +256,7 @@ fn documentation_with_t8_does_not_duplicate_topic_block() {
     let hint = "to resolve a cross-mesh overlap";
     assert_eq!(out.matches(hint).count(), 1, "t8 hint must appear once");
     assert!(
-        !out.contains("# An anchor staged on one mesh overlaps an anchor already recorded on"),
+        !out.contains("An anchor staged on one mesh overlaps an anchor already recorded on"),
         "topic block must not be duplicated by --documentation: {out}"
     );
 }

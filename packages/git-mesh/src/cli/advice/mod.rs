@@ -1556,10 +1556,10 @@ fn run_advice_milestone(repo: &gix::Repository, session_id: String) -> Result<i3
                         format!("{}#L{}-L{}", p.path.to_string_lossy(), p.start, p.end)
                     };
                     output.push_str(&format!(
-                        "# If {active_anchor} has implicit semantic dependencies, document with `git mesh`:\n"
+                        "If {active_anchor} has implicit semantic dependencies, document with `git mesh`:\n"
                     ));
                     output.push_str(
-                        "#   git mesh add <name> [anchor 1] [anchor 2] && git mesh why -m <why>\n",
+                        "  git mesh add <name> [anchor 1] [anchor 2] && git mesh why -m <why>\n",
                     );
                 }
 
@@ -1919,7 +1919,7 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
     }
 
     if !reconcile_meshes.is_empty() {
-        output.push_str("# Reconcile the following meshes:\n");
+        output.push_str("Reconcile the following meshes:\n");
         for mesh in &reconcile_meshes {
             // Emit BasicOutput for the first stale anchor as the active anchor.
             let active_anchor_resolved = mesh
@@ -2014,10 +2014,10 @@ fn run_advice_stop(repo: &gix::Repository, session_id: String) -> Result<i32> {
 
             if !block_b_new_fps.is_empty() {
                 output.push_str(
-                    "# Use `git mesh` to document implicit semantic dependencies. Potential candidates:\n",
+                    "Use `git mesh` to document implicit semantic dependencies. Potential candidates:\n",
                 );
                 for line in &anchor_lines {
-                    output.push_str(&format!("# - {line}\n"));
+                    output.push_str(&format!("- {line}\n"));
                 }
 
                 if !flags.has_printed_creation_instructions {
