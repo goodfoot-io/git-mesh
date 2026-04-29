@@ -443,7 +443,11 @@ fn render_cross_cutting_suggestion(s: &Suggestion) -> String {
         }
         _ => {}
     }
-    out
+    if out.is_empty() {
+        out
+    } else {
+        crate::advice::structured::wrap_documentation(&out)
+    }
 }
 
 fn command_lead_in_for_reason(reason: &str) -> &'static str {
@@ -700,11 +704,7 @@ fn render_doc_topic(topic: &str) -> String {
     let Some(body) = topic_body(topic) else {
         return String::new();
     };
-    let mut out = String::from(body);
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out
+    crate::advice::structured::wrap_documentation(body)
 }
 
 /// Per-reason `--documentation` hint sentence (§12.11). One short
