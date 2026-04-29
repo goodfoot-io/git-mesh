@@ -649,6 +649,9 @@ fn render_json(
     findings: &[Finding],
     pending: &[PendingFinding],
 ) -> Result<()> {
+    if findings.is_empty() && pending.is_empty() {
+        return Ok(());
+    }
     let v = json!({
         "schema_version": 2,
         "mesh": meshes.first().map(|m| m.name.clone()).unwrap_or_default(),
@@ -798,6 +801,9 @@ fn pending_json(p: &PendingFinding) -> Value {
 // ---------------------------------------------------------------------------
 
 fn render_junit(findings: &[Finding]) {
+    if findings.is_empty() {
+        return;
+    }
     println!(
         "<testsuite name=\"git-mesh\" tests=\"{}\" failures=\"{}\">",
         findings.len(),

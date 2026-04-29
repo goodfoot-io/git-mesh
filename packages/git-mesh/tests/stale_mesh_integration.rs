@@ -875,3 +875,111 @@ fn stale_meshes_filters_clean_leaves_stale() -> Result<()> {
     );
     Ok(())
 }
+
+/// All-clean repo + `--format=json` → empty stdout, exit 0.
+#[test]
+fn all_clean_json_empty_stdout() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "clean")?;
+    let out = repo.run_mesh(["stale", "--format=json"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "json output must be empty when all meshes are clean, got: {stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
+    Ok(())
+}
+
+/// All-clean repo + `--format=junit` → empty stdout, exit 0.
+#[test]
+fn all_clean_junit_empty_stdout() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "clean")?;
+    let out = repo.run_mesh(["stale", "--format=junit"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "junit output must be empty when all meshes are clean, got: {stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
+    Ok(())
+}
+
+/// All-clean repo + `--format=porcelain` → empty stdout, exit 0.
+#[test]
+fn all_clean_porcelain_empty_stdout() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "clean")?;
+    let out = repo.run_mesh(["stale", "--format=porcelain"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "porcelain output must be empty when all meshes are clean, got: {stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
+    Ok(())
+}
+
+/// All-clean repo + `--format=github` → empty stdout, exit 0.
+#[test]
+fn all_clean_github_empty_stdout() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "clean")?;
+    let out = repo.run_mesh(["stale", "--format=github-actions"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "github output must be empty when all meshes are clean, got: {stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
+    Ok(())
+}
+
+/// Stale-present repo + `--format=json` → non-empty envelope, exit 1.
+#[test]
+fn stale_present_json_emits_envelope() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "drifty")?;
+    repo.write_file(
+        "file1.txt",
+        "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("mutate")?;
+    let out = repo.run_mesh(["stale", "--format=json"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "json output must not be empty when a mesh is stale"
+    );
+    assert!(
+        stdout.contains("schema_version"),
+        "json output must contain schema_version"
+    );
+    assert_eq!(out.status.code(), Some(1), "exit 1 when drift present");
+    Ok(())
+}
+
+/// Stale-present repo + `--format=junit` → non-empty testsuite, exit 1.
+#[test]
+fn stale_present_junit_emits_testsuite() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range_mesh(&repo, "drifty")?;
+    repo.write_file(
+        "file1.txt",
+        "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("mutate")?;
+    let out = repo.run_mesh(["stale", "--format=junit"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "junit output must not be empty when a mesh is stale"
+    );
+    assert!(
+        stdout.contains("<testsuite"),
+        "junit output must contain <testsuite>"
+    );
+    assert_eq!(out.status.code(), Some(1), "exit 1 when drift present");
+    Ok(())
+}
