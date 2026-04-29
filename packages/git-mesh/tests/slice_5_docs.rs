@@ -241,7 +241,9 @@ fn documentation_appends_t1_and_t2_hints_after_output() {
         1,
         "t2 hint must appear once: {out}"
     );
-    let body_pos = out.find("is in the m1 mesh with:").expect("mesh body present");
+    let body_pos = out
+        .find("is in the m1 mesh with:")
+        .expect("mesh body present");
     let t1_pos = out.find(t1_hint).expect("t1 hint present");
     let t2_pos = out.find(t2_hint).expect("t2 hint present");
     assert!(t1_pos > body_pos, "t1 hint must follow body");

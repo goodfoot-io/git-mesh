@@ -11,7 +11,7 @@ use super::layers::{
 };
 use super::session::ResolveSession;
 use crate::anchor::read_anchor;
-use crate::mesh::read::{list_mesh_names, read_mesh};
+use crate::mesh::read::{list_mesh_refs, read_mesh, read_mesh_from_commit};
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet,
     MeshResolved, PendingFinding,
@@ -228,6 +228,29 @@ fn resolve_mesh_with_state(
         let _perf = crate::perf::span("resolver.read-mesh");
         read_mesh(repo, name)?
     };
+    resolve_loaded_mesh_with_state(repo, state, mesh, options)
+}
+
+fn resolve_mesh_with_state_at(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    name: &str,
+    commit_oid: &str,
+    options: EngineOptions,
+) -> Result<MeshResolved> {
+    let mesh = {
+        let _perf = crate::perf::span("resolver.read-mesh");
+        read_mesh_from_commit(repo, name, commit_oid)?
+    };
+    resolve_loaded_mesh_with_state(repo, state, mesh, options)
+}
+
+fn resolve_loaded_mesh_with_state(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    mesh: crate::types::Mesh,
+    options: EngineOptions,
+) -> Result<MeshResolved> {
     let mut anchors = Vec::with_capacity(mesh.anchors.len());
     let mut filtered_by_since: usize = 0;
     {
@@ -273,13 +296,13 @@ fn resolve_mesh_with_state(
         let _perf = crate::perf::span("resolver.resolve-pending");
         {
             for r in &mut anchors {
-                apply_acknowledgment(repo, name, r);
+                apply_acknowledgment(repo, &mesh.name, r);
             }
             let acked_indices: std::collections::HashSet<usize> = anchors
                 .iter()
                 .filter_map(|r| r.acknowledged_by.as_ref().map(|s| s.index))
                 .collect();
-            let mut p = build_pending_findings(repo, name);
+            let mut p = build_pending_findings(repo, &mesh.name);
             for f in &mut p {
                 if let PendingFinding::Add { op, drift, .. } = f {
                     let idx = (op.line_number as usize).saturating_sub(1);
@@ -312,16 +335,22 @@ pub(crate) fn all_meshes(
     repo: &gix::Repository,
     options: EngineOptions,
 ) -> Result<Vec<MeshResolved>> {
-    let names = {
+    let mesh_refs = {
         let _perf = crate::perf::span("resolver.list-meshes");
-        list_mesh_names(repo)?
+        list_mesh_refs(repo)?
     };
-    let mut out = Vec::with_capacity(names.len());
+    let mut out = Vec::with_capacity(mesh_refs.len());
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
     {
         let _perf = crate::perf::span("resolver.resolve-meshes");
-        for name in names {
-            out.push(resolve_mesh_with_state(repo, &mut state, &name, options)?);
+        for (name, commit_oid) in mesh_refs {
+            out.push(resolve_mesh_with_state_at(
+                repo,
+                &mut state,
+                &name,
+                &commit_oid,
+                options,
+            )?);
         }
     }
     state.finish(repo);
@@ -349,6 +378,29 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
         .into_iter()
         .filter(mesh_is_stale)
         .collect())
+}
+
+pub(crate) fn resolve_meshes_in_order(
+    repo: &gix::Repository,
+    names: &[String],
+    options: EngineOptions,
+) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
+    let committed_refs: HashMap<String, String> = list_mesh_refs(repo)?.into_iter().collect();
+    let mut out = Vec::with_capacity(names.len());
+    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    {
+        let _perf = crate::perf::span("resolver.resolve-meshes");
+        for name in names {
+            let resolved = if let Some(commit_oid) = committed_refs.get(name) {
+                resolve_mesh_with_state_at(repo, &mut state, name, commit_oid, options)
+            } else {
+                resolve_mesh_with_state(repo, &mut state, name, options)
+            };
+            out.push((name.clone(), resolved));
+        }
+    }
+    state.finish(repo);
+    Ok(out)
 }
 
 fn status_rank(a: &AnchorStatus, b: &AnchorStatus) -> std::cmp::Ordering {

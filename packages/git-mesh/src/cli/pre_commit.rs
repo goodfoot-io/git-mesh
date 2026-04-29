@@ -12,7 +12,7 @@
 use crate::Error;
 use crate::cli::PreCommitArgs;
 use crate::mesh::read::list_mesh_names;
-use crate::resolver::{build_pending_findings, resolve_mesh};
+use crate::resolver::{build_pending_findings, resolve_meshes_in_order};
 use crate::types::{
     AnchorExtent, AnchorStatus, DriftSource, EngineOptions, Finding, LayerSet, MeshResolved,
     PendingDrift, PendingFinding,
@@ -39,8 +39,12 @@ pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32
     // surfaced to the hook. `list_mesh_names` walks committed refs only.
     let names = mesh_names_with_staging(repo)?;
     let mut meshes: Vec<MeshResolved> = Vec::with_capacity(names.len());
-    for name in &names {
-        match resolve_mesh(repo, name, options) {
+    let resolved = {
+        let _perf = crate::perf::span("pre-commit.resolve-meshes");
+        resolve_meshes_in_order(repo, &names, options)?
+    };
+    for (name, result) in resolved {
+        match result {
             Ok(m) => meshes.push(m),
             Err(Error::MeshNotFound(_)) => {
                 // Staging-only mesh (no commit yet). Surface its
@@ -51,7 +55,7 @@ pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32
                     name: name.clone(),
                     message: String::new(),
                     anchors: Vec::new(),
-                    pending: build_pending_findings(repo, name),
+                    pending: build_pending_findings(repo, &name),
                 });
             }
             Err(e) => return Err(e.into()),

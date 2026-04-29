@@ -205,9 +205,19 @@ fn workspace_scan_omits_clean_mesh() -> Result<()> {
     drift(&repo, "mutate")?;
     let out = repo.run_mesh(["stale"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("drifted-mesh"), "drifted mesh must appear in output");
-    assert!(!stdout.contains("quiet-mesh"), "clean mesh must not appear in output");
-    assert_eq!(out.status.code(), Some(1), "exit 1 because drifted mesh has drift");
+    assert!(
+        stdout.contains("drifted-mesh"),
+        "drifted mesh must appear in output"
+    );
+    assert!(
+        !stdout.contains("quiet-mesh"),
+        "clean mesh must not appear in output"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "exit 1 because drifted mesh has drift"
+    );
     Ok(())
 }
 
@@ -219,7 +229,10 @@ fn workspace_scan_all_clean_exit_zero() -> Result<()> {
     seed(&repo, "b")?;
     let out = repo.run_mesh(["stale"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.trim().is_empty(), "output must be empty when all meshes are clean");
+    assert!(
+        stdout.trim().is_empty(),
+        "output must be empty when all meshes are clean"
+    );
     assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
     Ok(())
 }

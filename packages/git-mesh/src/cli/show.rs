@@ -4,7 +4,7 @@ use crate::anchor::read_anchor;
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Anchor, AnchorExtent};
-use crate::{MeshCommitInfo, list_mesh_names, mesh_commit_info_at, mesh_log, read_mesh_at};
+use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
 use anyhow::Result;
 use regex::RegexBuilder;
 use std::collections::HashSet;
@@ -283,27 +283,46 @@ struct MeshListing {
 }
 
 fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
-    let committed_names = {
+    collect_listings_with_options(repo, true, true)
+}
+
+fn collect_listings_with_options(
+    repo: &gix::Repository,
+    include_why: bool,
+    include_state: bool,
+) -> Result<Vec<MeshListing>> {
+    let committed_refs = {
         let _perf = crate::perf::span("ls.list-committed-meshes");
-        list_mesh_names(repo)?
+        crate::mesh::read::list_mesh_refs(repo)?
     };
+    let committed_names: Vec<&str> = committed_refs
+        .iter()
+        .map(|(name, _oid)| name.as_str())
+        .collect();
     let staged_names = {
         let _perf = crate::perf::span("ls.list-staged-meshes");
         list_staged_mesh_names(repo)?
     };
 
     let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
-    let committed_name_set: HashSet<&str> = committed_names.iter().map(String::as_str).collect();
+    let committed_name_set: HashSet<&str> = committed_names.iter().copied().collect();
     let mut listings: Vec<MeshListing> =
-        Vec::with_capacity(committed_names.len() + staged_names.len());
-
+        Vec::with_capacity(committed_refs.len() + staged_names.len());
     // Collect committed meshes.
     {
         let _perf = crate::perf::span("ls.read-committed-meshes");
-        for name in &committed_names {
-            let mesh = crate::mesh::read::read_mesh_listing(repo, name)?;
+        for (name, commit_oid) in &committed_refs {
+            let (message, anchor_ids) = if include_why {
+                let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
+                (mesh.message, mesh.anchors)
+            } else {
+                (
+                    String::new(),
+                    crate::mesh::read::read_mesh_anchor_ids_at(repo, commit_oid)?,
+                )
+            };
             let mut anchors = Vec::new();
-            for anchor_id in &mesh.anchors {
+            for anchor_id in &anchor_ids {
                 let r = read_anchor(repo, anchor_id)?;
                 anchors.push(AnchorEntry {
                     path: r.path,
@@ -311,7 +330,7 @@ fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
                 });
             }
             // Determine if this committed mesh also has staged ops.
-            let state = if staged_name_set.contains(name.as_str()) {
+            let state = if include_state && staged_name_set.contains(name.as_str()) {
                 let staging = read_staging(repo, name)?;
                 if staging.adds.is_empty()
                     && staging.removes.is_empty()
@@ -325,7 +344,7 @@ fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
             } else {
                 MeshState::Committed
             };
-            let why = mesh.message.trim_end_matches('\n').to_string();
+            let why = message.trim_end_matches('\n').to_string();
             listings.push(MeshListing {
                 name: name.clone(),
                 why,
@@ -542,9 +561,15 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 }
 
 pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
+    let include_why = !args.porcelain || args.search.is_some();
+    let include_state = !args.porcelain;
     let mut listings = {
         let _perf = crate::perf::span("ls.collect");
-        collect_listings(repo)?
+        if include_why && include_state {
+            collect_listings(repo)?
+        } else {
+            collect_listings_with_options(repo, include_why, include_state)?
+        }
     };
 
     if let Some(ref t) = args.target {

@@ -189,6 +189,39 @@ pub(crate) fn list_refs_stripped(repo: &gix::Repository, prefix: &str) -> Result
     Ok(out)
 }
 
+/// List ref names and peeled target OIDs with a given prefix, returning the
+/// basename component after the prefix plus the object id.
+pub(crate) fn list_refs_stripped_with_oids(
+    repo: &gix::Repository,
+    prefix: &str,
+) -> Result<Vec<(String, String)>> {
+    let iter = repo
+        .references()
+        .map_err(|e| Error::Git(format!("refs: {e}")))?;
+    let full = if prefix.ends_with('/') {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/")
+    };
+    let platform = iter
+        .prefixed(full.as_str())
+        .map_err(|e| Error::Git(format!("refs prefix: {e}")))?;
+    let mut out = Vec::new();
+    for r in platform {
+        let mut r = r.map_err(|e| Error::Git(format!("ref iter: {e}")))?;
+        let full_name = r.name().as_bstr().to_string();
+        if let Some(rest) = full_name.strip_prefix(&full) {
+            let oid = r
+                .peel_to_id()
+                .map_err(|e| Error::Git(format!("peel ref `{full_name}`: {e}")))?
+                .detach()
+                .to_string();
+            out.push((rest.to_string(), oid));
+        }
+    }
+    Ok(out)
+}
+
 /// Resolve `HEAD` to a commit OID.
 pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
     let id = repo

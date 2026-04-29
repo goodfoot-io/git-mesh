@@ -57,15 +57,29 @@ pub fn list_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
     Ok(names)
 }
 
+pub(crate) fn list_mesh_refs(repo: &gix::Repository) -> Result<Vec<(String, String)>> {
+    let mut refs = git::list_refs_stripped_with_oids(repo, "refs/meshes/v1")?;
+    refs.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(refs)
+}
+
 pub fn read_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
     read_mesh_at(repo, name, None)
 }
 
 pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
     let commit_oid = resolve_mesh_revision(repo, name, commit_ish)?;
-    let message = git::commit_meta(repo, &commit_oid)?.message;
-    let anchors = git_show_file_lines(repo, &commit_oid, "anchors").unwrap_or_default();
-    let config = read_config_blob(repo, &commit_oid).unwrap_or_else(|_| default_config());
+    read_mesh_from_commit(repo, name, &commit_oid)
+}
+
+pub(crate) fn read_mesh_from_commit(
+    repo: &gix::Repository,
+    name: &str,
+    commit_oid: &str,
+) -> Result<Mesh> {
+    let message = git::commit_meta(repo, commit_oid)?.message;
+    let anchors = git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default();
+    let config = read_config_blob(repo, commit_oid).unwrap_or_else(|_| default_config());
     Ok(Mesh {
         name: name.to_string(),
         anchors,
@@ -79,10 +93,19 @@ pub(crate) struct MeshListingRecord {
     pub anchors: Vec<String>,
 }
 
-pub(crate) fn read_mesh_listing(repo: &gix::Repository, name: &str) -> Result<MeshListingRecord> {
-    let commit_oid = resolve_mesh_revision(repo, name, None)?;
-    let message = git::commit_meta(repo, &commit_oid)?.message;
-    let anchors = git_show_file_lines(repo, &commit_oid, "anchors").unwrap_or_default();
+pub(crate) fn read_mesh_anchor_ids_at(
+    repo: &gix::Repository,
+    commit_oid: &str,
+) -> Result<Vec<String>> {
+    Ok(git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default())
+}
+
+pub(crate) fn read_mesh_listing_at(
+    repo: &gix::Repository,
+    commit_oid: &str,
+) -> Result<MeshListingRecord> {
+    let message = git::commit_meta(repo, commit_oid)?.message;
+    let anchors = git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default();
     Ok(MeshListingRecord { message, anchors })
 }
 

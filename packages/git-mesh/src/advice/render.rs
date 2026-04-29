@@ -1162,7 +1162,10 @@ mod tests {
             out.contains("api/charge.ts is in the checkout-flow mesh with:\n"),
             "whole-file partner must render in header without line suffix; got:\n{out}"
         );
-        assert!(out.contains("\nwhy text\n"), "why must follow the bullets; got:\n{out}");
+        assert!(
+            out.contains("\nwhy text\n"),
+            "why must follow the bullets; got:\n{out}"
+        );
         assert!(
             !out.contains("api/charge.ts#L"),
             "whole-file partner must not have #L suffix; got:\n{out}"

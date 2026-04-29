@@ -841,8 +841,9 @@ fn stale_meshes_includes_changed_mesh() -> Result<()> {
     repo.commit_all("mutate")?;
     let all = stale_meshes(&repo.gix_repo()?, EngineOptions::full())?;
     assert!(
-        all.iter().any(|m| m.name == "drifty"
-            && m.anchors.iter().any(|a| a.status == AnchorStatus::Changed)),
+        all.iter()
+            .any(|m| m.name == "drifty"
+                && m.anchors.iter().any(|a| a.status == AnchorStatus::Changed)),
         "changed mesh must appear in stale_meshes output"
     );
     Ok(())

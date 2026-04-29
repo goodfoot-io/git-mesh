@@ -31,6 +31,8 @@ Important benchmark outputs preserved locally under ignored `profiling/`:
 - `profiling/bench-mesh-scale.smoke.md` and `.csv`: synthetic 100-mesh mixed-anchor smoke across broad operations and wiki-style filtered `ls`.
 - `profiling/bench-mesh-scale.1000x2.md` and `.csv`: synthetic 1,000-mesh, 2-anchor mixed workload.
 - `profiling/git-mesh-profile.1000x2.*.err` and `.out`: direct `GIT_MESH_PERF=1` logs for 1,000-mesh `ls`, filtered `ls`, and `stale`.
+- `profiling/bench-mesh-scale.after.100x2.md` and `.csv`: post-pass 100-mesh, 2-anchor mixed workload with process-per-query wiki samples.
+- `profiling/git-mesh-profile.after.1000x2.*.err` and `.out`: post-pass direct `GIT_MESH_PERF=1` logs for 1,000-mesh `ls`, filtered `ls`, `stale`, and `pre-commit`.
 
 ## Optimizations Applied
 
@@ -47,6 +49,9 @@ Important benchmark outputs preserved locally under ignored `profiling/`:
 - Avoided reading mesh config blobs in `git mesh ls`, which only needs the mesh why text and anchor ids.
 - Replaced repeated linear staged/committed name checks in `git mesh ls` with command-local `HashSet` membership.
 - Removed a redundant post-render mesh commit info lookup from default `git mesh show <name>`.
+- Added a mesh-ref enumeration path that carries each mesh ref's target OID into bulk reads. `ls`, workspace-wide `stale`, and `pre-commit` no longer parse the same mesh revision once during listing and again during the mesh read.
+- Made `git mesh ls --porcelain` skip committed mesh why text and staged-state reads unless `--search` or human rendering needs them.
+- Reworked `git mesh pre-commit` to resolve committed meshes through one shared resolver state, matching the workspace-wide `stale` reuse pattern while preserving staging-only mesh reporting.
 
 ## Current Results
 
@@ -87,24 +92,43 @@ Direct `GIT_MESH_PERF=1` on the kept 1,000-mesh fixture:
 | `ls src/module_001.rs#L15-L19 --porcelain` | 87.477 ms | list mesh refs 6.074 ms; read committed mesh/anchor records 81.101 ms; path filter 0.069 ms |
 | `stale --no-exit-code` | 2,576.988 ms | list meshes 6.287 ms; init layers 8.685 ms; resolve all meshes 2,570.378 ms; render human 6.310 ms |
 
+Post-pass direct `GIT_MESH_PERF=1` on a fresh 1,000-mesh, 2-anchor mixed fixture:
+
+| operation | total | notable spans |
+|---|---:|---|
+| `ls --porcelain` | 91.656 ms | list mesh refs 19.135 ms; read committed mesh/anchor records 70.977 ms; sort/page/render 1.361 ms |
+| `ls src/module_001.rs#L15-L19 --porcelain` | 89.138 ms | list mesh refs 19.131 ms; read committed mesh/anchor records 69.583 ms; path filter 0.220 ms |
+| `stale --no-exit-code` | 1,718.633 ms | resolve all meshes 1,718.439 ms; resolve mesh loop 1,695.391 ms; render human 0.001 ms |
+| `pre-commit --no-exit-code` | 2,643.159 ms | shared resolve mesh loop 2,576.382 ms; pre-commit resolve wrapper 2,631.430 ms |
+
+Post-pass 100-mesh, 2-anchor mixed harness sample:
+
+| meshes | anchors/mesh | ls --porcelain | filtered ls hit | filtered ls miss | stale | pre-commit | wiki hit workload | wiki miss workload |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 2 | 0.0210s | 0.0737s | 0.0264s | 0.4145s | 0.4399s | 3 queries / 0.1367s | 3 queries / 0.1470s |
+
 Top bottlenecks found:
 
 - Filtered `ls` is still O(all committed mesh/anchor records). The path/range filter is cheap once records are materialized; the remaining bottleneck is the current ref/object layout and lack of an authoritative path-oriented index.
 - Workspace-wide `stale` at 1,000 meshes is dominated by repeated anchor resolution, not mesh ref enumeration or rendering.
 - `pre-commit` is substantially slower than plain `stale` on the synthetic fixture and needs a separate hook-path profile before changing behavior.
 - `show <name>` remains effectively O(anchors in that mesh) at this scale.
+- Mesh-ref re-resolution was a measurable bulk-read cost. Carrying mesh ref OIDs from enumeration into `ls`, `stale`, and `pre-commit` improved the 1,000-mesh `stale` direct run from the prior documented 2.577 s to 1.719 s on the new fixture, and reduced `pre-commit` from the prior 7.779 s harness result to 2.643 s direct perf on the new fixture.
 
 Accepted experiments:
 
 - Keep the current storage model for this pass and continue evolutionary read-path fixes.
 - Add a synthetic benchmark harness before attempting a schema change.
 - Use command-local data structures only; no persistent cache or sidecar cache state was added.
+- Reuse mesh ref target OIDs in bulk operations. This is command-local state derived from authoritative Git refs and avoids repeated revision parsing.
+- Share one resolver state across `pre-commit` committed mesh resolution.
 
 Rejected or deferred experiments:
 
 - Durable path/range index: likely needed for 10,000-mesh wiki workloads, but deferred until the new harness completes 10,000-mesh, packed-ref, and maintenance variants. If added, it should be authoritative Git-backed mesh metadata, not a derived cache.
 - Reftable-specific path: deferred because local fixture coverage and Git support detection still need to be added to the harness.
 - Automatic Git maintenance during normal CLI operations: deferred to avoid surprising repository mutation. The harness can measure `--pack-refs` and `--maintenance` variants explicitly.
+- Command-local anchor-ref OID snapshot: rejected for now. On the 1,000-mesh fixture it added a 30-60 ms namespace scan/peel cost to `ls` and regressed `stale` to about 4.7 s because the resolver already benefits from targeted anchor ref reads and object reuse.
 
 ## Validation
 
@@ -112,7 +136,9 @@ Completed:
 
 - `yarn lint` in `packages/git-mesh`
 - `yarn typecheck` in `packages/git-mesh`
-- `yarn test` in `packages/git-mesh`: 647 passed, 48 skipped
-- `bash -n scripts/bench-mesh-scale.sh`
+- Focused `yarn test -E 'binary(cli_ls)'`: 26 passed
+- Focused `yarn test -E 'binary(pre_commit_hook_integration)'`: 10 passed
+- Focused `yarn test -E 'binary(stale_mesh_integration)'`: 35 passed
+- `yarn test` in `packages/git-mesh`: 659 passed, 48 skipped
 - `cargo fmt --check` in `packages/git-mesh`
-- `yarn validate` from the workspace root: 647 Rust tests passed, hook tests passed, release build and VSIX packaging passed
+- `yarn validate` from the workspace root: 659 Rust tests passed, hook tests passed, release build and VSIX packaging passed
