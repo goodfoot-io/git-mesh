@@ -155,24 +155,14 @@ fn parse_digits(bytes: &[u8]) -> Option<i64> {
     Some(v)
 }
 
-/// Whether a touch record is a whole-file edit (both lines == 0 in JS terms).
-///
-/// In JS: `isEdit(e)` returns true when `start_line === 0 && end_line === 0`.
-/// `TouchInterval` stores u32, so 0 is the sentinel.
-fn is_edit_touch(t: &TouchInterval) -> bool {
-    t.start_line == 0 && t.end_line == 0
+/// Touches always represent whole-file changes attributed to one tool call.
+fn is_edit_touch(_t: &TouchInterval) -> bool {
+    true
 }
 
 /// Whether a ReadRecord carries a real line range.
-///
-/// In JS: `isRanged(e)` returns true when `start_line > 0 && end_line > 0`.
 fn is_ranged_read(r: &ReadRecord) -> bool {
     matches!((r.start_line, r.end_line), (Some(s), Some(e)) if s > 0 && e > 0)
-}
-
-/// Whether a TouchInterval carries a real line range (not an edit).
-fn is_ranged_touch(t: &TouchInterval) -> bool {
-    t.start_line > 0 && t.end_line > 0
 }
 
 /// Stable event key for dedup/dump detection, mirroring JS `eventKey`.
@@ -191,7 +181,7 @@ fn read_event_key(r: &ReadRecord) -> String {
 }
 
 fn touch_event_key(t: &TouchInterval) -> String {
-    format!("{}|{}-{}|{}", t.path, t.start_line, t.end_line, t.ts)
+    format!("{}|0-0|{}", t.path, t.ts)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -221,14 +211,9 @@ pub fn build_op_stream(session: &SessionRecord, cfg: &SuggestConfig) -> Vec<Op> 
         })
         .collect();
 
-    let touches_filtered: Vec<&TouchInterval> = session
-        .touches
-        .iter()
-        .filter(|t| {
-            is_edit_touch(t)
-                || !read_keys.contains(&format!("{}#{}-{}", t.path, t.start_line, t.end_line))
-        })
-        .collect();
+    // All touches are whole-file edits (no line-range mirror to dedup against reads).
+    let _ = &read_keys;
+    let touches_filtered: Vec<&TouchInterval> = session.touches.iter().collect();
 
     // ── Step 2: detect and drop tree-diff dumps ───────────────────────────────
     // Reads: same-ts groups of size >= TREE_DIFF_BURST where every entry has
@@ -298,28 +283,17 @@ pub fn build_op_stream(session: &SessionRecord, cfg: &SuggestConfig) -> Vec<Op> 
     }
 
     for t in &touches_filtered {
-        if is_edit_touch(t) {
-            if dump_edits.contains(&touch_event_key(t)) {
-                continue;
-            }
-            evs.push(RawEv {
-                ts_ms: parse_ts_ms(&t.ts),
-                kind: OpKind::Edit,
-                path: t.path.clone(),
-                start_line: None,
-                end_line: None,
-                ranged: false,
-            });
-        } else {
-            evs.push(RawEv {
-                ts_ms: parse_ts_ms(&t.ts),
-                kind: OpKind::TouchRead,
-                path: t.path.clone(),
-                start_line: Some(t.start_line),
-                end_line: Some(t.end_line),
-                ranged: is_ranged_touch(t),
-            });
+        if dump_edits.contains(&touch_event_key(t)) {
+            continue;
         }
+        evs.push(RawEv {
+            ts_ms: parse_ts_ms(&t.ts),
+            kind: OpKind::Edit,
+            path: t.path.clone(),
+            start_line: None,
+            end_line: None,
+            ranged: false,
+        });
     }
 
     // Sort: ascending ts_ms; on tie reads sort before non-reads (mirrors JS
@@ -383,14 +357,16 @@ mod tests {
             start_line: start,
             end_line: end,
             ts: ts.to_string(),
+            id: None,
         }
     }
 
-    fn touch(path: &str, start: u32, end: u32, ts: &str) -> TouchInterval {
+    fn touch(path: &str, _start: u32, _end: u32, ts: &str) -> TouchInterval {
+        use crate::advice::session::state::TouchKind;
         TouchInterval {
             path: path.to_string(),
-            start_line: start,
-            end_line: end,
+            kind: TouchKind::Modified,
+            id: "test".to_string(),
             ts: ts.to_string(),
         }
     }
@@ -440,17 +416,18 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_touch_read_dropped() {
-        // A touch that mirrors an exact ranged read is dropped.
+    fn ranged_read_and_whole_file_touch_both_kept() {
+        // Touches are whole-file (no line range), so a same-path ranged read
+        // and a whole-file edit do not mirror — both surface as ops.
         let ts = "2024-01-01T00:00:00Z";
         let s = session(
             vec![read("foo.rs", Some(10), Some(20), ts)],
-            vec![touch("foo.rs", 10, 20, ts)],
+            vec![touch("foo.rs", 0, 0, ts)],
         );
         let ops = build_op_stream(&s, &cfg());
-        // Only the read should remain, not the duplicate touch-read.
-        assert_eq!(ops.len(), 1);
+        assert_eq!(ops.len(), 2);
         assert_eq!(ops[0].kind, OpKind::Read);
+        assert_eq!(ops[1].kind, OpKind::Edit);
     }
 
     #[test]

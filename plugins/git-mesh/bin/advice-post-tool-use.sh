@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# PostToolUse: dispatch Read → `read <anchor>`; everything else → `milestone`.
-# No per-tool branching beyond Read vs everything-else; no path parsing for
-# Bash/mcp or other tools. Fail-open — internal errors silently exit 0.
+# PostToolUse: for `Read`, record an anchor read; for everything else,
+# `flush <tool_use_id>` against the snapshot captured at PreToolUse and
+# emit any newly-touched mesh advice as additionalContext for the next turn.
 
 set -uo pipefail
 . "$(dirname "$0")/advice-common.sh"
@@ -14,6 +14,7 @@ sid="$(hook_field '.session_id')"
 cwd="$(hook_field '.cwd')"
 [ -n "$cwd" ] || cwd="$PWD"
 tool="$(hook_field '.tool_name')"
+tuid="$(hook_field '.tool_use_id')"
 
 case "$tool" in
   Read)
@@ -32,14 +33,19 @@ case "$tool" in
       anchor="${rel}#L${offset}-L${end}"
     fi
 
-    text="$(run_advice_verb "$file_root" "$sid" read "$anchor")"
+    if [ -n "$tuid" ]; then
+      text="$(run_advice_verb "$file_root" "$sid" read "$anchor" "$tuid")"
+    else
+      text="$(run_advice_verb "$file_root" "$sid" read "$anchor")"
+    fi
     emit_advice_text PostToolUse "$text"
     ;;
 
   *)
+    [ -n "$tuid" ] || exit 0
     root="$(resolve_repo_root "$cwd")"
     [ -n "$root" ] || exit 0
-    text="$(run_advice_verb "$root" "$sid" milestone)"
+    text="$(run_advice_verb "$root" "$sid" flush "$tuid")"
     emit_advice_text PostToolUse "$text"
     ;;
 esac

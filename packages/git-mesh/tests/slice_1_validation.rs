@@ -32,13 +32,8 @@ fn seeded_with_a_b() -> Result<TestRepo> {
     Ok(repo)
 }
 
-fn snapshot(repo: &TestRepo, sid: &str) -> Result<()> {
-    let out = repo.run_mesh(["advice", sid, "snapshot"])?;
-    anyhow::ensure!(
-        out.status.success(),
-        "snapshot failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+fn snapshot(_repo: &TestRepo, _sid: &str) -> Result<()> {
+    // The `snapshot` verb has been removed; `read` no longer requires a baseline.
     Ok(())
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Tests the public `build_op_stream` API using hand-built `SessionRecord`s.
 
-use git_mesh::advice::session::state::{ReadRecord, TouchInterval};
+use git_mesh::advice::session::state::{ReadRecord, TouchInterval, TouchKind};
 use git_mesh::advice::suggest::{OpKind, SessionRecord, SuggestConfig, build_op_stream};
 
 fn cfg() -> SuggestConfig {
@@ -15,14 +15,15 @@ fn read(path: &str, start: Option<u32>, end: Option<u32>, ts: &str) -> ReadRecor
         start_line: start,
         end_line: end,
         ts: ts.to_string(),
+        id: None,
     }
 }
 
-fn touch(path: &str, start: u32, end: u32, ts: &str) -> TouchInterval {
+fn touch(path: &str, _start: u32, _end: u32, ts: &str) -> TouchInterval {
     TouchInterval {
         path: path.to_string(),
-        start_line: start,
-        end_line: end,
+        kind: TouchKind::Modified,
+        id: "test".to_string(),
         ts: ts.to_string(),
     }
 }

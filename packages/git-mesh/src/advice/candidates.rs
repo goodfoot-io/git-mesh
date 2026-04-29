@@ -974,6 +974,7 @@ mod tests {
             start_line: Some(start),
             end_line: Some(end),
             ts: "2026-01-01T00:00:00Z".to_string(),
+            id: None,
         }
     }
 

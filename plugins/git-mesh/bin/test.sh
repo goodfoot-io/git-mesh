@@ -140,56 +140,44 @@ payload() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: SessionStart writes baseline.state in the per-session store.
+# Test 1: SessionStart is a no-op (no baseline state machinery any more).
 # ---------------------------------------------------------------------------
-log "Test 1: SessionStart snapshot"
+log "Test 1: SessionStart no-op"
 REPO1="$(make_repo repo1)"
 SID1="sess-one"
 PAYLOAD1="$(jq -nc --arg s "$SID1" --arg c "$REPO1" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup", model:"claude"}')"
 run_hook "$BIN_DIR/advice-session-start.sh" "$PAYLOAD1"
 assert_rc_zero "SessionStart"
-locate_store "$SID1"; BASELINE="$STORE_DIR/baseline.state"
-if [ -f "$BASELINE" ]; then
-  ok "SessionStart: baseline.state created at $BASELINE"
-else
-  bad "SessionStart: baseline.state missing at $BASELINE"
-fi
 assert_stdout_empty "SessionStart"
 
-log "Test 1b: SessionStart with source=compact also snapshots (new session id)"
+log "Test 1b: SessionStart with source=compact is also a no-op"
 SID1B="sess-one-b"
 PAYLOAD1B="$(jq -nc --arg s "$SID1B" --arg c "$REPO1" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"compact"}')"
 run_hook "$BIN_DIR/advice-session-start.sh" "$PAYLOAD1B"
 assert_rc_zero "SessionStart(compact)"
-locate_store "$SID1B"; BASELINE1B="$STORE_DIR/baseline.state"
-if [ -f "$BASELINE1B" ]; then
-  ok "SessionStart(compact): baseline.state created at $BASELINE1B"
-else
-  bad "SessionStart(compact): baseline.state missing at $BASELINE1B"
-fi
+assert_stdout_empty "SessionStart(compact)"
 
 # ---------------------------------------------------------------------------
 # Test 2: PostToolUse Bash after a write to a.txt surfaces the partner b.txt.
 # Write is no longer in the PostToolUse matcher; instead a Bash PostToolUse
 # dispatches to `milestone`, which detects file edits via snapshot diff.
 # ---------------------------------------------------------------------------
-log "Test 2: PostToolUse Bash after write surfaces meshed partner"
+log "Test 2: PreToolUse mark + edit + PostToolUse flush surfaces meshed partner"
 REPO2="$(make_repo repo2)"
 SID2="sess-two"
-run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID2" --arg c "$REPO2" \
-    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
-assert_rc_zero "SessionStart(repo2)"
-# Modify a.txt (meshed with b.txt) before sending the Bash PostToolUse.
+PRE2="$(jq -nc --arg s "$SID2" --arg c "$REPO2" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t2", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE2"
+assert_rc_zero "PreToolUse(mark)"
 echo "new-content" >> "$REPO2/a.txt"
 CMD2="echo done"
 PAYLOAD2="$(jq -nc --arg s "$SID2" --arg c "$REPO2" --arg cmd "$CMD2" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t2", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD2"
-assert_rc_zero "PostToolUse(Bash write)"
-assert_stdout_contains "PostToolUse(Bash write)" "b.txt"
+assert_rc_zero "PostToolUse(Bash flush)"
+assert_stdout_contains "PostToolUse(Bash flush)" "b.txt"
 
 # ---------------------------------------------------------------------------
 # Test 3: PostToolUse on Read with offset/limit records a ranged read.
@@ -229,40 +217,19 @@ assert_stdout_empty "PostToolUse(Glob)"
 # Tests 5 and 6 are deleted: UserPromptSubmit hook (advice-user-prompt.sh) was
 # removed in Phase 2. There is no replacement — that event surface is gone.
 
-# ---------------------------------------------------------------------------
-# Test 7: Stop hook flushes; skipped on max_tokens.
-# ---------------------------------------------------------------------------
-log "Test 7: Stop hook"
-REPO7="$(make_repo repo7)"
-SID7="sess-seven"
-run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
-    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
-echo "more" >> "$REPO7/b.txt"
-PAYLOAD7="$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"end_turn", output:""}')"
-run_hook "$BIN_DIR/advice-stop.sh" "$PAYLOAD7"
-assert_rc_zero "Stop(end_turn)"
-# b.txt was modified — `stop` detects the edit via EDIT rule and emits
-# BasicOutput for the demo mesh, which includes a.txt as the partner.
-assert_stdout_contains "Stop(end_turn)" "a.txt"
-
-PAYLOAD7B="$(jq -nc --arg s "$SID7" --arg c "$REPO7" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"Stop", stop_reason:"max_tokens", output:""}')"
-run_hook "$BIN_DIR/advice-stop.sh" "$PAYLOAD7B"
-assert_rc_zero "Stop(max_tokens)"
-assert_stdout_empty "Stop(max_tokens)"
+# Test 7 deleted: the Stop hook (advice-stop.sh) was removed. Mesh advice
+# now emits inline at PostToolUse via additionalContext.
 
 # ---------------------------------------------------------------------------
-# Test 8: Hooks fail-open when no baseline exists yet.
+# Test 8: PostToolUse without a matching mark is a silent no-op.
 # ---------------------------------------------------------------------------
-log "Test 8: PostToolUse with no baseline is a silent no-op"
+log "Test 8: PostToolUse with no prior mark is a silent no-op"
 REPO8="$(make_repo repo8)"
 PAYLOAD8="$(jq -nc --arg c "$REPO8" \
-  '{session_id:"never-snapshotted", transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t8", duration_ms:1}')"
+  '{session_id:"never-marked", transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t8", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD8"
-assert_rc_zero "PostToolUse(no baseline)"
-assert_stdout_empty "PostToolUse(no baseline)"
+assert_rc_zero "PostToolUse(no mark)"
+assert_stdout_empty "PostToolUse(no mark)"
 
 # Test 9 is deleted: it tested PostToolUse Write resolving the repo from the
 # file path — Write is no longer in the PostToolUse matcher and has no
@@ -272,37 +239,35 @@ assert_stdout_empty "PostToolUse(no baseline)"
 # Test 10: PostToolUse Bash dispatches milestone against cwd (no per-tool
 # path parsing). The hook uses the payload cwd to find the repo.
 # ---------------------------------------------------------------------------
-log "Test 10: PostToolUse Bash dispatches milestone against cwd"
+log "Test 10: PreToolUse mark + edit + PostToolUse flush against cwd"
 REPO10="$(make_repo repo10)"
 SID10="sess-ten"
-run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID10" --arg c "$REPO10" \
-    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+PRE10="$(jq -nc --arg s "$SID10" --arg c "$REPO10" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t10", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE10"
 echo "bash-edit" >> "$REPO10/a.txt"
 CMD10="echo done"
 PAYLOAD10="$(jq -nc --arg s "$SID10" --arg c "$REPO10" --arg cmd "$CMD10" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t10", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD10"
 assert_rc_zero "PostToolUse(Bash cwd)"
-# a.txt was modified in repo10 — milestone detects the edit and emits b.txt.
 assert_stdout_contains "PostToolUse(Bash cwd)" "b.txt"
 
 # ---------------------------------------------------------------------------
 # Test 11: PostToolUse on a non-Read tool (mcp__*-style name) dispatches
 # milestone against cwd — no separate mcp arm exists.
 # ---------------------------------------------------------------------------
-log "Test 11: PostToolUse mcp__* dispatches milestone against cwd"
+log "Test 11: PreToolUse mark + edit + PostToolUse flush for mcp__ tool"
 REPO11="$(make_repo repo11)"
 SID11="sess-eleven"
-run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
-    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
+PRE11="$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"mcp__filesystem__write_file", tool_input:{}, tool_use_id:"t11", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE11"
 echo "mcp-edit" >> "$REPO11/a.txt"
 PAYLOAD11="$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"mcp__filesystem__write_file", tool_input:{}, tool_response:{}, tool_use_id:"t11", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD11"
 assert_rc_zero "PostToolUse(mcp__ cwd)"
-# a.txt was modified — milestone detects the edit and emits b.txt.
 assert_stdout_contains "PostToolUse(mcp__ cwd)" "b.txt"
 
 # ---------------------------------------------------------------------------
@@ -366,11 +331,6 @@ else
   export PATH="$(dirname "$MESH_BIN"):$PATH"
 REPO13="$(make_repo repo13)"
 SID13="sess-thirteen"
-# Snapshot so there's a baseline.
-run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
-    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
-assert_rc_zero "SessionStart(debug)"
 
 # Read b.txt (meshed partner of a.txt) to trigger advice via the read verb.
 PAYLOAD13="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
