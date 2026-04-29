@@ -12,7 +12,7 @@
       "name": "git-mesh",
       "source": "./plugins/git-mesh",
       "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying a one-sentence why that names the relationship the ranges hold.",
-      "version": "1.0.33",
+      "version": "1.0.34",
       "category": "git",
       "keywords": [
         "git",

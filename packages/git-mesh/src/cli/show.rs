@@ -4,12 +4,10 @@ use crate::anchor::read_anchor;
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Anchor, AnchorExtent};
-use crate::{
-    MeshCommitInfo, list_mesh_names, mesh_commit_info, mesh_commit_info_at, mesh_log, read_mesh,
-    read_mesh_at,
-};
+use crate::{MeshCommitInfo, list_mesh_names, mesh_commit_info_at, mesh_log, read_mesh_at};
 use anyhow::Result;
 use regex::RegexBuilder;
+use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
 // Format-string types
@@ -294,13 +292,16 @@ fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
         list_staged_mesh_names(repo)?
     };
 
-    let mut listings: Vec<MeshListing> = Vec::new();
+    let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
+    let committed_name_set: HashSet<&str> = committed_names.iter().map(String::as_str).collect();
+    let mut listings: Vec<MeshListing> =
+        Vec::with_capacity(committed_names.len() + staged_names.len());
 
     // Collect committed meshes.
     {
         let _perf = crate::perf::span("ls.read-committed-meshes");
         for name in &committed_names {
-            let mesh = read_mesh(repo, name)?;
+            let mesh = crate::mesh::read::read_mesh_listing(repo, name)?;
             let mut anchors = Vec::new();
             for anchor_id in &mesh.anchors {
                 let r = read_anchor(repo, anchor_id)?;
@@ -310,7 +311,7 @@ fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
                 });
             }
             // Determine if this committed mesh also has staged ops.
-            let state = if staged_names.iter().any(|s| s == name) {
+            let state = if staged_name_set.contains(name.as_str()) {
                 let staging = read_staging(repo, name)?;
                 if staging.adds.is_empty()
                     && staging.removes.is_empty()
@@ -338,7 +339,7 @@ fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
     {
         let _perf = crate::perf::span("ls.read-pending-meshes");
         for name in &staged_names {
-            if committed_names.iter().any(|c| c == name) {
+            if committed_name_set.contains(name.as_str()) {
                 continue; // already handled above
             }
             let staging = read_staging(repo, name)?;
@@ -537,9 +538,6 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         let r = read_anchor(repo, id)?;
         println!("    {}", render_range_address(&r.path, r.extent));
     }
-
-    // Consume unused field warning via bind.
-    let _ = mesh_commit_info(repo, &args.name);
     Ok(0)
 }
 

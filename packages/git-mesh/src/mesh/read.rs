@@ -74,6 +74,18 @@ pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>
     })
 }
 
+pub(crate) struct MeshListingRecord {
+    pub message: String,
+    pub anchors: Vec<String>,
+}
+
+pub(crate) fn read_mesh_listing(repo: &gix::Repository, name: &str) -> Result<MeshListingRecord> {
+    let commit_oid = resolve_mesh_revision(repo, name, None)?;
+    let message = git::commit_meta(repo, &commit_oid)?.message;
+    let anchors = git_show_file_lines(repo, &commit_oid, "anchors").unwrap_or_default();
+    Ok(MeshListingRecord { message, anchors })
+}
+
 fn default_config() -> MeshConfig {
     MeshConfig {
         copy_detection: crate::types::DEFAULT_COPY_DETECTION,

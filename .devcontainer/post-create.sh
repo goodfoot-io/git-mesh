@@ -106,6 +106,11 @@ echo "Configuring git hooks path..."
 git config core.hooksPath .githooks
 echo "Git hooks path set to .githooks"
 
+# Update Rust toolchain to the latest stable
+echo "Updating Rust toolchain..."
+rustup update stable
+echo "Rust toolchain updated: $(rustc --version)"
+
 echo "Configuring package version merge driver..."
 git config merge.json-version.name "Resolve package version conflicts by highest semver"
 git config merge.json-version.driver ".githooks/merge-json-version %O %A %B %P"

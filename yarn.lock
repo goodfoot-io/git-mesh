@@ -581,25 +581,25 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@goodfoot/git-mesh-darwin-arm64@npm:1.0.33, @goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64":
+"@goodfoot/git-mesh-darwin-arm64@npm:1.0.34, @goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-darwin-x64@npm:1.0.33, @goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64":
+"@goodfoot/git-mesh-darwin-x64@npm:1.0.34, @goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-linux-arm64@npm:1.0.33, @goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64":
+"@goodfoot/git-mesh-linux-arm64@npm:1.0.34, @goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-linux-x64@npm:1.0.33, @goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64":
+"@goodfoot/git-mesh-linux-x64@npm:1.0.34, @goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64"
   languageName: unknown
@@ -617,7 +617,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-win32-x64@npm:1.0.33, @goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64":
+"@goodfoot/git-mesh-win32-x64@npm:1.0.34, @goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64"
   languageName: unknown
@@ -627,11 +627,11 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh@workspace:packages/git-mesh"
   dependencies:
-    "@goodfoot/git-mesh-darwin-arm64": "npm:1.0.33"
-    "@goodfoot/git-mesh-darwin-x64": "npm:1.0.33"
-    "@goodfoot/git-mesh-linux-arm64": "npm:1.0.33"
-    "@goodfoot/git-mesh-linux-x64": "npm:1.0.33"
-    "@goodfoot/git-mesh-win32-x64": "npm:1.0.33"
+    "@goodfoot/git-mesh-darwin-arm64": "npm:1.0.34"
+    "@goodfoot/git-mesh-darwin-x64": "npm:1.0.34"
+    "@goodfoot/git-mesh-linux-arm64": "npm:1.0.34"
+    "@goodfoot/git-mesh-linux-x64": "npm:1.0.34"
+    "@goodfoot/git-mesh-win32-x64": "npm:1.0.34"
   dependenciesMeta:
     "@goodfoot/git-mesh-darwin-arm64":
       optional: true
