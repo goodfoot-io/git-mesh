@@ -4,7 +4,8 @@
 use super::super::layers::{
     filter_short_circuit, is_lfs_path, read_worktree_normalized, resolve_lfs_anchor,
 };
-use super::super::walker::{Tracked, apply_hunks_to_range, resolve_at_head};
+use super::super::session::resolve_at_head_shared;
+use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::EngineState;
 use super::whole_file::resolve_whole_file;
 use crate::git;
@@ -114,7 +115,13 @@ pub(crate) fn resolve_anchor_inner(
         });
     }
 
-    let head_loc = resolve_at_head(repo, &r, cfg.copy_detection, &mut state.warnings)?;
+    let head_loc = resolve_at_head_shared(
+        repo,
+        &mut state.session,
+        &r,
+        cfg.copy_detection,
+        &mut state.warnings,
+    )?;
 
     let head_path: Option<String> = head_loc.as_ref().map(|t| t.path.clone());
     if state.layers.index || state.layers.worktree {
@@ -434,6 +441,7 @@ fn compute_layer_sources(
 ) -> Result<Vec<DriftSource>> {
     let layer_index = state.layers.index;
     let layer_worktree = state.layers.worktree;
+    let needs_all = state.needs_all_layers;
     let mut sources: Vec<DriftSource> = Vec::new();
 
     // HEAD layer: compare HEAD content at head_tracked position vs anchor.
@@ -466,6 +474,13 @@ fn compute_layer_sources(
         // emit it; shallower layers (I, W) that also drift are still emitted.
         if head_drifts {
             sources.push(DriftSource::Head);
+            // Phase 4 early-exit: when the caller doesn't need per-layer
+            // detail (plain `stale` exit-code / oneline / porcelain / json
+            // without --patch/--stat), HEAD's verdict alone is enough.
+            // Skip the Index and Worktree blob reads.
+            if !needs_all {
+                return Ok(vec![DriftSource::Head]);
+            }
         }
     }
 

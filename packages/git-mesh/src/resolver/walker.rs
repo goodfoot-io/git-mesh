@@ -31,6 +31,11 @@ pub(crate) fn rename_budget() -> usize {
         .unwrap_or(RENAME_BUDGET_DEFAULT)
 }
 
+/// Single-anchor convenience used by tests that don't go through the
+/// shared `ResolveSession`. The production engine path uses
+/// `session::resolve_at_head_shared`, which consumes pre-computed deltas
+/// from a grouped walk (one rev-walk + one `name_status` per commit, fanned
+/// out across every anchor that shares the same anchor commit).
 pub(crate) fn resolve_at_head(
     repo: &gix::Repository,
     r: &Anchor,
@@ -54,7 +59,8 @@ pub(crate) fn resolve_at_head(
     };
     let mut parent = r.anchor_sha.clone();
     for commit in &commits {
-        match advance(repo, &parent, commit, &loc, copy_detection, warnings)? {
+        let entries = name_status(repo, &parent, commit, copy_detection, warnings)?;
+        match advance_with_entries(repo, &parent, commit, &loc, &entries)? {
             Change::Unchanged => {}
             Change::Deleted => return Ok(None),
             Change::Updated(next) => loc = next,
@@ -67,19 +73,21 @@ pub(crate) fn resolve_at_head(
     Ok(Some(loc))
 }
 
-pub(crate) fn advance(
+/// Advance the tracked location across one commit, given the
+/// already-computed name-status entries for `(parent, commit)`. This is
+/// the shared-session entry point — phase 1 callers pass pre-computed
+/// deltas instead of re-running `name_status` per anchor.
+pub(crate) fn advance_with_entries(
     repo: &gix::Repository,
     parent: &str,
     commit: &str,
     loc: &Tracked,
-    copy_detection: CopyDetection,
-    warnings: &mut Vec<String>,
+    entries: &[NS],
 ) -> Result<Change> {
-    let entries = name_status(repo, parent, commit, copy_detection, warnings)?;
     let mut next_path: Option<String> = None;
     let mut deleted = false;
     let mut modified = false;
-    for e in &entries {
+    for e in entries {
         match e {
             NS::Added { path } | NS::Modified { path } => {
                 if path == &loc.path {
@@ -284,23 +292,24 @@ pub(crate) fn name_status(
         .tree()
         .map_err(|e| Error::Git(format!("commit tree: {e}")))?;
     let budget = rename_budget();
-    let want_rewrites = true;
 
-    // First pass: cheap, no rewrite pairing.
-    let raw = collect_changes(&parent_tree, &new_tree, copy_detection, false)?;
-    if raw.len() > budget && want_rewrites {
+    // Phase 3: a single tree-diff pass with rewrite tracking enabled.
+    // The "no-rewrites" view is derived by splitting each Renamed/Copied
+    // into its Added(+Deleted) parts; that matches the entry count the
+    // cheap pass would have produced and lets us honor the budget without
+    // running the diff twice.
+    let mut entries = collect_changes(&parent_tree, &new_tree, copy_detection, true)?;
+    let no_rewrites_len = derived_no_rewrites_count(&entries);
+    if no_rewrites_len > budget {
         warnings.push(format!(
             "warning: rename detection disabled (--no-renames) for HEAD walk {}..{}; {} > GIT_MESH_RENAME_BUDGET={}",
             &parent[..parent.len().min(8)],
             &commit[..commit.len().min(8)],
-            raw.len(),
+            no_rewrites_len,
             budget,
         ));
-        return Ok(raw);
+        return Ok(project_to_no_rewrites(entries));
     }
-
-    // Second pass: rewrite-tracked diff-pair results.
-    let mut entries = collect_changes(&parent_tree, &new_tree, copy_detection, true)?;
 
     // For AnyFileInCommit and AnyFileInRepo, run a widened similarity
     // search for added paths that were not already paired by the first pass.
@@ -327,6 +336,41 @@ pub(crate) fn name_status(
     }
 
     Ok(entries)
+}
+
+/// Project a rewrite-tracked entry list to its "no-rewrites" equivalent.
+/// `Renamed{from,to}` → `Deleted{from}` + `Added{to}`. `Copied{from,to}`
+/// → `Added{to}` (the source path is unchanged in this commit, so no
+/// `Deleted` row).
+fn project_to_no_rewrites(entries: Vec<NS>) -> Vec<NS> {
+    let mut out: Vec<NS> = Vec::with_capacity(entries.len() + 1);
+    for e in entries {
+        match e {
+            NS::Renamed { from, to } => {
+                out.push(NS::Deleted { path: from });
+                out.push(NS::Added { path: to });
+            }
+            NS::Copied { from: _, to } => {
+                out.push(NS::Added { path: to });
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Count entries as the no-rewrites pass would: a Renamed pair counts as
+/// 2 (Add + Delete) and a Copied counts as 1 (Add). Modifications,
+/// Additions, Deletions count as 1 each.
+fn derived_no_rewrites_count(entries: &[NS]) -> usize {
+    let mut n = 0;
+    for e in entries {
+        match e {
+            NS::Renamed { .. } => n += 2,
+            _ => n += 1,
+        }
+    }
+    n
 }
 
 /// Result of the AnyFileInRepo widening attempt.

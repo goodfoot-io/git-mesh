@@ -38,10 +38,20 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         ),
         None => None,
     };
+    // Phase 4: only the renderers that present per-layer detail need
+    // every layer evaluated. The `human` renderer always shows per-layer
+    // expansion; `--patch` / `--stat` need every drifting layer's
+    // content. Otherwise (oneline, porcelain, json, junit, github), HEAD
+    // alone is enough to drive the exit code, so the engine may
+    // short-circuit Index/Worktree once HEAD says "stale".
+    let needs_all_layers = matches!(args.format, StaleFormat::Human)
+        || args.patch
+        || args.stat;
     let options = EngineOptions {
         layers,
         ignore_unavailable: args.ignore_unavailable,
         since,
+        needs_all_layers,
     };
 
     let meshes = match &args.name {

@@ -737,6 +737,7 @@ fn default_engine_options() -> crate::types::EngineOptions {
         },
         ignore_unavailable: false,
         since: None,
+        needs_all_layers: true,
     }
 }
 

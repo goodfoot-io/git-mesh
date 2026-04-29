@@ -586,6 +586,12 @@ pub struct EngineOptions {
     /// anchors are always included (the filter is for scoping, not
     /// hiding orphans).
     pub since: Option<gix::ObjectId>,
+    /// Phase 4: does the caller need every layer's drift evaluated, or
+    /// is HEAD's verdict alone sufficient to drive the exit code? Set
+    /// to `true` for `--patch`, `--stat`, and the `human` renderer.
+    /// Defaults to `true` for safety; the `stale` CLI flips it to
+    /// `false` for plain oneline / porcelain / json output.
+    pub needs_all_layers: bool,
 }
 
 impl EngineOptions {
@@ -595,6 +601,7 @@ impl EngineOptions {
             layers: LayerSet::full(),
             ignore_unavailable: false,
             since: None,
+            needs_all_layers: true,
         }
     }
 
@@ -604,6 +611,7 @@ impl EngineOptions {
             layers: LayerSet::committed_only(),
             ignore_unavailable: false,
             since: None,
+            needs_all_layers: true,
         }
     }
 }

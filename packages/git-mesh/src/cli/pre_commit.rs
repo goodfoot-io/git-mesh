@@ -31,6 +31,7 @@ pub fn run_pre_commit(repo: &gix::Repository, args: PreCommitArgs) -> Result<i32
         },
         ignore_unavailable: false,
         since: None,
+        needs_all_layers: true,
     };
     // Union of committed mesh names and names with a staging directory:
     // a brand-new mesh (no commit yet) only exists on disk via its

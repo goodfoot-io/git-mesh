@@ -9,6 +9,7 @@ use super::layers::{
     CustomFilters, LayerDiffs, LfsState, read_conflicted_paths, read_index_layer,
     read_index_trailer, read_worktree_layer,
 };
+use super::session::ResolveSession;
 use crate::anchor::read_anchor;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::types::{
@@ -32,10 +33,18 @@ pub(crate) struct EngineState {
     pub(crate) warnings: Vec<String>,
     pub(crate) lfs: LfsState,
     pub(crate) custom_filters: CustomFilters,
+    /// Phase 1+2 shared state: one rev-walk per `(repo, anchor_sha)`,
+    /// reused across every anchor that pins that commit.
+    pub(crate) session: ResolveSession,
+    /// Phase 4: when false, `compute_layer_sources` may short-circuit
+    /// once it has enough information to drive the exit code. Set by
+    /// `cli/stale.rs` based on whether the output mode requires per-layer
+    /// detail (`--patch`, `--stat`, the `human` renderer).
+    pub(crate) needs_all_layers: bool,
 }
 
 impl EngineState {
-    fn new(repo: &gix::Repository, layers: LayerSet) -> Result<Self> {
+    fn new(repo: &gix::Repository, layers: LayerSet, needs_all_layers: bool) -> Result<Self> {
         let index_trailer_start = read_index_trailer(repo).ok();
         let mut s = EngineState {
             layers,
@@ -46,6 +55,8 @@ impl EngineState {
             warnings: Vec::new(),
             lfs: None,
             custom_filters: HashMap::new(),
+            session: ResolveSession::new(),
+            needs_all_layers,
         };
         if layers.index || layers.worktree {
             s.conflicted_paths = read_conflicted_paths(repo)?;
@@ -82,7 +93,7 @@ pub fn resolve_anchor(
     anchor_id: &str,
     options: EngineOptions,
 ) -> Result<AnchorResolved> {
-    let mut state = EngineState::new(repo, options.layers)?;
+    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
     let mesh = read_mesh(repo, mesh_name)?;
     let mut out = match read_anchor(repo, anchor_id) {
         Ok(r) => resolve_anchor_inner(repo, &mut state, &mesh.config, anchor_id, r)?,
@@ -101,7 +112,7 @@ pub fn resolve_mesh(
     name: &str,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
-    let mut state = EngineState::new(repo, options.layers)?;
+    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
     let mesh = read_mesh(repo, name)?;
     let mut anchors = Vec::with_capacity(mesh.anchors.len());
     let mut filtered_by_since: usize = 0;

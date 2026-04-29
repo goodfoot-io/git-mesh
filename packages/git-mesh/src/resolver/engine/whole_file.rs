@@ -2,6 +2,7 @@
 //! per plan §D2. Renames produce `Moved`; symlinks/gitlinks compare by
 //! recorded blob/SHA.
 
+use super::super::session::follow_path_to_head_shared;
 use super::EngineState;
 use crate::git;
 use crate::types::{
@@ -47,8 +48,17 @@ pub(crate) fn resolve_whole_file(
 
     let head_sha = git::head_oid(repo)?;
     let workdir = git::work_dir(repo)?;
-    let current_path = follow_path_to_head(repo, &r.anchor_sha, &head_sha, &r.path)
-        .unwrap_or_else(|| r.path.clone());
+    // Phase 2: rename trail consumes per-commit deltas from the shared
+    // session instead of running its own `anchor..HEAD` rev_walk.
+    let current_path = follow_path_to_head_shared(
+        repo,
+        &mut state.session,
+        &r.anchor_sha,
+        &r.path,
+        cfg.copy_detection,
+        &mut state.warnings,
+    )
+    .unwrap_or_else(|| r.path.clone());
 
     let head_kind_sha = tree_entry_for(repo, &head_sha, &current_path);
     let moved = current_path != r.path;
@@ -173,75 +183,6 @@ pub(crate) fn resolve_whole_file(
         acknowledged_by: None,
         culprit: None,
     })
-}
-
-/// Walk `anchor..head` (oldest-first), following any rename that renames
-/// our currently-tracked path to a new name; return the final path if it
-/// differs from the input. This replaces the previous
-/// `git log --follow --name-only` subprocess.
-///
-/// gix has no first-class `--follow` walker, so we walk commits manually
-/// and run a tree-vs-first-parent diff per commit with rewrite tracking
-/// enabled (50% similarity, the same default `git -M` uses). The first
-/// `Rewrite` whose source matches our current path advances the tracked
-/// path; commits after the path's deletion (without a paired rename)
-/// fall back to the last known name. The result for a single
-/// straight-line rename trail is identical to `git log --follow`'s; for
-/// pathological copy/rename graphs this is a strictly weaker but
-/// well-defined heuristic.
-fn follow_path_to_head(
-    repo: &gix::Repository,
-    anchor: &str,
-    head: &str,
-    path: &str,
-) -> Option<String> {
-    let head_id = repo.rev_parse_single(head).ok()?.detach();
-    let anchor_id = repo.rev_parse_single(anchor).ok()?.detach();
-    let walk = repo
-        .rev_walk([head_id])
-        .with_hidden([anchor_id])
-        .all()
-        .ok()?;
-    let mut commits: Vec<gix::ObjectId> = Vec::new();
-    for info in walk {
-        let info = info.ok()?;
-        commits.push(info.id);
-    }
-    commits.reverse(); // oldest-first
-
-    let mut current = path.to_string();
-    for commit_id in commits {
-        let commit = repo.find_commit(commit_id).ok()?;
-        let new_tree = commit.tree().ok()?;
-        let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
-        // Mirror `git log --follow`'s heuristic: first parent only.
-        let old_tree = match parents.first() {
-            Some(pid) => repo.find_commit(*pid).ok()?.tree().ok()?,
-            None => repo.empty_tree(),
-        };
-        let mut opts = gix::diff::Options::default();
-        opts.track_rewrites(Some(gix::diff::Rewrites::default()));
-        let changes = repo
-            .diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(opts))
-            .ok()?;
-        for change in changes {
-            use gix::object::tree::diff::ChangeDetached;
-            if let ChangeDetached::Rewrite {
-                source_location,
-                location,
-                ..
-            } = change
-            {
-                let src = source_location.to_string();
-                if src == current {
-                    current = location.to_string();
-                    break;
-                }
-            }
-        }
-    }
-
-    if current == path { None } else { Some(current) }
 }
 
 fn tree_entry_for(repo: &gix::Repository, commit: &str, path: &str) -> Option<(String, String)> {
