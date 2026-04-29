@@ -56,7 +56,7 @@ fn read_intersects_mesh_surfaces_partner() -> Result<()> {
     ok(&out);
     let stdout = String::from_utf8(out.stdout)?;
     assert!(
-        stdout.contains("is in the m1 mesh: two-file partnership"),
+        stdout.contains("is in the m1 mesh with:") && stdout.contains("two-file partnership"),
         "expected mesh why, got:\n{stdout}"
     );
     assert!(

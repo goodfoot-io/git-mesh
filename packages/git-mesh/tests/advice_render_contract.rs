@@ -473,8 +473,10 @@ fn basic_output_fresh_header_no_status() {
     let rendered = b.to_string();
     assert_eq!(
         rendered,
-        "src/main.rs#L1-L30 is in the billing mesh: checkout request flow\n\
-         - api/charge.ts#L10-L50\n",
+        "src/main.rs#L1-L30 is in the billing mesh with:\n\
+         - api/charge.ts#L10-L50\n\
+         \n\
+         checkout request flow\n",
         "fresh header must not include status paren; got:\n{rendered}"
     );
 }
@@ -491,8 +493,11 @@ fn basic_output_stale_header_includes_status() {
     };
     let rendered = b.to_string();
     assert_eq!(
-        rendered, "src/main.rs#L1-L30 (CHANGED) is in the billing mesh: checkout request flow\n",
-        "stale header must include status paren; got:\n{rendered}"
+        rendered,
+        "src/main.rs#L1-L30 is in the billing mesh with:\n\
+         \n\
+         checkout request flow\n",
+        "header must omit status paren under the new format; got:\n{rendered}"
     );
 }
 
@@ -508,7 +513,7 @@ fn basic_output_active_anchor_not_in_bullets() {
     };
     let rendered = b.to_string();
     assert!(
-        rendered.starts_with("web/checkout.tsx#L88-L120 is in the checkout mesh:"),
+        rendered.starts_with("web/checkout.tsx#L88-L120 is in the checkout mesh with:"),
         "header must start with active anchor; got:\n{rendered}"
     );
     assert!(

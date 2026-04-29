@@ -1213,7 +1213,7 @@ fn run_advice_read(repo: &gix::Repository, session_id: String, anchor: String) -
 
     let mut new_meshes_seen: Vec<String> = Vec::new();
     let mut new_mesh_candidates: Vec<String> = Vec::new();
-    let mut output = String::new();
+    let mut blocks: Vec<String> = Vec::new();
 
     for mesh in &meshes {
         // Check if any anchor in this mesh overlaps the action.
@@ -1251,12 +1251,25 @@ fn run_advice_read(repo: &gix::Repository, session_id: String, anchor: String) -
             status_if_not_fresh,
             non_active_anchors,
         };
-        output.push_str(&block.to_string());
+        blocks.push(block.to_string());
 
         // Rule 3 & 4: record mesh as seen and as candidate.
         new_meshes_seen.push(mesh.name.clone());
         new_mesh_candidates.push(mesh.name.clone());
     }
+
+    let output = if blocks.is_empty() {
+        String::new()
+    } else {
+        let mut out = String::from("\n\n");
+        for (i, b) in blocks.iter().enumerate() {
+            if i > 0 {
+                out.push_str("\n---\n\n");
+            }
+            out.push_str(b);
+        }
+        out
+    };
 
     // Write output before persisting state (fail-open: if stdout fails,
     // do not advance seen sets so the mesh resurfaces).

@@ -93,10 +93,10 @@ pub fn render(
         blocks.push(wrapped);
     }
 
-    let mut out = String::new();
+    let mut out = String::from("\n\n");
     for (i, b) in blocks.iter().enumerate() {
         if i > 0 {
-            out.push('\n');
+            out.push_str("\n---\n\n");
         }
         out.push_str(b);
     }
@@ -138,14 +138,10 @@ fn render_mesh_block(
     let active = first.and_then(|s| active_anchor(s));
 
     let mut out = String::new();
-    if let Some((addr, status)) = &active {
-        if status.is_empty() {
-            out.push_str(&format!("{addr} is in the {mesh} mesh: {why}\n"));
-        } else {
-            out.push_str(&format!("{addr} {status} is in the {mesh} mesh: {why}\n"));
-        }
+    if let Some((addr, _status)) = &active {
+        out.push_str(&format!("{addr} is in the {mesh} mesh with:\n"));
     } else {
-        out.push_str(&format!("{mesh} mesh: {why}\n"));
+        out.push_str(&format!("{mesh} mesh contains:\n"));
     }
 
     let active_key: Option<(String, Option<i64>, Option<i64>)> =
@@ -255,6 +251,12 @@ fn render_mesh_block(
                 }
             }
         }
+    }
+
+    if !why.is_empty() {
+        out.push('\n');
+        out.push_str(why);
+        out.push('\n');
     }
 
     out
@@ -825,9 +827,10 @@ mod tests {
         let s = sugg("m1", "b.rs");
         let out = render(&[s], &[], false);
         assert!(
-            out.contains("b.rs#L1-L10 is in the m1 mesh: why text"),
+            out.contains("b.rs#L1-L10 is in the m1 mesh with:\n"),
             "got:\n{out}"
         );
+        assert!(out.contains("\nwhy text\n"), "got:\n{out}");
     }
 
     #[test]
@@ -882,12 +885,12 @@ mod tests {
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
         assert!(
-            out.contains("b.rs#L1-L10 (CHANGED) is in the m1 mesh: why text"),
-            "marker must appear in parens on the header: {out}"
+            out.contains("b.rs#L1-L10 is in the m1 mesh with:\n"),
+            "header must use `mesh with:` form without status marker: {out}"
         );
         assert!(
-            !out.contains("[CHANGED]"),
-            "bracketed marker form must be gone: {out}"
+            !out.contains("(CHANGED)") && !out.contains("[CHANGED]"),
+            "status marker must not appear on the header: {out}"
         );
     }
 
@@ -1017,8 +1020,12 @@ mod tests {
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
         assert!(
-            out.contains("a/one.rs (CHANGED) is in the my-mesh mesh: why text"),
-            "must render partner as active anchor with paren-wrapped marker; got:\n{out}"
+            out.contains("a/one.rs is in the my-mesh mesh with:\n"),
+            "must render partner as active anchor without status marker; got:\n{out}"
+        );
+        assert!(
+            !out.contains("(CHANGED)"),
+            "status marker must not appear on the header; got:\n{out}"
         );
         assert!(
             !out.contains("- a/one.rs"),
@@ -1057,8 +1064,12 @@ mod tests {
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &[], false);
         assert!(
-            out.contains("src/bar.ts (RENAMED, was src/foo.ts) is in the link mesh: why text"),
-            "must render renamed partner with marker and clause in parens; got:\n{out}"
+            out.contains("src/bar.ts is in the link mesh with:\n"),
+            "must render renamed partner as active anchor without status marker; got:\n{out}"
+        );
+        assert!(
+            !out.contains("(RENAMED") && !out.contains("[RENAMED"),
+            "status marker must not appear on the header; got:\n{out}"
         );
         assert!(
             !out.contains(" — "),
@@ -1148,9 +1159,10 @@ mod tests {
         let out = render(&[s], &[], false);
         // Partner is the active anchor here (touched_path empty).
         assert!(
-            out.contains("api/charge.ts is in the checkout-flow mesh: why text"),
+            out.contains("api/charge.ts is in the checkout-flow mesh with:\n"),
             "whole-file partner must render in header without line suffix; got:\n{out}"
         );
+        assert!(out.contains("\nwhy text\n"), "why must follow the bullets; got:\n{out}");
         assert!(
             !out.contains("api/charge.ts#L"),
             "whole-file partner must not have #L suffix; got:\n{out}"

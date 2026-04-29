@@ -150,9 +150,11 @@ pub fn edit_overlaps(action: &Action, anchor: &AnchorResolved) -> bool {
 /// `BASIC_OUTPUT` template:
 ///
 /// ```text
-/// <active_anchor> [(<status>)] is in the <mesh_name> mesh: <why>
+/// <active_anchor> is in the <mesh_name> mesh with:
 /// - <non_active_anchor_1>
 /// - <non_active_anchor_2>
+///
+/// <why>
 /// ```
 pub struct BasicOutput {
     /// The anchor whose action triggered this output.
@@ -162,6 +164,8 @@ pub struct BasicOutput {
     /// One-sentence description from `git mesh why`.
     pub why: String,
     /// Non-`Fresh` status of the active anchor, or `None` when fresh.
+    /// Retained on the struct for callers that still surface status elsewhere;
+    /// no longer emitted on the header line.
     pub status_if_not_fresh: Option<Status>,
     /// The other anchors in the mesh (excluding the active anchor).
     pub non_active_anchors: Vec<String>,
@@ -169,20 +173,17 @@ pub struct BasicOutput {
 
 impl fmt::Display for BasicOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.status_if_not_fresh {
-            Some(status) => writeln!(
-                f,
-                "{} ({status}) is in the {} mesh: {}",
-                self.active_anchor, self.mesh_name, self.why
-            )?,
-            None => writeln!(
-                f,
-                "{} is in the {} mesh: {}",
-                self.active_anchor, self.mesh_name, self.why
-            )?,
-        }
+        writeln!(
+            f,
+            "{} is in the {} mesh with:",
+            self.active_anchor, self.mesh_name
+        )?;
         for anchor in &self.non_active_anchors {
             writeln!(f, "- {anchor}")?;
+        }
+        if !self.why.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "{}", self.why)?;
         }
         Ok(())
     }
