@@ -25,7 +25,7 @@ pub fn render(
     new_doc_topics: &[String],
     documentation: bool,
 ) -> String {
-    if suggestions.is_empty() {
+    if suggestions.is_empty() && (!documentation || new_doc_topics.is_empty()) {
         return String::new();
     }
 
@@ -786,6 +786,25 @@ mod tests {
     #[test]
     fn empty_input_renders_empty_string() {
         assert_eq!(render(&[], &[], false), "");
+    }
+
+    #[test]
+    fn no_suggestions_doc_gated_off_renders_empty() {
+        // documentation=false: even with doc topics, no output.
+        assert_eq!(render(&[], &["baseline".to_string()], false), "");
+    }
+
+    #[test]
+    fn no_suggestions_doc_on_but_no_topics_renders_empty() {
+        // documentation=true but empty topics: still silent.
+        assert_eq!(render(&[], &[], true), "");
+    }
+
+    #[test]
+    fn no_suggestions_doc_on_with_topics_renders_nonempty() {
+        // documentation=true with a known topic: topic body must be emitted.
+        let out = render(&[], &["baseline".to_string()], true);
+        assert!(!out.is_empty(), "expected non-empty doc output, got empty");
     }
 
     #[test]

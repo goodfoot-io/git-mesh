@@ -560,3 +560,87 @@ fn stop_completes_under_5s_with_5_meshes_and_50_modified_files() -> Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Silence tests — Phase 3: unactionable tool turns produce zero stdout.
+// ---------------------------------------------------------------------------
+
+/// Read of a file with no mesh anchor → zero stdout from the `read` verb.
+#[test]
+fn read_unanchored_file_produces_zero_stdout() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    // Set up a mesh on file1.txt only; file2.txt has no anchor.
+    append_add(&gix, "silence1", "file1.txt", 1, 5, None)?;
+    set_why(&gix, "silence1", "only one file")?;
+    commit_mesh(&gix, "silence1")?;
+
+    let s = sid("silence-unanchored");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+    // Read an anchor on file2.txt — no mesh covers it.
+    let out = run_advice(&repo, &s, &["read", "file2.txt#L1-L5"])?;
+    ok(&out);
+    assert_eq!(
+        stdout(&out),
+        "",
+        "expected zero stdout for unanchored read, got:\n{}",
+        stdout(&out)
+    );
+    Ok(())
+}
+
+/// Read of an anchor whose mesh has already been reported and is still fresh
+/// → zero stdout from the `read` verb on the second call.
+#[test]
+fn read_fresh_already_reported_produces_zero_stdout() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "silence2", "file1.txt", 1, 5, None)?;
+    append_add(&gix, "silence2", "file2.txt", 1, 5, None)?;
+    set_why(&gix, "silence2", "fresh-dedup mesh")?;
+    commit_mesh(&gix, "silence2")?;
+
+    let s = sid("silence-fresh");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+    // First read — should produce output.
+    let first = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&first);
+    assert!(
+        !stdout(&first).is_empty(),
+        "first read of mesh anchor should produce output"
+    );
+    // Second read of the same anchor on the same session — mesh is fresh, already seen.
+    let second = run_advice(&repo, &s, &["read", "file1.txt#L1-L5"])?;
+    ok(&second);
+    assert_eq!(
+        stdout(&second),
+        "",
+        "second read of fresh anchor should produce zero stdout, got:\n{}",
+        stdout(&second)
+    );
+    Ok(())
+}
+
+/// Milestone flush with no modified files → zero stdout from the `milestone` verb.
+#[test]
+fn milestone_flush_nothing_to_say_produces_zero_stdout() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "silence3", "file1.txt", 1, 5, None)?;
+    append_add(&gix, "silence3", "file2.txt", 1, 5, None)?;
+    set_why(&gix, "silence3", "milestone-silence mesh")?;
+    commit_mesh(&gix, "silence3")?;
+
+    let s = sid("silence-milestone");
+    ok(&run_advice(&repo, &s, &["snapshot"])?);
+    // No files modified; milestone has nothing to flush.
+    let out = run_advice(&repo, &s, &["milestone"])?;
+    ok(&out);
+    assert_eq!(
+        stdout(&out),
+        "",
+        "milestone with no changes should produce zero stdout, got:\n{}",
+        stdout(&out)
+    );
+    Ok(())
+}
