@@ -1,11 +1,13 @@
 //! Contract tests for `git mesh advice <id>` — verifying the file-backed
-//! pipeline behaviour for the `milestone` verb (the primary flush path).
+//! pipeline behaviour for the `milestone` verb (the primary flush path),
+//! and golden-string tests for `BasicOutput::Display` format conformance.
 //! Tests that targeted the deleted bare-render path with no four-verb analog
 //! have been removed (greenfield).
 
 mod support;
 
 use anyhow::Result;
+use git_mesh::advice::structured::{BasicOutput, Status};
 use std::process::Output;
 use support::TestRepo;
 use uuid::Uuid;
@@ -452,4 +454,87 @@ fn successful_milestone_advances_last_flush_state() -> Result<()> {
     let baseline = std::fs::read(dir.join("baseline.state"))?;
     assert_ne!(lf_after, baseline, "last-flush.state must advance");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// BasicOutput::Display — BASIC_OUTPUT header/bullet contract tests
+// ---------------------------------------------------------------------------
+
+/// Fresh active anchor: header has no status paren; non-active bullets are plain.
+#[test]
+fn basic_output_fresh_header_no_status() {
+    let b = BasicOutput {
+        active_anchor: "src/main.rs#L1-L30".into(),
+        mesh_name: "billing".into(),
+        why: "checkout request flow".into(),
+        status_if_not_fresh: None,
+        non_active_anchors: vec!["api/charge.ts#L10-L50".into()],
+    };
+    let rendered = b.to_string();
+    assert_eq!(
+        rendered,
+        "src/main.rs#L1-L30 is in the billing mesh: checkout request flow\n\
+         - api/charge.ts#L10-L50\n",
+        "fresh header must not include status paren; got:\n{rendered}"
+    );
+}
+
+/// Non-fresh active anchor: header includes `(<STATUS>)` after the address.
+#[test]
+fn basic_output_stale_header_includes_status() {
+    let b = BasicOutput {
+        active_anchor: "src/main.rs#L1-L30".into(),
+        mesh_name: "billing".into(),
+        why: "checkout request flow".into(),
+        status_if_not_fresh: Some(Status::Changed),
+        non_active_anchors: vec![],
+    };
+    let rendered = b.to_string();
+    assert_eq!(
+        rendered,
+        "src/main.rs#L1-L30 (CHANGED) is in the billing mesh: checkout request flow\n",
+        "stale header must include status paren; got:\n{rendered}"
+    );
+}
+
+/// Active anchor never appears as a bullet, even when non_active_anchors is empty.
+#[test]
+fn basic_output_active_anchor_not_in_bullets() {
+    let b = BasicOutput {
+        active_anchor: "web/checkout.tsx#L88-L120".into(),
+        mesh_name: "checkout".into(),
+        why: "payment flow".into(),
+        status_if_not_fresh: None,
+        non_active_anchors: vec!["api/pay.ts".into()],
+    };
+    let rendered = b.to_string();
+    assert!(
+        rendered.starts_with("web/checkout.tsx#L88-L120 is in the checkout mesh:"),
+        "header must start with active anchor; got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("- web/checkout.tsx"),
+        "active anchor must not appear as a bullet; got:\n{rendered}"
+    );
+}
+
+/// Non-active bullets render as plain `- <anchor>` lines.
+#[test]
+fn basic_output_non_active_bullets_are_plain() {
+    let b = BasicOutput {
+        active_anchor: "a.ts".into(),
+        mesh_name: "m".into(),
+        why: "why".into(),
+        status_if_not_fresh: None,
+        non_active_anchors: vec!["b.ts".into(), "c.ts".into()],
+    };
+    let rendered = b.to_string();
+    assert!(
+        rendered.contains("- b.ts\n"),
+        "non-active bullet must render as plain bullet; got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("- c.ts\n"),
+        "non-active bullet must render as plain bullet; got:\n{rendered}"
+    );
 }
