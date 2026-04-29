@@ -251,36 +251,54 @@ fn resolve_loaded_mesh_with_state(
     mesh: crate::types::Mesh,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
-    let mut anchors = Vec::with_capacity(mesh.anchors.len());
+    let mut anchors = Vec::with_capacity(mesh.anchors.len() + mesh.anchors_v2.len());
     let mut filtered_by_since: usize = 0;
     {
         let _perf = crate::perf::span("resolver.resolve-anchors");
-        for id in &mesh.anchors {
-            match read_anchor(repo, id) {
-                Ok(r) => {
-                    // Slice 5: `--since` filter. Skip anchors whose commit is
-                    // strictly older than `since`. Orphaned anchors (whose
-                    // commit is unreachable / unparseable) are always
-                    // included — the filter scopes by history, it does not
-                    // hide orphans.
-                    if let Some(since_oid) = options.since
-                        && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
-                    {
-                        filtered_by_since += 1;
-                        continue;
+        if !mesh.anchors_v2.is_empty() {
+            for (id, r) in mesh.anchors_v2 {
+                if let Some(since_oid) = options.since
+                    && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
+                {
+                    filtered_by_since += 1;
+                    continue;
+                }
+                anchors.push(resolve_anchor_inner(
+                    repo,
+                    &mut *state,
+                    &mesh.config,
+                    &id,
+                    r,
+                )?);
+            }
+        } else {
+            for id in &mesh.anchors {
+                match read_anchor(repo, id) {
+                    Ok(r) => {
+                        // Slice 5: `--since` filter. Skip anchors whose commit is
+                        // strictly older than `since`. Orphaned anchors (whose
+                        // commit is unreachable / unparseable) are always
+                        // included — the filter scopes by history, it does not
+                        // hide orphans.
+                        if let Some(since_oid) = options.since
+                            && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
+                        {
+                            filtered_by_since += 1;
+                            continue;
+                        }
+                        anchors.push(resolve_anchor_inner(
+                            repo,
+                            &mut *state,
+                            &mesh.config,
+                            id,
+                            r,
+                        )?)
                     }
-                    anchors.push(resolve_anchor_inner(
-                        repo,
-                        &mut *state,
-                        &mesh.config,
-                        id,
-                        r,
-                    )?)
+                    Err(Error::AnchorNotFound(_)) => {
+                        anchors.push(orphaned_placeholder(id));
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(Error::AnchorNotFound(_)) => {
-                    anchors.push(orphaned_placeholder(id));
-                }
-                Err(e) => return Err(e),
             }
         }
     }

@@ -1,6 +1,6 @@
-# Codex Prompt: Drive git-mesh Toward Breakthrough-Scale Performance
+# Prompt: Drive git-mesh Toward Breakthrough-Scale Performance
 
-You are Codex working in `/workspace`, focused on `packages/git-mesh`. Continue performance work after the latest optimization passes, but change the emphasis: the next gains probably require a measured architectural breakthrough, not only more local read-path cleanup.
+You are working in `/workspace`, focused on `packages/git-mesh`. Continue performance work after the latest optimization passes, but change the emphasis: the next gains probably require a measured architectural breakthrough, not only more local read-path cleanup.
 
 The public CLI surface must not change. Preserve output formats, flags, arguments, exit codes, and machine-readable contracts unless tests explicitly establish a new correct behavior.
 

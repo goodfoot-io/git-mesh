@@ -130,6 +130,27 @@ Rejected or deferred experiments:
 - Automatic Git maintenance during normal CLI operations: deferred to avoid surprising repository mutation. The harness can measure `--pack-refs` and `--maintenance` variants explicitly.
 - Command-local anchor-ref OID snapshot: rejected for now. On the 1,000-mesh fixture it added a 30-60 ms namespace scan/peel cost to `ls` and regressed `stale` to about 4.7 s because the resolver already benefits from targeted anchor ref reads and object reuse.
 
+## 10,000-Mesh Scale Findings and Schema Change Decision
+
+A full 10,000-mesh benchmarking matrix was prepared using `scripts/bench-mesh-scale.sh`. Profiling confirmed that `ls <path> --porcelain` without an index remains effectively `O(all committed mesh/anchor records)`, leading to unacceptable latency for downstream tools like the wiki renderer which requires a per-query process invocation.
+
+| design | expected filtered `ls` complexity | write cost | storage cost | failure mode | migration needed now? |
+|---|---|---|---|---|---|
+| current refs | O(all mesh/anchor records) | current | high ref count | ref iteration/object reads | no |
+| mesh-embedded anchors | O(meshes) or better with index | lower refs | more commit-tree data | commit tree parse errors | no, greenfield only |
+| authoritative path/range index | O(path bucket + matching meshes) | extra tree writes | bounded tree blobs | stale index impossible if authoritative | no, greenfield only |
+| reftable-aware refs | still O(log/scan refs), faster constants | current | backend-dependent | unavailable backend | no |
+
+**Decision:** We are proceeding with **mesh-embedded anchors** (`anchors.v2` embedded layout).
+- Removing anchor refs entirely drops the repository ref count from 30,000 down to 10,000 (at 10,000 meshes with 2 anchors).
+- It fundamentally shifts filtered `ls` to `O(meshes)` object reads by side-stepping the need to materialize ~20,000 distinct anchor `blob` and `ref` objects.
+- It preserves `fail-closed` behavior, natively utilizes existing tree atomicity, and requires no daemon state or cross-mesh index maintenance contention.
+
+Implementation of the greenfield `anchors.v2` layout slice is complete:
+- `git mesh commit` now writes an `anchors.v2` blob containing fully serialized anchor records directly within the mesh commit tree.
+- `git mesh ls` and `git mesh stale` prioritize the `anchors.v2` blob over individual legacy ref resolution.
+- 10,000-mesh benchmark artifacts have been recorded.
+
 ## Validation
 
 Completed:

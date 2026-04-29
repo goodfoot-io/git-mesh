@@ -239,8 +239,23 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         let anchors_blob = git::write_blob_bytes(repo, anchors_text.as_bytes())?;
         let config_text = serialize_config_blob(&new_config);
         let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
-        // Build a tree with `anchors` and `config` entries. `git mktree`
-        // sorts entries by name; gix expects them pre-sorted as well.
+        
+        let anchors_v2_text: String = {
+            let mut s = String::new();
+            for id in &final_ids {
+                if let Ok(r) = read_anchor(repo, id) {
+                    s.push_str("id ");
+                    s.push_str(id);
+                    s.push('\n');
+                    s.push_str(&crate::anchor::serialize_anchor(&r));
+                    s.push('\n');
+                }
+            }
+            s
+        };
+        let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
+
+        // Build a tree with `anchors`, `anchors.v2`, and `config` entries.
         let tree = Tree {
             entries: vec![
                 Entry {
@@ -249,6 +264,13 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                     oid: anchors_blob
                         .parse()
                         .map_err(|e| crate::Error::Git(format!("parse anchors blob oid: {e}")))?,
+                },
+                Entry {
+                    mode: EntryKind::Blob.into(),
+                    filename: "anchors.v2".into(),
+                    oid: anchors_v2_blob
+                        .parse()
+                        .map_err(|e| crate::Error::Git(format!("parse anchors_v2 blob oid: {e}")))?,
                 },
                 Entry {
                     mode: EntryKind::Blob.into(),

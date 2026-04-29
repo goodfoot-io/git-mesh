@@ -73,6 +73,8 @@ pub struct Mesh {
     /// Active Anchor ids. Canonical order: sorted by the referenced
     /// Anchor's `(path, start, end)` ascending.
     pub anchors: Vec<String>,
+    /// Active Embedded Anchors (v2 layout).
+    pub anchors_v2: Vec<(String, Anchor)>,
     /// The commit's message.
     pub message: String,
     /// Resolver options for all anchors in this mesh.

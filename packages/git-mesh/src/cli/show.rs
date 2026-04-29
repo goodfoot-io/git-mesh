@@ -322,12 +322,22 @@ fn collect_listings_with_options(
                 )
             };
             let mut anchors = Vec::new();
-            for anchor_id in &anchor_ids {
-                let r = read_anchor(repo, anchor_id)?;
-                anchors.push(AnchorEntry {
-                    path: r.path,
-                    extent: r.extent,
-                });
+            let anchors_v2 = crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
+            if !anchors_v2.is_empty() {
+                for (_id, r) in anchors_v2 {
+                    anchors.push(AnchorEntry {
+                        path: r.path,
+                        extent: r.extent,
+                    });
+                }
+            } else {
+                for anchor_id in &anchor_ids {
+                    let r = read_anchor(repo, anchor_id)?;
+                    anchors.push(AnchorEntry {
+                        path: r.path,
+                        extent: r.extent,
+                    });
+                }
             }
             // Determine if this committed mesh also has staged ops.
             let state = if include_state && staged_name_set.contains(name.as_str()) {

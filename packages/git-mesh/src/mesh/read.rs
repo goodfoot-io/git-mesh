@@ -78,14 +78,41 @@ pub(crate) fn read_mesh_from_commit(
     commit_oid: &str,
 ) -> Result<Mesh> {
     let message = git::commit_meta(repo, commit_oid)?.message;
-    let anchors = git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default();
+    let anchors = git::git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default();
+    let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
     let config = read_config_blob(repo, commit_oid).unwrap_or_else(|_| default_config());
     Ok(Mesh {
         name: name.to_string(),
         anchors,
+        anchors_v2,
         message,
         config,
     })
+}
+
+pub(crate) fn read_anchors_v2_blob(repo: &gix::Repository, commit_oid: &str) -> Result<Vec<(String, crate::types::Anchor)>> {
+    let blob_oid = match git::path_blob_at(repo, commit_oid, "anchors.v2") {
+        Ok(oid) => oid,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let text = git::read_git_text(repo, &blob_oid)?;
+    let mut out = Vec::new();
+    for anchor_text in text.split("\n\n") {
+        let anchor_text = anchor_text.trim();
+        if !anchor_text.is_empty()
+            && let Some(rest) = anchor_text.strip_prefix("id ")
+            && let Some((id_str, anchor_body)) = rest.split_once('\n')
+        {
+            let mut formatted = anchor_body.to_string();
+            if !formatted.ends_with('\n') {
+                formatted.push('\n');
+            }
+            if let Ok(a) = crate::anchor::parse_anchor(&formatted) {
+                out.push((id_str.to_string(), a));
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub(crate) struct MeshListingRecord {
