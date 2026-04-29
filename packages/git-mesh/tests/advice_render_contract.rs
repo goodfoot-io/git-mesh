@@ -491,8 +491,7 @@ fn basic_output_stale_header_includes_status() {
     };
     let rendered = b.to_string();
     assert_eq!(
-        rendered,
-        "src/main.rs#L1-L30 (CHANGED) is in the billing mesh: checkout request flow\n",
+        rendered, "src/main.rs#L1-L30 (CHANGED) is in the billing mesh: checkout request flow\n",
         "stale header must include status paren; got:\n{rendered}"
     );
 }

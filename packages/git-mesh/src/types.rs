@@ -45,7 +45,7 @@ pub struct Anchor {
 /// `-C` levels for `git log -L` copy detection. Stored in mesh config,
 /// not in the anchor record. Serialized as the kebab-case variant name:
 /// `off`, `same-commit`, `any-file-in-commit`, `any-file-in-repo`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CopyDetection {
     Off,

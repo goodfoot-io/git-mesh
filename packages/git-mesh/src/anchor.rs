@@ -132,8 +132,7 @@ fn gitlink_sha_at(repo: &gix::Repository, commit_sha: &str, path: &str) -> Optio
 }
 
 pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
-    let wd = work_dir(repo)?;
-    let oid = crate::git::resolve_ref_oid_optional(wd, &anchor_ref_path(anchor_id))?
+    let oid = crate::git::resolve_ref_oid_optional_repo(repo, &anchor_ref_path(anchor_id))?
         .ok_or_else(|| Error::AnchorNotFound(anchor_id.to_string()))?;
     let raw = crate::git::read_git_text(repo, &oid)?;
     parse_anchor(&raw)

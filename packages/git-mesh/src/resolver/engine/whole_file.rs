@@ -16,10 +16,6 @@ fn oid_from_hex(hex: &str) -> Result<gix::ObjectId> {
     gix::ObjectId::from_str(hex).map_err(|e| Error::Git(format!("invalid oid `{hex}`: {e}")))
 }
 
-fn is_commit_reachable(repo: &gix::Repository, commit: &str) -> Result<bool> {
-    git::commit_reachable_from_any_ref(repo, commit)
-}
-
 pub(crate) fn resolve_whole_file(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -32,7 +28,7 @@ pub(crate) fn resolve_whole_file(
         extent: AnchorExtent::WholeFile,
         blob: oid_from_hex(&r.blob).ok(),
     };
-    if !is_commit_reachable(repo, &r.anchor_sha)? {
+    if !state.commit_reachable(repo, &r.anchor_sha)? {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
@@ -46,7 +42,31 @@ pub(crate) fn resolve_whole_file(
         });
     }
 
-    let head_sha = git::head_oid(repo)?;
+    if r.anchor_sha == state.head_sha {
+        let content_layers_match_head =
+            state.clean_layers || (!state.layers.index && !state.layers.worktree);
+        if content_layers_match_head
+            && let Some(head_blob) = state.head_blob_at(repo, &r.path)?
+            && head_blob == r.blob
+        {
+            return Ok(AnchorResolved {
+                anchor_id: anchor_id.into(),
+                anchor_sha: r.anchor_sha,
+                anchored,
+                current: Some(AnchorLocation {
+                    path: PathBuf::from(&r.path),
+                    extent: AnchorExtent::WholeFile,
+                    blob: oid_from_hex(&head_blob).ok(),
+                }),
+                status: AnchorStatus::Fresh,
+                source: None,
+                layer_sources: vec![],
+                acknowledged_by: None,
+                culprit: None,
+            });
+        }
+    }
+
     let workdir = git::work_dir(repo)?;
     // Phase 2: rename trail consumes per-commit deltas from the shared
     // session instead of running its own `anchor..HEAD` rev_walk.
@@ -60,11 +80,47 @@ pub(crate) fn resolve_whole_file(
     )
     .unwrap_or_else(|| r.path.clone());
 
-    let head_kind_sha = tree_entry_for(repo, &head_sha, &current_path);
     let moved = current_path != r.path;
 
     // Per-layer blob OIDs for whole-file comparison.
-    let head_blob: Option<String> = head_kind_sha.as_ref().map(|(_, sha)| sha.clone());
+    let head_blob: Option<String> = state.head_blob_at(repo, &current_path)?;
+    let deepest = if state.layers.worktree {
+        DriftSource::Worktree
+    } else if state.layers.index {
+        DriftSource::Index
+    } else {
+        DriftSource::Head
+    };
+
+    let content_layers_match_head =
+        state.clean_layers || (!state.layers.index && !state.layers.worktree);
+    if content_layers_match_head
+        && let Some(head_blob) = head_blob.as_ref()
+        && head_blob == &r.blob
+    {
+        let status = if moved {
+            AnchorStatus::Moved
+        } else {
+            AnchorStatus::Fresh
+        };
+        let source = if moved { Some(deepest) } else { None };
+        let layer_sources = if moved { vec![deepest] } else { vec![] };
+        return Ok(AnchorResolved {
+            anchor_id: anchor_id.into(),
+            anchor_sha: r.anchor_sha,
+            anchored,
+            current: Some(AnchorLocation {
+                path: PathBuf::from(&current_path),
+                extent: AnchorExtent::WholeFile,
+                blob: oid_from_hex(head_blob).ok(),
+            }),
+            status,
+            source,
+            layer_sources,
+            acknowledged_by: None,
+            culprit: None,
+        });
+    }
 
     let index_blob: Option<String> = if state.layers.index {
         if let Some((_mode, sha)) = index_entry_for(repo, &current_path) {
@@ -123,14 +179,6 @@ pub(crate) fn resolve_whole_file(
             .map(|b| b.as_deref() != Some(r.blob.as_str()))
             .unwrap_or(false);
 
-    let deepest = if state.layers.worktree {
-        DriftSource::Worktree
-    } else if state.layers.index {
-        DriftSource::Index
-    } else {
-        DriftSource::Head
-    };
-
     let cur_blob_oid = current_blob.as_deref().and_then(|s| oid_from_hex(s).ok());
     let current_loc = Some(AnchorLocation {
         path: PathBuf::from(&current_path),
@@ -183,13 +231,6 @@ pub(crate) fn resolve_whole_file(
         acknowledged_by: None,
         culprit: None,
     })
-}
-
-fn tree_entry_for(repo: &gix::Repository, commit: &str, path: &str) -> Option<(String, String)> {
-    let (mode, oid) = git::tree_entry_at(repo, commit, std::path::Path::new(path)).ok()??;
-    let mut buf = [0u8; 6];
-    let mode_str = mode.as_bytes(&mut buf).to_string();
-    Some((mode_str, oid.to_string()))
 }
 
 fn index_entry_for(repo: &gix::Repository, path: &str) -> Option<(String, String)> {

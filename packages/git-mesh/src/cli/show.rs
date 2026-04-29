@@ -285,67 +285,79 @@ struct MeshListing {
 }
 
 fn collect_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
-    let committed_names = list_mesh_names(repo)?;
-    let staged_names = list_staged_mesh_names(repo)?;
+    let committed_names = {
+        let _perf = crate::perf::span("ls.list-committed-meshes");
+        list_mesh_names(repo)?
+    };
+    let staged_names = {
+        let _perf = crate::perf::span("ls.list-staged-meshes");
+        list_staged_mesh_names(repo)?
+    };
 
     let mut listings: Vec<MeshListing> = Vec::new();
 
     // Collect committed meshes.
-    for name in &committed_names {
-        let mesh = read_mesh(repo, name)?;
-        let mut anchors = Vec::new();
-        for anchor_id in &mesh.anchors {
-            let r = read_anchor(repo, anchor_id)?;
-            anchors.push(AnchorEntry {
-                path: r.path,
-                extent: r.extent,
+    {
+        let _perf = crate::perf::span("ls.read-committed-meshes");
+        for name in &committed_names {
+            let mesh = read_mesh(repo, name)?;
+            let mut anchors = Vec::new();
+            for anchor_id in &mesh.anchors {
+                let r = read_anchor(repo, anchor_id)?;
+                anchors.push(AnchorEntry {
+                    path: r.path,
+                    extent: r.extent,
+                });
+            }
+            // Determine if this committed mesh also has staged ops.
+            let state = if staged_names.iter().any(|s| s == name) {
+                let staging = read_staging(repo, name)?;
+                if staging.adds.is_empty()
+                    && staging.removes.is_empty()
+                    && staging.configs.is_empty()
+                    && staging.why.is_none()
+                {
+                    MeshState::Committed
+                } else {
+                    MeshState::Staged
+                }
+            } else {
+                MeshState::Committed
+            };
+            let why = mesh.message.trim_end_matches('\n').to_string();
+            listings.push(MeshListing {
+                name: name.clone(),
+                why,
+                anchors,
+                state,
             });
         }
-        // Determine if this committed mesh also has staged ops.
-        let state = if staged_names.iter().any(|s| s == name) {
-            let staging = read_staging(repo, name)?;
-            if staging.adds.is_empty()
-                && staging.removes.is_empty()
-                && staging.configs.is_empty()
-                && staging.why.is_none()
-            {
-                MeshState::Committed
-            } else {
-                MeshState::Staged
-            }
-        } else {
-            MeshState::Committed
-        };
-        let why = mesh.message.trim_end_matches('\n').to_string();
-        listings.push(MeshListing {
-            name: name.clone(),
-            why,
-            anchors,
-            state,
-        });
     }
 
     // Collect staging-only (pending) meshes.
-    for name in &staged_names {
-        if committed_names.iter().any(|c| c == name) {
-            continue; // already handled above
+    {
+        let _perf = crate::perf::span("ls.read-pending-meshes");
+        for name in &staged_names {
+            if committed_names.iter().any(|c| c == name) {
+                continue; // already handled above
+            }
+            let staging = read_staging(repo, name)?;
+            let why = staging.why.unwrap_or_default();
+            let anchors = staging
+                .adds
+                .into_iter()
+                .map(|a| AnchorEntry {
+                    path: a.path,
+                    extent: a.extent,
+                })
+                .collect();
+            listings.push(MeshListing {
+                name: name.clone(),
+                why,
+                anchors,
+                state: MeshState::Pending,
+            });
         }
-        let staging = read_staging(repo, name)?;
-        let why = staging.why.unwrap_or_default();
-        let anchors = staging
-            .adds
-            .into_iter()
-            .map(|a| AnchorEntry {
-                path: a.path,
-                extent: a.extent,
-            })
-            .collect();
-        listings.push(MeshListing {
-            name: name.clone(),
-            why,
-            anchors,
-            state: MeshState::Pending,
-        });
     }
 
     Ok(listings)
@@ -437,7 +449,11 @@ fn render_porcelain(page: &[MeshListing]) {
 
 pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     if args.log {
-        let entries = mesh_log(repo, &args.name, args.limit)?;
+        let entries = {
+            let _perf = crate::perf::span("show.read-log");
+            mesh_log(repo, &args.name, args.limit)?
+        };
+        let _perf = crate::perf::span("show.render-log");
         for info in entries {
             if args.oneline {
                 println!("{} {}", short(&info.commit_oid), info.summary);
@@ -455,22 +471,35 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         return Ok(0);
     }
 
-    let mesh = read_mesh_at(repo, &args.name, args.at.as_deref())?;
-    let info = mesh_commit_info_at(repo, &args.name, args.at.as_deref())?;
+    let mesh = {
+        let _perf = crate::perf::span("show.read-mesh");
+        read_mesh_at(repo, &args.name, args.at.as_deref())?
+    };
+    let info = {
+        let _perf = crate::perf::span("show.read-commit-info");
+        mesh_commit_info_at(repo, &args.name, args.at.as_deref())?
+    };
 
     // --format=<FMT> short-circuits the default rendering (§10.4).
     if let Some(fmt) = &args.format {
-        let tokens = match parse_format(fmt) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("git-mesh: {e}");
-                return Ok(2);
+        let tokens = {
+            let _perf = crate::perf::span("show.parse-format");
+            match parse_format(fmt) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("git-mesh: {e}");
+                    return Ok(2);
+                }
             }
         };
 
-        let meta = crate::git::commit_meta(repo, &info.commit_oid)
-            .map_err(|e| anyhow::anyhow!("commit meta: {e}"))?;
+        let meta = {
+            let _perf = crate::perf::span("show.read-commit-meta");
+            crate::git::commit_meta(repo, &info.commit_oid)
+                .map_err(|e| anyhow::anyhow!("commit meta: {e}"))?
+        };
 
+        let _perf = crate::perf::span("show.render-format");
         if has_range_token(&tokens) {
             for id in &mesh.anchors {
                 let r = read_anchor(repo, id)?;
@@ -485,6 +514,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     }
 
     if args.oneline {
+        let _perf = crate::perf::span("show.render-oneline");
         for id in &mesh.anchors {
             let r = read_anchor(repo, id)?;
             println!("{}", render_range_address(&r.path, r.extent));
@@ -492,6 +522,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         return Ok(0);
     }
 
+    let _perf = crate::perf::span("show.render-default");
     println!("mesh {}", mesh.name);
     println!("commit {}", info.commit_oid);
     println!("Author: {} <{}>", info.author_name, info.author_email);
@@ -513,13 +544,18 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 }
 
 pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
-    let mut listings = collect_listings(repo)?;
+    let mut listings = {
+        let _perf = crate::perf::span("ls.collect");
+        collect_listings(repo)?
+    };
 
     if let Some(ref t) = args.target {
+        let _perf = crate::perf::span("ls.filter-path");
         apply_path_filter(&mut listings, t)?;
     }
 
     if let Some(ref pat) = args.search {
+        let _perf = crate::perf::span("ls.filter-search");
         match RegexBuilder::new(pat).case_insensitive(true).build() {
             Ok(re) => apply_search(&mut listings, &re),
             Err(err) => {
@@ -529,6 +565,7 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
         }
     }
 
+    let _perf = crate::perf::span("ls.sort-page-render");
     listings.sort_by(|a, b| a.name.cmp(&b.name));
 
     let page: Vec<_> = listings

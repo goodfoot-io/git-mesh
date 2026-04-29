@@ -9,7 +9,8 @@ pub(crate) mod lfs;
 pub(crate) mod worktree;
 
 pub(crate) use diff::{
-    LayerDiffs, read_conflicted_paths, read_index_layer, read_index_trailer, read_worktree_layer,
+    LayerDiffs, read_conflicted_paths, read_index_layer, read_index_trailer, read_layer_status,
+    read_worktree_layer, read_worktree_layer_for_paths,
 };
 pub(crate) use filter_process::CustomFilters;
 pub(crate) use lfs::{LfsState, is_lfs_path, resolve_lfs_anchor};

@@ -15,10 +15,10 @@
 //! "Sharing a single computation across consumers, not storing past
 //! results."
 
+use crate::Result;
 use crate::git;
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
-use crate::Result;
 use std::collections::HashMap;
 
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
@@ -49,7 +49,7 @@ pub(crate) struct GroupedWalk {
 
 /// Engine-wide shared state: one entry per distinct anchor commit.
 pub(crate) struct ResolveSession {
-    walks: HashMap<String, GroupedWalk>,
+    walks: HashMap<(String, CopyDetection), GroupedWalk>,
 }
 
 impl ResolveSession {
@@ -74,15 +74,19 @@ impl ResolveSession {
         copy_detection: CopyDetection,
         warnings: &mut Vec<String>,
     ) -> Result<&GroupedWalk> {
-        if !self.walks.contains_key(anchor_sha) {
+        let key = (anchor_sha.to_string(), copy_detection);
+        if !self.walks.contains_key(&key) {
             let walk = build_grouped_walk(repo, anchor_sha, copy_detection, warnings)?;
-            self.walks.insert(anchor_sha.to_string(), walk);
+            self.walks.insert(key.clone(), walk);
         }
-        Ok(self.walks.get(anchor_sha).expect("just inserted"))
+        Ok(self.walks.get(&key).expect("just inserted"))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn group(&self, anchor_sha: &str) -> Option<&GroupedWalk> {
-        self.walks.get(anchor_sha)
+        self.walks
+            .iter()
+            .find_map(|((sha, _), walk)| (sha == anchor_sha).then_some(walk))
     }
 }
 
@@ -136,8 +140,7 @@ pub(crate) fn resolve_at_head_shared(
         AnchorExtent::LineRange { start, end } => (start, end),
         AnchorExtent::WholeFile => (1, 1),
     };
-    let group = session
-        .ensure_group(repo, &r.anchor_sha, copy_detection, warnings)?;
+    let group = session.ensure_group(repo, &r.anchor_sha, copy_detection, warnings)?;
     let head_sha = group.head_sha.clone();
     let mut loc = walker::Tracked {
         path: r.path.clone(),
@@ -145,13 +148,14 @@ pub(crate) fn resolve_at_head_shared(
         end: rend,
     };
     // Iterate shared per-commit deltas; only the hunk math is per-anchor.
-    let commits_snapshot: Vec<(String, String, Vec<NS>)> = group
-        .commits
-        .iter()
-        .map(|d| (d.parent.clone(), d.commit.clone(), d.entries.clone()))
-        .collect();
-    for (parent, commit, entries) in &commits_snapshot {
-        match walker::advance_with_entries(repo, parent, commit, &loc, entries)? {
+    for delta in &group.commits {
+        match walker::advance_with_entries(
+            repo,
+            &delta.parent,
+            &delta.commit,
+            &loc,
+            &delta.entries,
+        )? {
             walker::Change::Unchanged => {}
             walker::Change::Deleted => return Ok(None),
             walker::Change::Updated(next) => loc = next,

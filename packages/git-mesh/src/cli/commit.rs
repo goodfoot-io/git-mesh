@@ -11,10 +11,14 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
 
     // Parse every address first; fail-closed with no partial staging.
     let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
-    for addr in &args.anchors {
-        let p = parse_address(addr)
-            .ok_or_else(|| anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]"))?;
-        parsed.push(p);
+    {
+        let _perf = crate::perf::span("add.parse-anchors");
+        for addr in &args.anchors {
+            let p = parse_address(addr).ok_or_else(|| {
+                anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]")
+            })?;
+            parsed.push(p);
+        }
     }
 
     // Slice 3: last-write-wins. Within a single invocation, coalesce
@@ -41,31 +45,47 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs) -> Result<i32> {
     // same anchor (independent of clap arg ordering).
     let anchor_oid: Option<String> = match args.at.as_deref() {
         Some(s) => {
+            let _perf = crate::perf::span("add.resolve-at");
             Some(crate::git::resolve_commit(repo, s).map_err(|e| anyhow!("--at `{s}`: {e}"))?)
         }
         None => None,
     };
 
     // Stage-time precheck (plan §"CLI and `git mesh add` prechecks").
-    for (path, extent) in &parsed {
-        validate_add_target(repo, std::path::Path::new(path), extent)
-            .map_err(|err| anyhow!("{err}"))?;
+    {
+        let _perf = crate::perf::span("add.validate-targets");
+        for (path, extent) in &parsed {
+            validate_add_target(repo, std::path::Path::new(path), extent)
+                .map_err(|err| anyhow!("{err}"))?;
+        }
     }
 
     // Resolve the existing anchor_id for this `(path, extent)` in the
     // mesh. Include resolved current locations so `git mesh add` over a
     // moved anchor's new address re-anchors the existing anchor instead of
     // creating a second anchor.
-    let mut mesh_ranges_lookup = mesh_current_range_id_lookup(repo, &args.name);
-    mesh_ranges_lookup.extend(mesh_range_id_lookup(repo, &args.name));
+    let mut mesh_ranges_lookup = {
+        let _perf = crate::perf::span("add.resolve-current-ranges");
+        mesh_current_range_id_lookup(repo, &args.name)
+    };
+    {
+        let _perf = crate::perf::span("add.read-mesh-ranges");
+        mesh_ranges_lookup.extend(mesh_range_id_lookup(repo, &args.name));
+    }
 
     let mut prepared = Vec::with_capacity(parsed.len());
-    for (path, extent) in &parsed {
-        prepared.push(prepare_add(repo, path, *extent, anchor_oid.as_deref())?);
+    {
+        let _perf = crate::perf::span("add.prepare-anchors");
+        for (path, extent) in &parsed {
+            prepared.push(prepare_add(repo, path, *extent, anchor_oid.as_deref())?);
+        }
     }
-    for (add, (path, extent)) in prepared.iter().zip(parsed.iter()) {
-        let anchor_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();
-        append_prepared_add(repo, &args.name, add, anchor_id)?;
+    {
+        let _perf = crate::perf::span("add.write-staging");
+        for (add, (path, extent)) in prepared.iter().zip(parsed.iter()) {
+            let anchor_id = mesh_ranges_lookup.get(&(path.clone(), *extent)).cloned();
+            append_prepared_add(repo, &args.name, add, anchor_id)?;
+        }
     }
     Ok(0)
 }
@@ -108,22 +128,29 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
     let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
-    for addr in &args.anchors {
-        let p = parse_address(addr)
-            .ok_or_else(|| anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]"))?;
-        parsed.push(p);
+    {
+        let _perf = crate::perf::span("rm.parse-anchors");
+        for addr in &args.anchors {
+            let p = parse_address(addr).ok_or_else(|| {
+                anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]")
+            })?;
+            parsed.push(p);
+        }
     }
 
     let mut present: Vec<(String, AnchorExtent)> = Vec::new();
-    match read_mesh(repo, &args.name) {
-        Ok(mesh) => {
-            for id in &mesh.anchors {
-                let r = crate::anchor::read_anchor(repo, id)?;
-                present.push((r.path, r.extent));
+    {
+        let _perf = crate::perf::span("rm.read-current-anchors");
+        match read_mesh(repo, &args.name) {
+            Ok(mesh) => {
+                for id in &mesh.anchors {
+                    let r = crate::anchor::read_anchor(repo, id)?;
+                    present.push((r.path, r.extent));
+                }
             }
+            Err(crate::Error::MeshNotFound(_)) => {}
+            Err(e) => return Err(e.into()),
         }
-        Err(crate::Error::MeshNotFound(_)) => {}
-        Err(e) => return Err(e.into()),
     }
     let staging = crate::staging::read_staging(repo, &args.name).unwrap_or_default();
     for a in &staging.adds {
@@ -157,13 +184,16 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
         }
     }
 
-    for (path, extent) in &parsed {
-        match extent {
-            AnchorExtent::LineRange { start, end } => {
-                append_remove(repo, &args.name, path, *start, *end)?;
-            }
-            AnchorExtent::WholeFile => {
-                crate::staging::append_remove_whole(repo, &args.name, path)?;
+    {
+        let _perf = crate::perf::span("rm.write-staging");
+        for (path, extent) in &parsed {
+            match extent {
+                AnchorExtent::LineRange { start, end } => {
+                    append_remove(repo, &args.name, path, *start, *end)?;
+                }
+                AnchorExtent::WholeFile => {
+                    crate::staging::append_remove_whole(repo, &args.name, path)?;
+                }
             }
         }
     }
@@ -176,14 +206,20 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs) -> Result<i32> {
     // optionally accepts `--at <commit>` for historical reads).
     let writer = args.m.is_some() || args.file.is_some() || args.edit;
     if !writer {
+        let _perf = crate::perf::span("why.read");
         return run_why_reader(repo, &args.name, args.at.as_deref());
     }
     if let Some(m) = args.m {
+        let _perf = crate::perf::span("why.write-message");
         set_why(repo, &args.name, &m)?;
         return Ok(0);
     }
     if let Some(f) = args.file {
-        let body = std::fs::read_to_string(&f).with_context(|| format!("failed to read {f}"))?;
+        let body = {
+            let _perf = crate::perf::span("why.read-file");
+            std::fs::read_to_string(&f).with_context(|| format!("failed to read {f}"))?
+        };
+        let _perf = crate::perf::span("why.write-message");
         set_why(repo, &args.name, &body)?;
         return Ok(0);
     }
@@ -207,6 +243,7 @@ fn run_why_reader(repo: &gix::Repository, name: &str, at: Option<&str>) -> Resul
 }
 
 fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
+    let _perf = crate::perf::span("why.edit");
     crate::validation::validate_mesh_name(name)?;
     let staging_dir = crate::git::mesh_dir(repo).join("staging");
     std::fs::create_dir_all(&staging_dir)?;
@@ -268,6 +305,7 @@ fn run_why_editor(repo: &gix::Repository, name: &str) -> Result<i32> {
 
 pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
     if let Some(name) = args.name {
+        let _perf = crate::perf::span("commit.write-mesh");
         commit_mesh(repo, &name)?;
         println!("updated refs/meshes/v1/{name}");
         return Ok(0);
@@ -280,26 +318,34 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
     // and exit non-zero. If none are staged, exit 0 with a clear message.
     let dir = crate::git::mesh_dir(repo).join("staging");
     let mut candidates: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    if dir.exists() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let fname = entry.file_name();
-            let fn_str = fname.to_string_lossy().into_owned();
-            // Ops files have no extension; `.why` and `.<N>` are sidecars.
-            if !fn_str.contains('.') {
-                candidates.insert(crate::staging::decode_name_from_fs(&fn_str));
+    {
+        let _perf = crate::perf::span("commit.scan-staging");
+        if dir.exists() {
+            for entry in std::fs::read_dir(&dir)? {
+                let entry = entry?;
+                let fname = entry.file_name();
+                let fn_str = fname.to_string_lossy().into_owned();
+                // Ops files have no extension; `.why` and `.<N>` are sidecars.
+                if !fn_str.contains('.') {
+                    candidates.insert(crate::staging::decode_name_from_fs(&fn_str));
+                }
             }
         }
     }
 
     // Filter to meshes that actually have something staged (ops or why).
     let mut staged: Vec<String> = Vec::new();
-    for name in candidates {
-        let s = crate::staging::read_staging(repo, &name).unwrap_or_default();
-        let has_anything =
-            !s.adds.is_empty() || !s.removes.is_empty() || !s.configs.is_empty() || s.why.is_some();
-        if has_anything {
-            staged.push(name);
+    {
+        let _perf = crate::perf::span("commit.read-staging");
+        for name in candidates {
+            let s = crate::staging::read_staging(repo, &name).unwrap_or_default();
+            let has_anything = !s.adds.is_empty()
+                || !s.removes.is_empty()
+                || !s.configs.is_empty()
+                || s.why.is_some();
+            if has_anything {
+                staged.push(name);
+            }
         }
     }
 
@@ -310,15 +356,18 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
 
     let mut failures: Vec<(String, String)> = Vec::new();
     let mut committed: Vec<String> = Vec::new();
-    for name in &staged {
-        match commit_mesh(repo, name) {
-            Ok(_) => {
-                println!("updated refs/meshes/v1/{name}");
-                committed.push(name.clone());
-            }
-            Err(e) => {
-                eprintln!("error: mesh `{name}`: {e}");
-                failures.push((name.clone(), e.to_string()));
+    {
+        let _perf = crate::perf::span("commit.write-meshes");
+        for name in &staged {
+            match commit_mesh(repo, name) {
+                Ok(_) => {
+                    println!("updated refs/meshes/v1/{name}");
+                    committed.push(name.clone());
+                }
+                Err(e) => {
+                    eprintln!("error: mesh `{name}`: {e}");
+                    failures.push((name.clone(), e.to_string()));
+                }
             }
         }
     }
@@ -336,7 +385,10 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
 
 pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
     // Read mesh config.
-    let mesh = read_mesh(repo, &args.name)?;
+    let mesh = {
+        let _perf = crate::perf::span("config.read-mesh");
+        read_mesh(repo, &args.name)?
+    };
     match (args.unset, args.key, args.value) {
         (Some(unset), _, _) => {
             // §10.5: stage a reset to the built-in default for <key>.

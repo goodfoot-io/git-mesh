@@ -84,3 +84,6 @@ scripts/ssh/
 npm/git-mesh-*/bin/git-mesh
 npm/git-mesh-*/bin/git-mesh.exe
 .claude/settings.local.json
+
+# Local benchmark/profiling outputs
+profiling/

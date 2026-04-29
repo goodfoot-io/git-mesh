@@ -23,6 +23,7 @@ use super::super::walker::rename_budget;
 use crate::git;
 use crate::{Error, Result};
 use std::collections::{HashMap, HashSet};
+use std::process::Command;
 
 use gix::bstr::ByteSlice;
 
@@ -33,6 +34,16 @@ pub(crate) struct LayerDiffs {
     pub(crate) rename_detection_disabled: bool,
 }
 
+impl LayerDiffs {
+    pub(crate) fn empty() -> Self {
+        Self {
+            map: HashMap::new(),
+            renamed_from: HashMap::new(),
+            rename_detection_disabled: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct DiffEntry {
     pub(crate) new_path: String,
@@ -41,6 +52,23 @@ pub(crate) struct DiffEntry {
     pub(crate) new_blob: Option<String>,
     pub(crate) deleted: bool,
     pub(crate) intent_to_add: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct LayerStatus {
+    pub(crate) index_dirty: bool,
+    pub(crate) worktree_paths: HashSet<String>,
+    pub(crate) has_unmerged: bool,
+    pub(crate) requires_full_scan: bool,
+}
+
+impl LayerStatus {
+    pub(crate) fn is_clean(&self) -> bool {
+        !self.index_dirty
+            && self.worktree_paths.is_empty()
+            && !self.has_unmerged
+            && !self.requires_full_scan
+    }
 }
 
 /// HEAD^{tree} → worktree-index diff (the `git diff --cached` layer).
@@ -67,7 +95,7 @@ pub(crate) fn read_worktree_layer(
     repo: &gix::Repository,
     warnings: &mut Vec<String>,
 ) -> Result<LayerDiffs> {
-    let entries = collect_index_worktree_changes(repo, /*track_renames:*/ true)?;
+    let entries = collect_index_worktree_changes(repo, /*track_renames:*/ true, None)?;
     let budget = rename_budget();
     if entries.len() > budget {
         warnings.push(format!(
@@ -75,10 +103,53 @@ pub(crate) fn read_worktree_layer(
             entries.len(),
             budget
         ));
-        let entries = collect_index_worktree_changes(repo, /*track_renames:*/ false)?;
+        let entries = collect_index_worktree_changes(repo, /*track_renames:*/ false, None)?;
         return Ok(into_layer(entries, true));
     }
     Ok(into_layer(entries, false))
+}
+
+pub(crate) fn read_worktree_layer_for_paths(
+    repo: &gix::Repository,
+    paths: &HashSet<String>,
+    warnings: &mut Vec<String>,
+) -> Result<LayerDiffs> {
+    if paths.is_empty() {
+        return Ok(LayerDiffs::empty());
+    }
+    let entries = collect_index_worktree_changes(repo, /*track_renames:*/ true, Some(paths))?;
+    let budget = rename_budget();
+    if entries.len() > budget {
+        warnings.push(format!(
+            "warning: rename detection disabled (--no-renames); {} > GIT_MESH_RENAME_BUDGET={}",
+            entries.len(),
+            budget
+        ));
+        let entries =
+            collect_index_worktree_changes(repo, /*track_renames:*/ false, Some(paths))?;
+        return Ok(into_layer(entries, true));
+    }
+    Ok(into_layer(entries, false))
+}
+
+/// Cheap tracked-layer status used to avoid full repository scans.
+///
+/// Empty output proves the index and tracked worktree files match `HEAD`.
+/// Non-empty simple status output provides exact dirty path hints for the
+/// worktree layer. Complex status records fall back to the full gix readers.
+pub(crate) fn read_layer_status(repo: &gix::Repository) -> Result<LayerStatus> {
+    let workdir = git::work_dir(repo)?;
+    let out = Command::new("git")
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("-z")
+        .arg("-uno")
+        .current_dir(workdir)
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Git("git status failed".into()));
+    }
+    Ok(parse_status_bytes(&out.stdout))
 }
 
 fn into_layer(entries: Vec<DiffEntry>, rename_detection_disabled: bool) -> LayerDiffs {
@@ -278,6 +349,7 @@ fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Re
 fn collect_index_worktree_changes(
     repo: &gix::Repository,
     track_renames: bool,
+    path_filter: Option<&HashSet<String>>,
 ) -> Result<Vec<DiffEntry>> {
     let index = repo
         .index_or_load_from_head_or_empty()
@@ -311,6 +383,11 @@ fn collect_index_worktree_changes(
             continue;
         }
         let rel = entry.path(&index).to_str_lossy().into_owned();
+        if let Some(paths) = path_filter
+            && !paths.contains(&rel)
+        {
+            continue;
+        }
         seen_paths.insert(rel.clone());
         let abs = workdir.join(&rel);
         let bytes = match read_worktree_cleaned(repo, &abs, &rel) {
@@ -587,4 +664,99 @@ pub(crate) fn read_index_trailer(repo: &gix::Repository) -> Result<[u8; 20]> {
     let mut out = [0u8; 20];
     out.copy_from_slice(&bytes[bytes.len() - 20..]);
     Ok(out)
+}
+
+fn parse_status_bytes(bytes: &[u8]) -> LayerStatus {
+    let mut status = LayerStatus::default();
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(end) = bytes[i..].iter().position(|b| *b == 0).map(|p| i + p) else {
+            status.requires_full_scan = true;
+            break;
+        };
+        let record = &bytes[i..end];
+        i = end + 1;
+        if record.is_empty() {
+            continue;
+        }
+        if record.len() < 4 || record[2] != b' ' {
+            status.requires_full_scan = true;
+            continue;
+        }
+
+        let x = record[0];
+        let y = record[1];
+        let path = String::from_utf8_lossy(&record[3..]).into_owned();
+        let rename_or_copy = matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C');
+        if rename_or_copy {
+            status.requires_full_scan = true;
+            if let Some(old_end) = bytes[i..].iter().position(|b| *b == 0).map(|p| i + p) {
+                i = old_end + 1;
+            } else {
+                break;
+            }
+        }
+
+        if is_unmerged_status(x, y) {
+            status.has_unmerged = true;
+            continue;
+        }
+        if x != b' ' && x != b'?' {
+            status.index_dirty = true;
+        }
+        if y != b' ' && y != b'?' {
+            status.worktree_paths.insert(path);
+        }
+    }
+    status
+}
+
+fn is_unmerged_status(x: u8, y: u8) -> bool {
+    matches!(
+        (x, y),
+        (b'D', b'D')
+            | (b'A', b'U')
+            | (b'U', b'D')
+            | (b'U', b'A')
+            | (b'D', b'U')
+            | (b'A', b'A')
+            | (b'U', b'U')
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_status_bytes;
+
+    #[test]
+    fn parse_status_empty_is_clean() {
+        let status = parse_status_bytes(b"");
+        assert!(status.is_clean());
+    }
+
+    #[test]
+    fn parse_status_separates_index_and_worktree_paths() {
+        let status = parse_status_bytes(b" M src/lib.rs\0M  src/main.rs\0MM src/git.rs\0");
+        assert!(status.index_dirty);
+        assert!(status.worktree_paths.contains("src/lib.rs"));
+        assert!(status.worktree_paths.contains("src/git.rs"));
+        assert!(!status.worktree_paths.contains("src/main.rs"));
+        assert!(!status.requires_full_scan);
+    }
+
+    #[test]
+    fn parse_status_rename_requires_full_scan_and_consumes_old_path() {
+        let status = parse_status_bytes(b"R  new.rs\0old.rs\0 M after.rs\0");
+        assert!(status.index_dirty);
+        assert!(status.requires_full_scan);
+        assert!(status.worktree_paths.contains("after.rs"));
+    }
+
+    #[test]
+    fn parse_status_unmerged_sets_conflict_flag() {
+        let status = parse_status_bytes(b"UU src/lib.rs\0");
+        assert!(status.has_unmerged);
+        assert!(!status.index_dirty);
+        assert!(status.worktree_paths.is_empty());
+    }
 }

@@ -28,14 +28,17 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // Slice 5: resolve `--since <commit-ish>` once, fail-closed on
     // unresolvable input (no silent fallback per `<fail-closed>`).
     let since = match args.since.as_deref() {
-        Some(s) => Some(
-            crate::git::resolve_commit(repo, s)
-                .map(|hex| {
-                    use std::str::FromStr;
-                    gix::ObjectId::from_str(&hex).expect("resolve_commit returns valid hex")
-                })
-                .map_err(|e| anyhow::anyhow!("--since `{s}`: {e}"))?,
-        ),
+        Some(s) => {
+            let _perf = crate::perf::span("stale.resolve-since");
+            Some(
+                crate::git::resolve_commit(repo, s)
+                    .map(|hex| {
+                        use std::str::FromStr;
+                        gix::ObjectId::from_str(&hex).expect("resolve_commit returns valid hex")
+                    })
+                    .map_err(|e| anyhow::anyhow!("--since `{s}`: {e}"))?,
+            )
+        }
         None => None,
     };
     // Phase 4: only the renderers that present per-layer detail need
@@ -44,9 +47,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // content. Otherwise (oneline, porcelain, json, junit, github), HEAD
     // alone is enough to drive the exit code, so the engine may
     // short-circuit Index/Worktree once HEAD says "stale".
-    let needs_all_layers = matches!(args.format, StaleFormat::Human)
-        || args.patch
-        || args.stat;
+    let needs_all_layers = matches!(args.format, StaleFormat::Human) || args.patch || args.stat;
     let options = EngineOptions {
         layers,
         ignore_unavailable: args.ignore_unavailable,
@@ -55,25 +56,32 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     };
 
     let meshes = match &args.name {
-        Some(n) => match resolve_mesh(repo, n, options) {
-            Ok(mesh) => vec![mesh],
-            Err(crate::Error::MeshNotFound(_)) if layers.staged_mesh => {
-                let pending = build_pending_findings(repo, n);
-                if pending.is_empty() {
-                    return Err(crate::Error::MeshNotFound(n.clone()).into());
+        Some(n) => {
+            let _perf = crate::perf::span("stale.resolve-mesh");
+            match resolve_mesh(repo, n, options) {
+                Ok(mesh) => vec![mesh],
+                Err(crate::Error::MeshNotFound(_)) if layers.staged_mesh => {
+                    let pending = build_pending_findings(repo, n);
+                    if pending.is_empty() {
+                        return Err(crate::Error::MeshNotFound(n.clone()).into());
+                    }
+                    vec![MeshResolved {
+                        name: n.clone(),
+                        message: String::new(),
+                        anchors: Vec::new(),
+                        pending,
+                    }]
                 }
-                vec![MeshResolved {
-                    name: n.clone(),
-                    message: String::new(),
-                    anchors: Vec::new(),
-                    pending,
-                }]
+                Err(e) => return Err(e.into()),
             }
-            Err(e) => return Err(e.into()),
-        },
+        }
         None => {
-            let mut meshes = stale_meshes(repo, options)?;
+            let mut meshes = {
+                let _perf = crate::perf::span("stale.resolve-all-meshes");
+                stale_meshes(repo, options)?
+            };
             if layers.staged_mesh {
+                let _perf = crate::perf::span("stale.resolve-staging-only");
                 for name in staging_only_mesh_names(repo)? {
                     if meshes.iter().any(|m| m.name == name) {
                         continue;
@@ -102,54 +110,58 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // Terminal statuses (Orphaned, MergeConflict, Submodule,
     // ContentUnavailable) have an empty `layer_sources` and emit exactly
     // one row with `source=None`. MOVED also emits one row.
-    let findings: Vec<Finding> = meshes
-        .iter()
-        .flat_map(|m| {
-            m.anchors
-                .iter()
-                .filter(|r| r.status != AnchorStatus::Fresh)
-                .flat_map(|r| {
-                    let ack = r.acknowledged_by.clone();
-                    if r.layer_sources.is_empty() {
-                        // Terminal status or MOVED with no tracked layer:
-                        // emit one row with the stored source.
-                        vec![Finding {
-                            mesh: m.name.clone(),
-                            anchor_id: r.anchor_id.clone(),
-                            status: r.status.clone(),
-                            source: r.source,
-                            anchored: r.anchored.clone(),
-                            current: r.current.clone(),
-                            acknowledged_by: ack,
-                            culprit: r.culprit.clone(),
-                        }]
-                    } else {
-                        // Emit one Finding per drifting layer.
-                        r.layer_sources
-                            .iter()
-                            .map(|&src| Finding {
+    let (findings, pending): (Vec<Finding>, Vec<PendingFinding>) = {
+        let _perf = crate::perf::span("stale.build-findings");
+        let findings: Vec<Finding> = meshes
+            .iter()
+            .flat_map(|m| {
+                m.anchors
+                    .iter()
+                    .filter(|r| r.status != AnchorStatus::Fresh)
+                    .flat_map(|r| {
+                        let ack = r.acknowledged_by.clone();
+                        if r.layer_sources.is_empty() {
+                            // Terminal status or MOVED with no tracked layer:
+                            // emit one row with the stored source.
+                            vec![Finding {
                                 mesh: m.name.clone(),
                                 anchor_id: r.anchor_id.clone(),
                                 status: r.status.clone(),
-                                source: Some(src),
+                                source: r.source,
                                 anchored: r.anchored.clone(),
                                 current: r.current.clone(),
-                                acknowledged_by: ack.clone(),
-                                culprit: if src == DriftSource::Head {
-                                    r.culprit.clone()
-                                } else {
-                                    None
-                                },
-                            })
-                            .collect()
-                    }
-                })
-        })
-        .collect();
-    let pending: Vec<PendingFinding> = meshes
-        .iter()
-        .flat_map(|m| m.pending.iter().cloned())
-        .collect();
+                                acknowledged_by: ack,
+                                culprit: r.culprit.clone(),
+                            }]
+                        } else {
+                            // Emit one Finding per drifting layer.
+                            r.layer_sources
+                                .iter()
+                                .map(|&src| Finding {
+                                    mesh: m.name.clone(),
+                                    anchor_id: r.anchor_id.clone(),
+                                    status: r.status.clone(),
+                                    source: Some(src),
+                                    anchored: r.anchored.clone(),
+                                    current: r.current.clone(),
+                                    acknowledged_by: ack.clone(),
+                                    culprit: if src == DriftSource::Head {
+                                        r.culprit.clone()
+                                    } else {
+                                        None
+                                    },
+                                })
+                                .collect()
+                        }
+                    })
+            })
+            .collect();
+        let pending: Vec<PendingFinding> = meshes
+            .iter()
+            .flat_map(|m| m.pending.iter().cloned())
+            .collect();
+        (findings, pending)
+    };
 
     // Plan §B3: an acknowledged finding does not drive exit code; nor
     // does a `ContentUnavailable` finding under `--ignore-unavailable`.
@@ -180,22 +192,37 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     let stale_count = unacked_findings + pending_drift;
 
     match args.format {
-        StaleFormat::Human => render_human(
-            repo,
-            &meshes,
-            &findings,
-            &pending,
-            HumanRenderOptions {
-                oneline: args.oneline,
-                stat: args.stat,
-                patch: args.patch,
-                show_src: show_src_column,
-            },
-        )?,
-        StaleFormat::Porcelain => render_porcelain(&findings, show_src_column),
-        StaleFormat::Json => render_json(&meshes, &findings, &pending)?,
-        StaleFormat::Junit => render_junit(&findings),
-        StaleFormat::GithubActions => render_github(&findings),
+        StaleFormat::Human => {
+            let _perf = crate::perf::span("stale.render-human");
+            render_human(
+                repo,
+                &meshes,
+                &findings,
+                &pending,
+                HumanRenderOptions {
+                    oneline: args.oneline,
+                    stat: args.stat,
+                    patch: args.patch,
+                    show_src: show_src_column,
+                },
+            )?;
+        }
+        StaleFormat::Porcelain => {
+            let _perf = crate::perf::span("stale.render-porcelain");
+            render_porcelain(&findings, show_src_column);
+        }
+        StaleFormat::Json => {
+            let _perf = crate::perf::span("stale.render-json");
+            render_json(&meshes, &findings, &pending)?;
+        }
+        StaleFormat::Junit => {
+            let _perf = crate::perf::span("stale.render-junit");
+            render_junit(&findings);
+        }
+        StaleFormat::GithubActions => {
+            let _perf = crate::perf::span("stale.render-github");
+            render_github(&findings);
+        }
     }
 
     let exit = if stale_count == 0 || args.no_exit_code {

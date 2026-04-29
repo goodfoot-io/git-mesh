@@ -20,6 +20,7 @@ pub mod cli;
 pub mod file_index;
 pub mod git;
 pub mod mesh;
+pub mod perf;
 pub mod resolver;
 pub mod staging;
 pub mod sync;

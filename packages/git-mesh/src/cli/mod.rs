@@ -35,6 +35,12 @@ use clap::{Parser, Subcommand, ValueEnum};
     after_help = "A mesh holds the anchors — line-anchor or whole-file, in code or prose — that participate in a coupling no schema, type, or test enforces, and carries a `why` that defines the subsystem those anchors collectively form. The why is evergreen and inherited across routine re-anchors; invariants, caveats, ownership, and review triggers belong in source comments, commit messages, CODEOWNERS, and PR descriptions.\n\nBare invocations:\n  git mesh <name>          show one mesh (anchors, why, config)"
 )]
 pub struct Cli {
+    /// Emit performance timings for major git-mesh operation groups to stderr.
+    ///
+    /// Can also be enabled with `GIT_MESH_PERF=1`.
+    #[arg(long, global = true)]
+    pub perf: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -418,22 +424,73 @@ pub fn parse_range_address(text: &str) -> anyhow::Result<(String, u32, u32)> {
 /// Dispatch a parsed [`Commands`] to its handler. Called from `main`.
 pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32> {
     match command {
-        Commands::Show(args) => show::run_show(repo, args),
-        Commands::Ls(args) => show::run_ls(repo, args),
-        Commands::Stale(args) => stale_output::run_stale(repo, args),
-        Commands::Add(args) => commit::run_add(repo, args),
-        Commands::Rm(args) => commit::run_rm(repo, args),
-        Commands::Why(args) => commit::run_why(repo, args),
-        Commands::Commit(args) => commit::run_commit(repo, args),
-        Commands::Config(args) => commit::run_config(repo, args),
-        Commands::Restore(args) => structural::run_restore(repo, args),
-        Commands::Revert(args) => structural::run_revert(repo, args),
-        Commands::Delete(args) => structural::run_delete(repo, args),
-        Commands::Mv(args) => structural::run_mv(repo, args),
-        Commands::Doctor(args) => structural::run_doctor(repo, args),
-        Commands::Fetch(args) => sync::run_fetch(repo, args),
-        Commands::Push(args) => sync::run_push(repo, args),
-        Commands::PreCommit(args) => pre_commit::run_pre_commit(repo, args),
-        Commands::Advice(args) => advice::run_advice(repo, args),
+        Commands::Show(args) => {
+            let _perf = crate::perf::span("command.show");
+            show::run_show(repo, args)
+        }
+        Commands::Ls(args) => {
+            let _perf = crate::perf::span("command.ls");
+            show::run_ls(repo, args)
+        }
+        Commands::Stale(args) => {
+            let _perf = crate::perf::span("command.stale");
+            stale_output::run_stale(repo, args)
+        }
+        Commands::Add(args) => {
+            let _perf = crate::perf::span("command.add");
+            commit::run_add(repo, args)
+        }
+        Commands::Rm(args) => {
+            let _perf = crate::perf::span("command.rm");
+            commit::run_rm(repo, args)
+        }
+        Commands::Why(args) => {
+            let _perf = crate::perf::span("command.why");
+            commit::run_why(repo, args)
+        }
+        Commands::Commit(args) => {
+            let _perf = crate::perf::span("command.commit");
+            commit::run_commit(repo, args)
+        }
+        Commands::Config(args) => {
+            let _perf = crate::perf::span("command.config");
+            commit::run_config(repo, args)
+        }
+        Commands::Restore(args) => {
+            let _perf = crate::perf::span("command.restore");
+            structural::run_restore(repo, args)
+        }
+        Commands::Revert(args) => {
+            let _perf = crate::perf::span("command.revert");
+            structural::run_revert(repo, args)
+        }
+        Commands::Delete(args) => {
+            let _perf = crate::perf::span("command.delete");
+            structural::run_delete(repo, args)
+        }
+        Commands::Mv(args) => {
+            let _perf = crate::perf::span("command.mv");
+            structural::run_mv(repo, args)
+        }
+        Commands::Doctor(args) => {
+            let _perf = crate::perf::span("command.doctor");
+            structural::run_doctor(repo, args)
+        }
+        Commands::Fetch(args) => {
+            let _perf = crate::perf::span("command.fetch");
+            sync::run_fetch(repo, args)
+        }
+        Commands::Push(args) => {
+            let _perf = crate::perf::span("command.push");
+            sync::run_push(repo, args)
+        }
+        Commands::PreCommit(args) => {
+            let _perf = crate::perf::span("command.pre-commit");
+            pre_commit::run_pre_commit(repo, args)
+        }
+        Commands::Advice(args) => {
+            let _perf = crate::perf::span("command.advice");
+            advice::run_advice(repo, args)
+        }
     }
 }

@@ -144,7 +144,10 @@ fn incremental_delta_routes_to_existing_mesh_partners() -> Result<()> {
     let out = run_advice(&repo, &s, &["milestone"])?;
     ok(&out);
     let text = stdout(&out);
-    assert!(text.contains("is in the delta mesh: delta routing"), "got:\n{text}");
+    assert!(
+        text.contains("is in the delta mesh: delta routing"),
+        "got:\n{text}"
+    );
     assert!(
         !text.contains("triggered by"),
         "triggered-by line must not be emitted; got:\n{text}"

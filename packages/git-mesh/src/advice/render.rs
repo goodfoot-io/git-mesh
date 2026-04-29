@@ -845,7 +845,10 @@ mod tests {
         let s1 = sugg("m1", "b.rs");
         let s2 = sugg("m2", "c.rs");
         let out = render(&[s1, s2], &[], false);
-        assert!(out.contains("\n\n"), "blocks must be blank-line separated: {out}");
+        assert!(
+            out.contains("\n\n"),
+            "blocks must be blank-line separated: {out}"
+        );
     }
 
     #[test]
@@ -960,8 +963,14 @@ mod tests {
         };
         let s = candidate_to_suggestion(&c);
         let out = render(&[s], &["terminal-states".into()], true);
-        assert!(out.contains("<documentation>"), "must open <documentation>: {out}");
-        assert!(out.contains("</documentation>"), "must close </documentation>: {out}");
+        assert!(
+            out.contains("<documentation>"),
+            "must open <documentation>: {out}"
+        );
+        assert!(
+            out.contains("</documentation>"),
+            "must close </documentation>: {out}"
+        );
         assert!(
             out.contains("A terminal marker"),
             "must include doc-topic body: {out}"
@@ -969,7 +978,10 @@ mod tests {
         let open = out.find("<documentation>").unwrap();
         let close = out.find("</documentation>").unwrap();
         let body_pos = out.find("A terminal marker").unwrap();
-        assert!(open < body_pos && body_pos < close, "body must sit inside tags: {out}");
+        assert!(
+            open < body_pos && body_pos < close,
+            "body must sit inside tags: {out}"
+        );
     }
 
     /// Partner-drift: trigger empty, partner is the active anchor and carries
@@ -1048,7 +1060,10 @@ mod tests {
             out.contains("src/bar.ts (RENAMED, was src/foo.ts) is in the link mesh: why text"),
             "must render renamed partner with marker and clause in parens; got:\n{out}"
         );
-        assert!(!out.contains(" — "), "em-dash separator must be gone; got:\n{out}");
+        assert!(
+            !out.contains(" — "),
+            "em-dash separator must be gone; got:\n{out}"
+        );
     }
 
     #[test]

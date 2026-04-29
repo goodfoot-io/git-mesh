@@ -94,8 +94,14 @@ fn l1_suggestion() -> Suggestion {
 }
 
 fn assert_doc_block_wrapped(out: &str) {
-    assert!(out.contains("<documentation>"), "missing <documentation> open tag:\n{out}");
-    assert!(out.contains("</documentation>"), "missing </documentation> close tag:\n{out}");
+    assert!(
+        out.contains("<documentation>"),
+        "missing <documentation> open tag:\n{out}"
+    );
+    assert!(
+        out.contains("</documentation>"),
+        "missing </documentation> close tag:\n{out}"
+    );
     for line in out.lines() {
         assert!(
             !line.starts_with("# "),

@@ -36,10 +36,6 @@ fn lines_equal(a: &[&str], b: &[&str], ignore_ws: bool) -> bool {
     })
 }
 
-fn is_commit_reachable(repo: &gix::Repository, commit: &str) -> Result<bool> {
-    git::commit_reachable_from_any_ref(repo, commit)
-}
-
 fn head_blob_for(repo: &gix::Repository, path: &str) -> Result<String> {
     let head_sha = git::head_oid(repo)?;
     git::path_blob_at(repo, &head_sha, path)
@@ -101,7 +97,7 @@ pub(crate) fn resolve_anchor_inner(
         extent: r.extent,
         blob: oid_from_hex(&r.blob).ok(),
     };
-    if !is_commit_reachable(repo, &r.anchor_sha)? {
+    if !state.commit_reachable(repo, &r.anchor_sha)? {
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
@@ -113,6 +109,26 @@ pub(crate) fn resolve_anchor_inner(
             acknowledged_by: None,
             culprit: None,
         });
+    }
+
+    if r.anchor_sha == state.head_sha {
+        let head_loc = Some(Tracked {
+            path: r.path.clone(),
+            start: anchored_start,
+            end: anchored_end,
+        });
+        if let Some(resolved) = clean_head_fast_path(
+            repo,
+            state,
+            anchor_id,
+            &r,
+            anchored.clone(),
+            &head_loc,
+            anchored_start,
+            anchored_end,
+        )? {
+            return Ok(resolved);
+        }
     }
 
     let head_loc = resolve_at_head_shared(
@@ -146,6 +162,19 @@ pub(crate) fn resolve_anchor_inner(
                 culprit: None,
             });
         }
+    }
+
+    if let Some(resolved) = clean_head_fast_path(
+        repo,
+        state,
+        anchor_id,
+        &r,
+        anchored.clone(),
+        &head_loc,
+        anchored_start,
+        anchored_end,
+    )? {
+        return Ok(resolved);
     }
 
     // Track per-layer positions. Each option is `None` if the path was
@@ -409,6 +438,64 @@ fn unavailable(
         acknowledged_by: None,
         culprit: None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn clean_head_fast_path(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    anchor_id: &str,
+    r: &Anchor,
+    anchored: AnchorLocation,
+    head_loc: &Option<Tracked>,
+    anchored_start: u32,
+    anchored_end: u32,
+) -> Result<Option<AnchorResolved>> {
+    let content_layers_match_head =
+        state.clean_layers || (!state.layers.index && !state.layers.worktree);
+    if !content_layers_match_head {
+        return Ok(None);
+    }
+    let Some(t) = head_loc.as_ref() else {
+        return Ok(None);
+    };
+    if filter_short_circuit(repo, &t.path)?.is_some() {
+        return Ok(None);
+    }
+    let Some(head_blob) = state.head_blob_at(repo, &t.path)? else {
+        return Ok(None);
+    };
+    if head_blob != r.blob {
+        return Ok(None);
+    }
+    let status = if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
+        AnchorStatus::Fresh
+    } else {
+        AnchorStatus::Moved
+    };
+    let current_blob = if state.layers.worktree {
+        None
+    } else {
+        oid_from_hex(&head_blob).ok()
+    };
+    Ok(Some(AnchorResolved {
+        anchor_id: anchor_id.into(),
+        anchor_sha: r.anchor_sha.clone(),
+        anchored,
+        current: Some(AnchorLocation {
+            path: PathBuf::from(t.path.clone()),
+            extent: AnchorExtent::LineRange {
+                start: t.start,
+                end: t.end,
+            },
+            blob: current_blob,
+        }),
+        status,
+        source: None,
+        layer_sources: vec![],
+        acknowledged_by: None,
+        culprit: None,
+    }))
 }
 
 /// Compute the list of layers that independently show drift vs the anchor,

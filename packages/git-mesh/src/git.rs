@@ -452,6 +452,16 @@ pub(crate) fn commit_reachable_from_any_ref(repo: &gix::Repository, anchor: &str
         Ok(id) => id,
         Err(_) => return Ok(false),
     };
+    if let Ok(head_id) = repo.head_id().map(|id| id.detach()) {
+        if head_id == anchor_id {
+            return Ok(true);
+        }
+        if let Ok(base) = repo.merge_base(head_id, anchor_id)
+            && base.detach() == anchor_id
+        {
+            return Ok(true);
+        }
+    }
     let refs = repo
         .references()
         .map_err(|e| Error::Git(format!("refs: {e}")))?;
@@ -525,13 +535,12 @@ pub(crate) fn resolve_ref_oid_optional_repo(
 }
 
 pub(crate) fn git_show_file_lines(
-    work_dir: &Path,
+    repo: &gix::Repository,
     commit_oid: &str,
     path: &str,
 ) -> Result<Vec<String>> {
-    let repo = gix::open(work_dir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
-    let blob_oid = path_blob_at(&repo, commit_oid, path)?;
-    let data = blob_data(&repo, &blob_oid)?;
+    let blob_oid = path_blob_at(repo, commit_oid, path)?;
+    let data = blob_data(repo, &blob_oid)?;
     let text =
         std::str::from_utf8(&data).map_err(|e| Error::Parse(format!("blob not utf-8: {e}")))?;
     Ok(text

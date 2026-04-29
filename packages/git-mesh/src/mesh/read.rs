@@ -62,10 +62,9 @@ pub fn read_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
 }
 
 pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
-    let wd = work_dir(repo)?;
     let commit_oid = resolve_mesh_revision(repo, name, commit_ish)?;
     let message = git::commit_meta(repo, &commit_oid)?.message;
-    let anchors = git_show_file_lines(wd, &commit_oid, "anchors").unwrap_or_default();
+    let anchors = git_show_file_lines(repo, &commit_oid, "anchors").unwrap_or_default();
     let config = read_config_blob(repo, &commit_oid).unwrap_or_else(|_| default_config());
     Ok(Mesh {
         name: name.to_string(),

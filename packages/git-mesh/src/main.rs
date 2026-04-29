@@ -65,6 +65,7 @@ fn run() -> Result<i32> {
         let mut show_argv = vec![args[0].clone(), "show".to_string()];
         show_argv.extend(args[1..].iter().cloned());
         let cli = Cli::try_parse_from(show_argv)?;
+        git_mesh::perf::init(cli.perf);
         let cmd = cli.command.unwrap_or_else(|| {
             Commands::Show(ShowArgs {
                 name: first.clone(),
@@ -82,6 +83,7 @@ fn run() -> Result<i32> {
     // Parse first so `--help` / `--version` short-circuit before we
     // touch the filesystem for repo discovery.
     let cli = Cli::parse();
+    git_mesh::perf::init(cli.perf);
 
     // The hidden `git mesh advice suggest` subcommand does not need a git
     // repository — it reads sessions from GIT_MESH_ADVICE_DIR and emits JSONL
@@ -93,6 +95,7 @@ fn run() -> Result<i32> {
             Some(cli::advice::AdviceCommand::Suggest)
         )
     {
+        let _perf = git_mesh::perf::span("command.advice.suggest");
         return cli::advice::run_advice_suggest_standalone();
     }
 
@@ -108,5 +111,6 @@ fn run() -> Result<i32> {
 }
 
 fn discover_repo() -> Result<gix::Repository> {
+    let _perf = git_mesh::perf::span("git.discover");
     gix::discover(".").context("not inside a git repository")
 }
