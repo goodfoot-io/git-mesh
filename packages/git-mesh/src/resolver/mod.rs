@@ -25,5 +25,13 @@ pub(crate) mod walker;
 
 pub use attribution::culprit_commit;
 pub use engine::pending::build_pending_findings;
-pub(crate) use engine::{resolve_meshes_in_order, resolve_named_meshes};
+pub(crate) use engine::{
+    EngineStateHandle, new_engine_state, resolve_loaded_mesh_with_engine_state,
+    resolve_meshes_in_order, resolve_named_meshes,
+};
 pub use engine::{resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes};
+
+/// Re-export of `layers::filter_short_circuit` for `mesh::compact`'s
+/// already-at-HEAD fast path, which must reject paths whose unknown
+/// custom filters preclude blob comparison.
+pub(crate) use layers::filter_short_circuit as layers_filter_short_circuit;

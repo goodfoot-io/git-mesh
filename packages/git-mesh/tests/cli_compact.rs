@@ -635,6 +635,73 @@ fn test_compact_format_rejection_not_suppressed_by_no_exit_code() -> Result<()> 
 }
 
 // ---------------------------------------------------------------------------
+// Item 4: staged metadata-only ops (why / config) skip the mesh.
+// Item 4 changed the compact staging predicate to include why and config
+// alongside adds/removes. The mesh ref must not advance when a why or
+// config op is staged.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_staged_why_skips_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    advance_head(&repo)?;
+
+    // Stage a why update without committing it.
+    repo.mesh_stdout(["why", "m", "-m", "new staged why"])?;
+
+    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    let stdout = String::from_utf8(out.stdout)?;
+    let v: Value = serde_json::from_str(stdout.trim())?;
+    assert_eq!(
+        v["reason"].as_str().unwrap_or(""),
+        "staged_ops_present",
+        "staged why must mark staged_ops_present: {v}"
+    );
+    assert_eq!(v["skipped_staged"].as_u64().unwrap_or(0), 1);
+
+    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    assert_eq!(
+        old_tip, new_tip,
+        "staged why must not advance the mesh ref"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_compact_staged_config_skips_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    advance_head(&repo)?;
+
+    // Stage a config change without committing it.
+    repo.mesh_stdout(["config", "m", "ignore-whitespace", "true"])?;
+
+    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    let stdout = String::from_utf8(out.stdout)?;
+    let v: Value = serde_json::from_str(stdout.trim())?;
+    assert_eq!(
+        v["reason"].as_str().unwrap_or(""),
+        "staged_ops_present",
+        "staged config must mark staged_ops_present: {v}"
+    );
+    assert_eq!(v["skipped_staged"].as_u64().unwrap_or(0), 1);
+
+    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    assert_eq!(
+        old_tip, new_tip,
+        "staged config must not advance the mesh ref"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // F9: staged_ops_present reason token in JSON.
 // ---------------------------------------------------------------------------
 

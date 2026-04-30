@@ -54,21 +54,34 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
         None => crate::mesh::read::list_mesh_names(repo)?,
     };
 
-    let mut outcomes: Vec<MeshCompactOutcome> = Vec::new();
-    for name in &mesh_names {
-        // Per-mesh isolation: accumulate, never early-return via `?`.
-        let outcome = crate::mesh::compact::compact_mesh(repo, name, options);
-        let outcome = outcome.unwrap_or_else(|e| MeshCompactOutcome::error(name, e));
-
-        // F4: Stream NDJSON as each mesh finishes.
+    // Per-mesh stream callback: NDJSON when --format=json. The batch
+    // path expects the crate `Result` type, so we surface I/O errors
+    // through `Error::Git` rather than letting `anyhow` leak in.
+    let stream_outcome = |outcome: &MeshCompactOutcome| -> crate::Result<()> {
         if args.format == StaleFormat::Json {
-            render_json_one(&outcome)?;
+            render_json_one(outcome).map_err(|e| crate::Error::Git(e.to_string()))?;
             let mut stdout = std::io::stdout();
-            stdout.flush()?;
+            stdout
+                .flush()
+                .map_err(|e| crate::Error::Git(e.to_string()))?;
         }
+        Ok(())
+    };
 
-        outcomes.push(outcome);
-    }
+    // Item 5: when invoked without an explicit name, share resolver
+    // state across the all-mesh sweep. Named-mesh path stays simple.
+    let outcomes: Vec<MeshCompactOutcome> = if args.name.is_some() {
+        let mut out = Vec::with_capacity(mesh_names.len());
+        for name in &mesh_names {
+            let outcome = crate::mesh::compact::compact_mesh(repo, name, options)
+                .unwrap_or_else(|e| MeshCompactOutcome::error(name, e));
+            stream_outcome(&outcome)?;
+            out.push(outcome);
+        }
+        out
+    } else {
+        crate::mesh::compact::compact_meshes_batch(repo, &mesh_names, options, stream_outcome)?
+    };
 
     // Human format rendered at the end (order is deterministic, per-mesh isolation preserved).
     if args.format == StaleFormat::Human {

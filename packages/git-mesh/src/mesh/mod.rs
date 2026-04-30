@@ -12,7 +12,10 @@ pub mod read;
 pub mod structural;
 
 pub use commit::commit_mesh;
-pub use compact::{AnchorCompactOutcome, AnchorCompactRecord, MeshCompactOutcome, compact_mesh};
+pub use compact::{
+    AnchorCompactOutcome, AnchorCompactRecord, MeshCompactOutcome, compact_mesh,
+    compact_meshes_batch,
+};
 pub use read::{
     MeshCommitInfo, is_ancestor_commit, list_mesh_names, mesh_commit_info, mesh_commit_info_at,
     mesh_log, read_mesh, read_mesh_at, resolve_commit_ish, show_mesh, show_mesh_at,

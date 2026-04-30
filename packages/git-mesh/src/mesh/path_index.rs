@@ -70,8 +70,12 @@ pub(crate) fn ref_updates_for_mesh(
     for path in paths {
         let ref_name = ref_name_for_path(&path);
         let old_oid = git::resolve_ref_oid_optional_repo(repo, &ref_name)?;
-        let mut entries = match old_oid.as_deref() {
-            Some(oid) => parse_index_blob(&git::read_git_text(repo, oid)?)?,
+        let old_text = match old_oid.as_deref() {
+            Some(oid) => Some(git::read_git_text(repo, oid)?),
+            None => None,
+        };
+        let mut entries = match old_text.as_deref() {
+            Some(text) => parse_index_blob(text)?,
             None => Vec::new(),
         };
         entries.retain(|entry| entry.mesh_name != mesh_name);
@@ -93,8 +97,12 @@ pub(crate) fn ref_updates_for_mesh(
                 expected_old_oid,
             }),
             (old_oid, false) => {
-                let blob_oid =
-                    git::write_blob_bytes(repo, serialize_index_blob(&entries).as_bytes())?;
+                let new_text = serialize_index_blob(&entries);
+                if old_text.as_deref() == Some(new_text.as_str()) {
+                    // No content change: skip writing a new blob and emitting a ref update.
+                    continue;
+                }
+                let blob_oid = git::write_blob_bytes(repo, new_text.as_bytes())?;
                 match old_oid {
                     Some(expected_old_oid) => updates.push(RefUpdate::Update {
                         name: ref_name,
@@ -214,6 +222,85 @@ fn serialize_index_blob(entries: &[PathIndexEntry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::apply_ref_transaction_repo;
+    use crate::types::AnchorExtent;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn seed_repo() -> (tempfile::TempDir, gix::Repository) {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let repo = gix::open(dir).unwrap();
+        (td, repo)
+    }
+
+    fn anchor(path: &str, start: u32, end: u32) -> Anchor {
+        Anchor {
+            anchor_sha: "0000000000000000000000000000000000000000".to_string(),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            path: path.to_string(),
+            extent: AnchorExtent::LineRange { start, end },
+            blob: "0000000000000000000000000000000000000000".to_string(),
+        }
+    }
+
+    #[test]
+    fn ref_updates_for_mesh_skips_noop_writes() {
+        let (_td, repo) = seed_repo();
+        let mesh = "m";
+        let anchors = vec![("a1".to_string(), anchor("a.txt", 1, 5))];
+
+        // Initial: creates a path-index ref + blob.
+        let updates = ref_updates_for_mesh(&repo, mesh, &[], &anchors).unwrap();
+        assert_eq!(updates.len(), 1, "initial write should produce one update");
+        match &updates[0] {
+            RefUpdate::Create { .. } => {}
+            RefUpdate::Update { .. } => panic!("expected Create, got Update"),
+            RefUpdate::Delete { .. } => panic!("expected Create, got Delete"),
+        }
+        apply_ref_transaction_repo(&repo, &updates).unwrap();
+
+        // Capture existing blob oid.
+        let ref_name = ref_name_for_path("a.txt");
+        let blob_before = crate::git::resolve_ref_oid_optional_repo(&repo, &ref_name)
+            .unwrap()
+            .expect("ref should exist");
+
+        // No-op call: same old/new anchors should produce no updates and no new blob.
+        let updates = ref_updates_for_mesh(&repo, mesh, &anchors, &anchors).unwrap();
+        assert!(
+            updates.is_empty(),
+            "no-op rebuild must emit zero ref updates, got {} updates",
+            updates.len()
+        );
+
+        // Ref still points at the same blob — no new blob was written.
+        let blob_after = crate::git::resolve_ref_oid_optional_repo(&repo, &ref_name)
+            .unwrap()
+            .expect("ref should still exist");
+        assert_eq!(blob_before, blob_after, "ref must not have changed");
+    }
 
     #[test]
     fn path_ref_is_deterministic_and_sharded() {

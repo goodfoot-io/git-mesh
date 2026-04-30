@@ -264,6 +264,46 @@ fn resolve_mesh_with_state_at(
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }
 
+/// Opaque handle that lets callers outside this module reuse a single
+/// `EngineState` across multiple mesh resolutions. Used by the
+/// all-mesh `stale --compact` batch path so anchor-history walks and
+/// HEAD blob lookups are cached for the whole run.
+pub(crate) struct EngineStateHandle(EngineState);
+
+pub(crate) fn new_engine_state(
+    repo: &gix::Repository,
+    options: EngineOptions,
+) -> Result<EngineStateHandle> {
+    Ok(EngineStateHandle(EngineState::new(
+        repo,
+        options.layers,
+        options.needs_all_layers,
+    )?))
+}
+
+impl EngineStateHandle {
+    pub(crate) fn head_sha(&self) -> &str {
+        &self.0.head_sha
+    }
+
+    pub(crate) fn head_blob_at(
+        &mut self,
+        repo: &gix::Repository,
+        path: &str,
+    ) -> Result<Option<String>> {
+        self.0.head_blob_at(repo, path)
+    }
+}
+
+pub(crate) fn resolve_loaded_mesh_with_engine_state(
+    repo: &gix::Repository,
+    handle: &mut EngineStateHandle,
+    mesh: crate::types::Mesh,
+    options: EngineOptions,
+) -> Result<MeshResolved> {
+    resolve_loaded_mesh_with_state(repo, &mut handle.0, mesh, options)
+}
+
 fn resolve_loaded_mesh_with_state(
     repo: &gix::Repository,
     state: &mut EngineState,
