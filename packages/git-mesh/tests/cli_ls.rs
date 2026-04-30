@@ -300,6 +300,24 @@ fn ls_filtered_porcelain_uses_authoritative_path_index() -> Result<()> {
 }
 
 #[test]
+fn ls_filtered_porcelain_renders_full_anchor_list() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "alpha", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
+    repo.mesh_stdout(["why", "alpha", "-m", "dual anchor"])?;
+    repo.mesh_stdout(["commit", "alpha"])?;
+
+    let out = repo.mesh_stdout(["ls", "file1.txt", "--porcelain"])?;
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["alpha\tfile1.txt\t1-5", "alpha\tfile2.txt\t1-3"]
+    );
+    Ok(())
+}
+
+#[test]
 fn ls_filtered_porcelain_path_index_tracks_rename_and_delete() -> Result<()> {
     let repo = TestRepo::seeded()?;
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;

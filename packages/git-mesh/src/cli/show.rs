@@ -411,13 +411,13 @@ fn collect_filtered_porcelain_listings_with_staging(
     {
         let _perf = crate::perf::span("ls.path-index-candidate-expansion");
         for name in committed_names {
-            let mesh = match read_mesh_at(repo, &name, None) {
-                Ok(mesh) => mesh,
+            let commit_oid = match crate::mesh::read::resolve_mesh_revision(repo, &name, None) {
+                Ok(commit_oid) => commit_oid,
                 Err(crate::Error::MeshNotFound(_)) => continue,
                 Err(err) => return Err(err.into()),
             };
-            let anchors = mesh
-                .anchors_v2
+            let anchors = crate::mesh::read::read_anchors_v2_blob(repo, &commit_oid)
+                .unwrap_or_default()
                 .into_iter()
                 .map(|(_id, anchor)| AnchorEntry {
                     path: anchor.path,
