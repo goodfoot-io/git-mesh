@@ -177,6 +177,14 @@ pub struct LsArgs {
     #[arg(long)]
     pub porcelain: bool,
 
+    /// Read newline-delimited path filters from stdin.
+    #[arg(
+        long,
+        requires = "porcelain",
+        conflicts_with_all = ["target", "search", "offset", "limit"]
+    )]
+    pub batch: bool,
+
     /// Filter meshes whose name, why, or anchor addresses match a regex
     /// (case-insensitive by default; use `(?-i)` to re-enable case sensitivity).
     #[arg(long, value_name = "REGEX")]

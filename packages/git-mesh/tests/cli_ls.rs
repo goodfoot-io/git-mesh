@@ -4,6 +4,8 @@
 mod support;
 
 use anyhow::Result;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use support::TestRepo;
 
 /// Commit a mesh with a single anchor and why text.
@@ -12,6 +14,29 @@ fn commit_mesh(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<(
     repo.mesh_stdout(["why", name, "-m", why])?;
     repo.mesh_stdout(["commit", name])?;
     Ok(())
+}
+
+fn mesh_stdout_with_stdin(repo: &TestRepo, args: &[&str], stdin: &str) -> Result<String> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_git-mesh"))
+        .current_dir(repo.path())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .expect("child stdin should be piped")
+        .write_all(stdin.as_bytes())?;
+    let out = child.wait_with_output()?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git-mesh failed (code {:?}): {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(String::from_utf8(out.stdout)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +318,53 @@ fn ls_filtered_porcelain_path_index_tracks_rename_and_delete() -> Result<()> {
     repo.mesh_stdout(["delete", "renamed"])?;
     let deleted = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
     assert_eq!(deleted.trim(), "no meshes");
+    Ok(())
+}
+
+#[test]
+fn ls_batch_porcelain_emits_hit_rows() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
+    commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
+
+    let out = mesh_stdout_with_stdin(&repo, &["ls", "--batch", "--porcelain"], "file1.txt\n")?;
+
+    assert!(
+        out.contains("alpha\tfile1.txt\t1-5"),
+        "alpha should match: {out}"
+    );
+    assert!(!out.contains("beta\t"), "beta should not match: {out}");
+    Ok(())
+}
+
+#[test]
+fn ls_batch_porcelain_emits_no_meshes_for_miss() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
+
+    let out = mesh_stdout_with_stdin(&repo, &["ls", "--batch", "--porcelain"], "missing.txt\n")?;
+
+    assert_eq!(out.trim(), "no meshes");
+    Ok(())
+}
+
+#[test]
+fn ls_batch_porcelain_handles_multiple_queries() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
+    commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
+
+    let out = mesh_stdout_with_stdin(
+        &repo,
+        &["ls", "--batch", "--porcelain"],
+        "file1.txt#L3-L4\nmissing.txt\nfile2.txt\n",
+    )?;
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["alpha\tfile1.txt\t1-5", "no meshes", "beta\tfile2.txt\t1-3"]
+    );
     Ok(())
 }
 

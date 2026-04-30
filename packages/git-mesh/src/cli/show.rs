@@ -7,6 +7,7 @@ use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
 use anyhow::Result;
 use regex::RegexBuilder;
 use std::collections::HashSet;
+use std::io::{self, BufRead};
 
 // ---------------------------------------------------------------------------
 // Format-string types
@@ -544,6 +545,23 @@ fn render_porcelain(page: &[MeshListing]) {
     }
 }
 
+fn run_ls_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
+    let stdin = io::stdin();
+    for target in stdin.lock().lines() {
+        let target = target?;
+        let mut listings = collect_filtered_porcelain_listings(repo, &target)?;
+        listings.sort_by(|a, b| a.name.cmp(&b.name));
+
+        if listings.is_empty() {
+            println!("no meshes");
+        } else {
+            render_porcelain(&listings);
+        }
+    }
+
+    Ok(0)
+}
+
 // ---------------------------------------------------------------------------
 // Public run functions
 // ---------------------------------------------------------------------------
@@ -639,6 +657,11 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 }
 
 pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
+    if args.batch {
+        let _perf = crate::perf::span("ls.batch-porcelain");
+        return run_ls_batch_porcelain(repo);
+    }
+
     let include_why = !args.porcelain || args.search.is_some();
     let include_state = !args.porcelain;
     let mut listings = {
