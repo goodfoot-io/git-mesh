@@ -68,6 +68,26 @@ fn ls_by_path_filters() -> Result<()> {
 }
 
 #[test]
+fn ls_by_path_uses_authoritative_path_index_without_file_index_file() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_two_meshes(&repo)?;
+    let idx = repo.path().join(".git/mesh/file-index");
+    assert!(
+        !idx.exists(),
+        "commit should not eagerly rebuild file-index"
+    );
+
+    let rows = ls_by_path(&repo.gix_repo()?, "file1.txt")?;
+
+    assert_eq!(rows.len(), 2);
+    assert!(
+        !idx.exists(),
+        "path-filtered lookup should not rebuild file-index"
+    );
+    Ok(())
+}
+
+#[test]
 
 fn ls_by_path_range_overlap_inclusive() -> Result<()> {
     // §3.4: overlap rule is a <= end && b >= start.
@@ -116,5 +136,22 @@ fn read_index_regenerates_on_wrong_header() -> Result<()> {
     )?;
     let rows = read_index(&repo.gix_repo()?)?;
     assert_eq!(rows.len(), 3);
+    Ok(())
+}
+
+#[test]
+fn read_index_ignores_stale_file_index_contents() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_two_meshes(&repo)?;
+    std::fs::create_dir_all(repo.path().join(".git/mesh"))?;
+    std::fs::write(
+        repo.path().join(".git/mesh/file-index"),
+        "# mesh-index v2\nstale.txt\told\t1\t1\n",
+    )?;
+
+    let rows = read_index(&repo.gix_repo()?)?;
+
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|entry| entry.path != "stale.txt"));
     Ok(())
 }

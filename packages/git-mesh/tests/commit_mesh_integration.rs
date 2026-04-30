@@ -25,6 +25,20 @@ fn commit_happy_path_writes_ref_and_tree() -> Result<()> {
 }
 
 #[test]
+fn commit_does_not_eagerly_rebuild_file_index() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "my-mesh", "file1.txt", 1, 5, None)?;
+    set_why(&gix, "my-mesh", "Initial message")?;
+
+    commit_mesh(&gix, "my-mesh")?;
+
+    assert!(!repo.path().join(".git/mesh/file-index").exists());
+    assert!(!repo.list_refs("refs/meshes-index/v1/path/")?.is_empty());
+    Ok(())
+}
+
+#[test]
 
 fn commit_writes_ranges_sorted_by_path_start_end() -> Result<()> {
     let repo = TestRepo::seeded()?;

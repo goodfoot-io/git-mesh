@@ -351,8 +351,6 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
 
     // Clear staging on success.
     let _ = staging::clear_staging(repo, name);
-    // Rebuild file index.
-    let _ = crate::file_index::rebuild_index(repo);
 
     Ok(new_commit)
 }

@@ -1,9 +1,10 @@
 //! `.git/mesh/file-index` — derived lookup table (§3.4).
 
+use crate::Result;
 use crate::git::mesh_dir;
+use crate::mesh::path_index;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::types::AnchorExtent;
-use crate::{Error, Result};
 use std::fs;
 use std::path::PathBuf;
 
@@ -73,40 +74,8 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
 }
 
 pub fn read_index(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
-    let p = index_path(repo)?;
-    let regenerate = !p.exists() || {
-        let text = fs::read_to_string(&p).unwrap_or_default();
-        !text.starts_with(HEADER)
-    };
-    if regenerate {
-        let entries = collect_entries(repo)?;
-        write_index(repo, &entries)?;
-        return Ok(entries);
-    }
-    let text = fs::read_to_string(&p)?;
-    let mut entries = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        if line.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 4 {
-            return Err(Error::Parse(format!("malformed file-index line `{line}`")));
-        }
-        entries.push(IndexEntry {
-            path: fields[0].into(),
-            mesh_name: fields[1].into(),
-            start: fields[2]
-                .parse()
-                .map_err(|_| Error::Parse("bad start".into()))?,
-            end: fields[3]
-                .parse()
-                .map_err(|_| Error::Parse("bad end".into()))?,
-        });
-    }
+    let entries = collect_entries(repo)?;
+    write_index(repo, &entries)?;
     Ok(entries)
 }
 
@@ -115,10 +84,7 @@ pub fn ls_all(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
 }
 
 pub fn ls_by_path(repo: &gix::Repository, path: &str) -> Result<Vec<IndexEntry>> {
-    Ok(read_index(repo)?
-        .into_iter()
-        .filter(|e| e.path == path)
-        .collect())
+    entries_for_path(repo, path)
 }
 
 pub fn ls_by_path_line_range(
@@ -127,8 +93,20 @@ pub fn ls_by_path_line_range(
     start: u32,
     end: u32,
 ) -> Result<Vec<IndexEntry>> {
-    Ok(read_index(repo)?
+    Ok(entries_for_path(repo, path)?
         .into_iter()
-        .filter(|e| e.path == path && e.start <= end && e.end >= start)
+        .filter(|e| e.start <= end && e.end >= start)
+        .collect())
+}
+
+fn entries_for_path(repo: &gix::Repository, path: &str) -> Result<Vec<IndexEntry>> {
+    Ok(path_index::read_entries_for_path(repo, path)?
+        .into_iter()
+        .map(|entry| IndexEntry {
+            path: path.to_string(),
+            mesh_name: entry.mesh_name,
+            start: entry.start,
+            end: entry.end,
+        })
         .collect())
 }
