@@ -6,8 +6,9 @@ pub mod pending;
 pub(crate) mod whole_file;
 
 use super::layers::{
-    CustomFilters, LayerDiffs, LfsState, read_conflicted_paths, read_index_layer,
-    read_index_trailer, read_layer_status, read_worktree_layer, read_worktree_layer_for_paths,
+    CustomFilters, LayerDiffs, LfsState, filter_short_circuit, read_conflicted_paths,
+    read_index_layer, read_index_trailer, read_layer_status, read_worktree_layer,
+    read_worktree_layer_for_paths,
 };
 use super::session::ResolveSession;
 
@@ -310,7 +311,7 @@ fn resolve_loaded_mesh_with_state(
     })
 }
 
-fn mesh_is_stale(m: &MeshResolved) -> bool {
+fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
     m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
 }
 
@@ -340,30 +341,40 @@ pub(crate) fn all_meshes(
         }
     }
     state.finish(repo);
-    let _perf = crate::perf::span("resolver.sort-meshes");
-    out.sort_by(|a, b| {
-        let max_a = a
-            .anchors
-            .iter()
-            .map(|r| r.status.clone())
-            .max_by(status_rank)
-            .unwrap_or(AnchorStatus::Fresh);
-        let max_b = b
-            .anchors
-            .iter()
-            .map(|r| r.status.clone())
-            .max_by(status_rank)
-            .unwrap_or(AnchorStatus::Fresh);
-        status_rank(&max_b, &max_a)
-    });
+    if out.len() > 1 {
+        sort_meshes_worst_first(&mut out);
+    }
     Ok(out)
 }
 
 pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
-    Ok(all_meshes(repo, options)?
-        .into_iter()
-        .filter(mesh_is_stale)
-        .collect())
+    let mesh_refs = {
+        let _perf = crate::perf::span("resolver.list-meshes");
+        list_mesh_refs(repo)?
+    };
+    let mut out = Vec::new();
+    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    {
+        let _perf = crate::perf::span("resolver.resolve-stale-meshes");
+        for (name, commit_oid) in mesh_refs {
+            let mesh = {
+                let _perf = crate::perf::span("resolver.read-mesh");
+                read_mesh_from_commit(repo, &name, &commit_oid)?
+            };
+            if can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)? {
+                continue;
+            }
+            let resolved = resolve_loaded_mesh_with_state(repo, &mut state, mesh, options)?;
+            if mesh_is_reportable_in_stale_discovery(&resolved) {
+                out.push(resolved);
+            }
+        }
+    }
+    state.finish(repo);
+    if out.len() > 1 {
+        sort_meshes_worst_first(&mut out);
+    }
+    Ok(out)
 }
 
 pub(crate) fn resolve_meshes_in_order(
@@ -402,6 +413,66 @@ fn status_rank(a: &AnchorStatus, b: &AnchorStatus) -> std::cmp::Ordering {
         }
     }
     rank(a).cmp(&rank(b))
+}
+
+fn sort_meshes_worst_first(meshes: &mut [MeshResolved]) {
+    let _perf = crate::perf::span("resolver.sort-meshes");
+    meshes.sort_by(|a, b| {
+        let max_a = a
+            .anchors
+            .iter()
+            .map(|r| r.status.clone())
+            .max_by(status_rank)
+            .unwrap_or(AnchorStatus::Fresh);
+        let max_b = b
+            .anchors
+            .iter()
+            .map(|r| r.status.clone())
+            .max_by(status_rank)
+            .unwrap_or(AnchorStatus::Fresh);
+        status_rank(&max_b, &max_a)
+    });
+}
+
+fn can_skip_clean_head_pinned_mesh(
+    repo: &gix::Repository,
+    state: &mut EngineState,
+    name: &str,
+    mesh: &crate::types::Mesh,
+    options: EngineOptions,
+) -> Result<bool> {
+    if options.since.is_some() {
+        return Ok(false);
+    }
+    if !content_layers_are_head_authoritative(state) {
+        return Ok(false);
+    }
+    if mesh_has_staged_state(repo, name) {
+        return Ok(false);
+    }
+    for (_, anchor) in &mesh.anchors_v2 {
+        if anchor.anchor_sha != state.head_sha {
+            return Ok(false);
+        }
+        if filter_short_circuit(repo, &anchor.path)?.is_some() {
+            return Ok(false);
+        }
+        let Some(head_blob) = state.head_blob_at(repo, &anchor.path)? else {
+            return Ok(false);
+        };
+        if head_blob != anchor.blob {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn content_layers_are_head_authoritative(state: &EngineState) -> bool {
+    state.clean_layers || (!state.layers.index && !state.layers.worktree)
+}
+
+fn mesh_has_staged_state(repo: &gix::Repository, name: &str) -> bool {
+    crate::staging::read_staged_ops(repo, name).is_ok_and(|ops| !ops.is_empty())
 }
 
 /// Slice 5: returns true when the anchor should pass the `--since`

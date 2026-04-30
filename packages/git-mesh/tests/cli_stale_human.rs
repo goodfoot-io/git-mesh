@@ -243,6 +243,15 @@ fn named_lookup_returns_clean_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "quiet")?;
     let out = repo.run_mesh(["stale", "quiet"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("mesh quiet"),
+        "named clean mesh must still render: {stdout}"
+    );
+    assert!(
+        stdout.contains("FRESH"),
+        "named clean mesh must include its fresh anchor: {stdout}"
+    );
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())
 }

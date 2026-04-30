@@ -11,11 +11,19 @@ mod support;
 
 use anyhow::Result;
 use serde_json::Value;
+use std::process::Command;
 use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", name, "-m", "seed"])?;
+    repo.mesh_stdout(["commit", name])?;
+    Ok(())
+}
+
+fn seed_stable(repo: &TestRepo, name: &str) -> Result<()> {
+    repo.mesh_stdout(["add", name, "file1.txt#L6-L10"])?;
+    repo.mesh_stdout(["why", name, "-m", "stable seed"])?;
     repo.mesh_stdout(["commit", name])?;
     Ok(())
 }
@@ -43,6 +51,54 @@ fn json_envelope_has_schema_version_and_findings() -> Result<()> {
     assert_eq!(first["mesh"], "m");
     assert!(first["anchor_id"].is_null());
     assert!(first["anchored"]["path"].is_string());
+    Ok(())
+}
+
+#[test]
+fn discovery_json_filters_clean_meshes_before_rendering() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "drifty")?;
+    seed_stable(&repo, "quiet")?;
+    drift_in_head(&repo)?;
+
+    let out = repo.run_mesh(["stale", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&out.stdout)?;
+    let findings = v["findings"].as_array().expect("findings array");
+    assert!(
+        findings.iter().any(|f| f["mesh"] == "drifty"),
+        "drifty finding missing: {v}"
+    );
+    assert!(
+        findings.iter().all(|f| f["mesh"] != "quiet"),
+        "clean mesh leaked into JSON discovery output: {v}"
+    );
+    Ok(())
+}
+
+#[test]
+fn discovery_clean_head_pinned_mesh_uses_fast_path() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "fresh")?;
+
+    let out = Command::new(env!("CARGO_BIN_EXE_git-mesh"))
+        .current_dir(repo.path())
+        .env("GIT_MESH_PERF", "1")
+        .arg("stale")
+        .output()?;
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout)?;
+    let stderr = String::from_utf8(out.stderr)?;
+    assert!(stdout.trim().is_empty(), "stdout={stdout}");
+    assert!(
+        stderr.contains("git-mesh perf: resolver.resolve-stale-meshes"),
+        "expected discovery resolver span: {stderr}"
+    );
+    assert!(
+        !stderr.contains("git-mesh perf: resolver.resolve-anchors"),
+        "clean HEAD-pinned discovery should skip per-anchor resolution: {stderr}"
+    );
     Ok(())
 }
 
@@ -94,6 +150,21 @@ fn porcelain_head_only_omits_src_column() -> Result<()> {
 }
 
 #[test]
+fn discovery_porcelain_filters_clean_meshes_before_rendering() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "drifty")?;
+    seed_stable(&repo, "quiet")?;
+    drift_in_head(&repo)?;
+
+    let out = repo.run_mesh(["stale", "--format=porcelain"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("drifty"), "stdout={text}");
+    assert!(!text.contains("quiet"), "stdout={text}");
+    Ok(())
+}
+
+#[test]
 fn porcelain_layered_includes_src_column() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -126,6 +197,40 @@ fn human_layered_emits_src_marker() -> Result<()> {
             .any(|l| l.trim_start().starts_with("H ") && l.contains("CHANGED")),
         "expected src-marker prefix on finding line: {text}"
     );
+    Ok(())
+}
+
+#[test]
+fn discovery_human_includes_staging_only_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
+
+    let out = repo.run_mesh(["stale"])?;
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("mesh new-mesh"), "stdout={text}");
+    assert!(text.contains("Pending mesh ops:"), "stdout={text}");
+    assert!(text.contains("ADD    file1.txt#L1-L5"), "stdout={text}");
+    Ok(())
+}
+
+#[test]
+fn discovery_json_includes_clean_mesh_with_pending_metadata() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "clean-with-pending")?;
+    repo.mesh_stdout(["why", "clean-with-pending", "-m", "updated reason"])?;
+
+    let out = repo.run_mesh(["stale", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout)?;
+    assert!(
+        v["findings"].as_array().is_some_and(Vec::is_empty),
+        "metadata-only pending must not create findings: {v}"
+    );
+    let pending = v["pending"].as_array().expect("pending array");
+    assert_eq!(pending.len(), 1, "pending metadata entry: {v}");
+    assert_eq!(pending[0]["mesh"], "clean-with-pending");
+    assert_eq!(pending[0]["kind"], "why");
     Ok(())
 }
 
