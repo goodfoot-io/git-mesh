@@ -464,7 +464,7 @@ fn apply_compact_attempt(
         }));
     }
 
-    // Item 8: rebuild new anchors.v2 via HashMap lookups in resolved order.
+    // Item 8: rebuild new anchors blob via HashMap lookups in resolved order.
     let mut all_anchors: Vec<(String, crate::types::Anchor)> =
         Vec::with_capacity(resolved.anchors.len());
     for ar in &resolved.anchors {
@@ -658,7 +658,7 @@ fn build_mesh_tree(
         entries: vec![
             Entry {
                 mode: EntryKind::Blob.into(),
-                filename: "anchors.v2".into(),
+                filename: "anchors".into(),
                 oid: anchors_v2_blob
                     .parse()
                     .map_err(|e| Error::Git(format!("parse anchors_v2 blob oid: {e}")))?,

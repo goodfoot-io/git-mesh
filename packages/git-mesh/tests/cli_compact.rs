@@ -301,7 +301,7 @@ fn test_compact_no_exit_code() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Test: path-index is consistent with new anchors.v2 after compaction.
+// Test: path-index is consistent with new anchors blob after compaction.
 // ---------------------------------------------------------------------------
 
 #[test]

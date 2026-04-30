@@ -224,7 +224,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 .cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
         });
 
-        // Build tree: `anchors.v2` blob + `config` blob.
+        // Build tree: `anchors` blob + `config` blob.
         let config_text = serialize_config_blob(&new_config);
         let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
 
@@ -241,12 +241,12 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         };
         let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
 
-        // Build a tree with `anchors.v2` and `config` entries.
+        // Build a tree with `anchors` and `config` entries.
         let tree = Tree {
             entries: vec![
                 Entry {
                     mode: EntryKind::Blob.into(),
-                    filename: "anchors.v2".into(),
+                    filename: "anchors".into(),
                     oid: anchors_v2_blob.parse().map_err(|e| {
                         crate::Error::Git(format!("parse anchors_v2 blob oid: {e}"))
                     })?,

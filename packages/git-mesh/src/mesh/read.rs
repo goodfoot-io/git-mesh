@@ -94,7 +94,7 @@ pub(crate) fn read_anchors_v2_blob(
     repo: &gix::Repository,
     commit_oid: &str,
 ) -> Result<Vec<(String, crate::types::Anchor)>> {
-    let blob_oid = match git::path_blob_at(repo, commit_oid, "anchors.v2") {
+    let blob_oid = match git::path_blob_at(repo, commit_oid, "anchors") {
         Ok(oid) => oid,
         Err(_) => return Ok(Vec::new()),
     };

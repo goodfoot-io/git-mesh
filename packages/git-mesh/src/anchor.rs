@@ -1,6 +1,6 @@
 //! Anchor blob serialization and memory records — see §3.1, §4.1, §6.1.
 //!
-//! An Anchor is a memory record embedded in `anchors.v2` with a
+//! An Anchor is a memory record embedded in `anchors` with a
 //! commit-object-style text format:
 //!
 //! ```text
