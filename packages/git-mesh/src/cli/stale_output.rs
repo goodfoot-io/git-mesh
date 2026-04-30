@@ -19,6 +19,9 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
+    if args.compact {
+        return super::compact::run_compact(repo, &args);
+    }
     let layers = LayerSet {
         worktree: !args.no_worktree,
         index: !args.no_index,

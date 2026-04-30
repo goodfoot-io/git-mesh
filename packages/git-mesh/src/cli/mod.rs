@@ -18,6 +18,7 @@
 
 pub mod advice;
 pub mod commit;
+pub mod compact;
 pub mod pre_commit;
 pub mod show;
 pub mod stale_output;
@@ -252,6 +253,11 @@ pub struct StaleArgs {
     /// Only anchors recorded at or after this commit.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub since: Option<String>,
+
+    /// Compact Fresh anchors to HEAD (mutation mode). Ordinary stale is
+    /// read-only; --compact is its only mutation gate.
+    #[arg(long, conflicts_with_all = ["patch", "stat", "oneline", "since", "no_worktree", "no_index"])]
+    pub compact: bool,
 }
 
 #[derive(Debug, clap::Args)]
