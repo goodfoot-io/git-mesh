@@ -437,6 +437,9 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
             }
         }
     }
+    crate::perf::counter("session.ensure-calls", state.session.ensure_calls);
+    crate::perf::counter("session.ensure-hits", state.session.ensure_hits);
+    crate::perf::counter("session.walks-len", state.session.walks_len() as u64);
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_worst_first(&mut out);

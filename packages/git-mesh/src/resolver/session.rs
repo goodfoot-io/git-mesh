@@ -50,13 +50,21 @@ pub(crate) struct GroupedWalk {
 /// Engine-wide shared state: one entry per distinct anchor commit.
 pub(crate) struct ResolveSession {
     walks: HashMap<(String, CopyDetection), GroupedWalk>,
+    pub(crate) ensure_calls: u64,
+    pub(crate) ensure_hits: u64,
 }
 
 impl ResolveSession {
     pub(crate) fn new() -> Self {
         Self {
             walks: HashMap::new(),
+            ensure_calls: 0,
+            ensure_hits: 0,
         }
+    }
+
+    pub(crate) fn walks_len(&self) -> usize {
+        self.walks.len()
     }
 
     /// Ensure a grouped walk exists for `anchor_sha`. Idempotent. The
@@ -75,9 +83,12 @@ impl ResolveSession {
         warnings: &mut Vec<String>,
     ) -> Result<&GroupedWalk> {
         let key = (anchor_sha.to_string(), copy_detection);
+        self.ensure_calls += 1;
         if !self.walks.contains_key(&key) {
             let walk = build_grouped_walk(repo, anchor_sha, copy_detection, warnings)?;
             self.walks.insert(key.clone(), walk);
+        } else {
+            self.ensure_hits += 1;
         }
         Ok(self.walks.get(&key).expect("just inserted"))
     }

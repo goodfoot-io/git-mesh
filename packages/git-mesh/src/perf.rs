@@ -54,3 +54,10 @@ impl Drop for Span {
 pub fn span(label: &'static str) -> Span {
     Span::new(label)
 }
+
+pub fn counter(label: &str, value: u64) {
+    if !enabled() {
+        return;
+    }
+    eprintln!("git-mesh perf: {label} {value}");
+}
