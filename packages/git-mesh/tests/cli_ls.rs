@@ -253,6 +253,49 @@ fn ls_porcelain_pending_mesh_appears() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn ls_filtered_porcelain_uses_authoritative_path_index() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
+    commit_mesh(&repo, "beta", "file2.txt#L1-L3", "beta why")?;
+
+    let index_refs = repo.list_refs("refs/meshes-index/v1/path/")?;
+    assert!(
+        !index_refs.is_empty(),
+        "commit should write path-index refs"
+    );
+
+    let out = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
+    assert!(
+        out.contains("alpha\tfile1.txt\t1-5"),
+        "alpha should match: {out}"
+    );
+    assert!(!out.contains("beta\t"), "beta should not match: {out}");
+    Ok(())
+}
+
+#[test]
+fn ls_filtered_porcelain_path_index_tracks_rename_and_delete() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
+
+    repo.mesh_stdout(["mv", "alpha", "renamed"])?;
+    let renamed = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
+    assert!(
+        renamed.contains("renamed\tfile1.txt\t1-5"),
+        "renamed mesh should match: {renamed}"
+    );
+    assert!(
+        !renamed.contains("alpha\t"),
+        "old mesh name should not remain indexed: {renamed}"
+    );
+
+    repo.mesh_stdout(["delete", "renamed"])?;
+    let deleted = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
+    assert_eq!(deleted.trim(), "no meshes");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------

@@ -567,8 +567,6 @@ pub(crate) fn resolve_ref_oid_optional_repo(
     }
 }
 
-
-
 pub(crate) fn read_blob_bytes(repo: &gix::Repository, blob_oid: &str) -> Result<Vec<u8>> {
     blob_data(repo, blob_oid)
 }

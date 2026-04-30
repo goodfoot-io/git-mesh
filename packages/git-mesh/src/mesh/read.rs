@@ -80,15 +80,20 @@ pub(crate) fn read_mesh_from_commit(
     let message = git::commit_meta(repo, commit_oid)?.message;
     let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
     let config = read_config_blob(repo, commit_oid).unwrap_or_else(|_| default_config());
+    let anchors = anchors_v2.iter().map(|(id, _anchor)| id.clone()).collect();
     Ok(Mesh {
         name: name.to_string(),
+        anchors,
         anchors_v2,
         message,
         config,
     })
 }
 
-pub(crate) fn read_anchors_v2_blob(repo: &gix::Repository, commit_oid: &str) -> Result<Vec<(String, crate::types::Anchor)>> {
+pub(crate) fn read_anchors_v2_blob(
+    repo: &gix::Repository,
+    commit_oid: &str,
+) -> Result<Vec<(String, crate::types::Anchor)>> {
     let blob_oid = match git::path_blob_at(repo, commit_oid, "anchors.v2") {
         Ok(oid) => oid,
         Err(_) => return Ok(Vec::new()),
@@ -124,7 +129,10 @@ pub(crate) fn read_mesh_listing_at(
 ) -> Result<MeshListingRecord> {
     let message = git::commit_meta(repo, commit_oid)?.message;
     let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
-    Ok(MeshListingRecord { message, anchors_v2 })
+    Ok(MeshListingRecord {
+        message,
+        anchors_v2,
+    })
 }
 
 fn default_config() -> MeshConfig {

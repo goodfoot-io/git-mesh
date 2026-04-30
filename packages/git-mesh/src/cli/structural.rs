@@ -2,9 +2,7 @@
 
 use crate::cli::{DeleteArgs, MvArgs, RestoreArgs, RevertArgs};
 use crate::sync::default_remote;
-use crate::{
-    delete_mesh, file_index, list_mesh_names, rename_mesh, restore_mesh, revert_mesh,
-};
+use crate::{delete_mesh, file_index, list_mesh_names, rename_mesh, restore_mesh, revert_mesh};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::fs;
@@ -139,10 +137,44 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
     // ---- Sidecar integrity (Slice 4) --------------------------------
     check_sidecar_integrity(repo, &mut out);
 
+    // ---- Legacy anchor ref hygiene ----------------------------------
+    check_legacy_anchor_refs(repo, &mut out);
+
     // ---- File index self-heal ---------------------------------------
     check_file_index(repo, &mut out);
 
     Ok(out)
+}
+
+fn check_legacy_anchor_refs(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
+    let Ok(anchor_refs) = crate::git::list_refs_stripped(repo, "refs/anchors/v1") else {
+        return;
+    };
+    if anchor_refs.is_empty() {
+        return;
+    }
+    let mut active = BTreeSet::new();
+    let Ok(mesh_names) = list_mesh_names(repo) else {
+        return;
+    };
+    for mesh_name in mesh_names {
+        let Ok(mesh) = crate::mesh::read_mesh(repo, &mesh_name) else {
+            continue;
+        };
+        for (anchor_id, _anchor) in mesh.anchors_v2 {
+            active.insert(anchor_id);
+        }
+    }
+    for anchor_id in anchor_refs {
+        if !active.contains(&anchor_id) {
+            out.push(DoctorFinding {
+                code: DoctorCode::DanglingRangeRef,
+                severity: Severity::Warn,
+                message: format!("legacy anchor ref `{anchor_id}` is not referenced by any mesh"),
+                remediation: None,
+            });
+        }
+    }
 }
 
 fn check_hook(

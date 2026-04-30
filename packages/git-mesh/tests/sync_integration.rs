@@ -35,6 +35,7 @@ fn ensure_refspec_configured_adds_both_refspecs() -> Result<()> {
     ensure_refspec_configured(&repo.gix_repo()?, "origin")?;
     let fetch = repo.git_stdout(["config", "--get-all", "remote.origin.fetch"])?;
     assert!(fetch.contains("refs/meshes/"));
+    assert!(fetch.contains("refs/meshes-index/"));
     assert!(fetch.contains("refs/anchors/"));
     Ok(())
 }
@@ -74,13 +75,14 @@ fn push_bootstraps_refspec_on_first_call() -> Result<()> {
     set_why(&gix, "m", "seed")?;
     commit_mesh(&gix, "m")?;
     push_mesh_refs(&gix, "origin")?;
-    // Upstream should now have the mesh ref.
+    // Upstream should now have the mesh ref and authoritative path index.
     let out = std::process::Command::new("git")
         .current_dir(bare.path())
-        .args(["for-each-ref", "--format=%(refname)", "refs/meshes/"])
+        .args(["for-each-ref", "--format=%(refname)"])
         .output()?;
     let refs = String::from_utf8_lossy(&out.stdout);
     assert!(refs.contains("refs/meshes/v1/m"));
+    assert!(refs.contains("refs/meshes-index/v1/path/"));
     Ok(())
 }
 
@@ -102,5 +104,6 @@ fn fetch_round_trips_from_upstream() -> Result<()> {
     reader.add_remote("origin", upstream_bare.path())?;
     fetch_mesh_refs(&reader.gix_repo()?, "origin")?;
     assert!(reader.ref_exists("refs/meshes/v1/shared"));
+    assert!(!reader.list_refs("refs/meshes-index/v1/path/")?.is_empty());
     Ok(())
 }

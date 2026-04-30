@@ -151,6 +151,51 @@ Implementation of the greenfield `anchors.v2` layout slice is complete:
 - `git mesh ls` and `git mesh stale` prioritize the `anchors.v2` blob over individual legacy ref resolution.
 - 10,000-mesh benchmark artifacts have been recorded.
 
+## Breakthrough v3: Authoritative Path Index
+
+The next measured bottleneck after `anchors.v2` was filtered `ls`. On a 10,000-mesh, 2-anchor mixed fixture, direct perf showed the path/range predicate itself was cheap, but command execution still materialized every committed mesh before filtering:
+
+| operation | total | notable spans |
+|---|---:|---|
+| `ls --porcelain` | 397.749 ms | list mesh refs 131.637 ms; read committed mesh records 249.563 ms |
+| `ls src/module_001.rs#L15-L19 --porcelain` | 380.219 ms | list mesh refs 168.766 ms; read committed mesh records 209.659 ms; path filter 0.388 ms |
+
+Harness baseline on the same scale:
+
+| op | result |
+|---|---:|
+| `ls_filtered_hit` | 0.3439 s |
+| `ls_filtered_miss` | 0.3362 s |
+| `wiki_hit_queries` | 20 queries / 7.2783 s |
+| `wiki_miss_queries` | 20 queries / 7.1594 s |
+
+Decision matrix update:
+
+| design | expected filtered `ls` complexity | write cost | storage cost | failure mode | migration needed now? |
+|---|---|---|---|---|---|
+| current `anchors.v2` only | O(meshes) | current | 10,000 mesh refs plus mesh commits | ref iteration and per-mesh object reads dominate | no |
+| packed refs / reftable only | still O(meshes), lower constants possible | current | backend-dependent | unavailable backend or still object-read bound | no |
+| CLI batching | O(queries * matching work) process cost amortized | new public surface | none | downstream adoption required | yes, if exposed |
+| authoritative path-index refs | O(path bucket + matching meshes) | update affected path buckets transactionally with mesh ref | one ref/blob per indexed path | transaction conflict fails closed | no, greenfield only |
+
+**Decision:** Implement **authoritative path-index refs** for filtered porcelain `ls`.
+- Each indexed path has a deterministic ref under `refs/meshes-index/v1/path/<sha256-shard>/<sha256>`.
+- The ref points at a blob with sorted `(mesh, start, end)` rows for that path. Whole-file anchors are represented as `0	0`.
+- `commit`, `delete`, `mv`, and `revert` update affected path-index refs in the same reference transaction as the mesh ref.
+- `git mesh ls <path>[#Lx-Ly] --porcelain` uses the path index to expand only matching committed mesh names, then reads those meshes to preserve the existing porcelain contract of rendering every anchor in each matching mesh.
+- Human `ls`, `--search`, and unfiltered porcelain keep the existing full listing path.
+
+Measured on the kept 10,000-mesh fixture after backfilling index refs to simulate a greenfield indexed repository:
+
+| operation | total | notable spans |
+|---|---:|---|
+| `ls src/module_001.rs#L15-L19 --porcelain` | 2.816 ms | path-index lookup 1.382 ms; candidate expansion 1.328 ms |
+| missing filtered `ls` | 1.422 ms | path-index lookup 0.234 ms; pending scan 1.128 ms |
+| 20 wiki hit queries | 0.2230 s | process-per-query workload |
+| 20 wiki miss queries | 0.1881 s | process-per-query workload |
+
+This changes the hot filtered `ls` path from scanning 10,000 mesh commits to reading one path bucket plus matching mesh commits. In this synthetic fixture, the direct in-process hit improved from ~380 ms to ~2.8 ms, and the wiki-style 20-query process workload improved from ~7.3 s to ~0.22 s.
+
 ## Validation
 
 Completed:

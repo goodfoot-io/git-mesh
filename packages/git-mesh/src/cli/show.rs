@@ -1,6 +1,5 @@
 //! `git mesh` list / `git mesh <name>` show / `git mesh ls` — §10.4, §3.4.
 
-
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Anchor, AnchorExtent};
@@ -382,6 +381,89 @@ fn collect_listings_with_options(
     Ok(listings)
 }
 
+fn collect_filtered_porcelain_listings(
+    repo: &gix::Repository,
+    target: &str,
+) -> Result<Vec<MeshListing>> {
+    let (path, range) = if target.contains("#L") {
+        let (path, start, end) = parse_range_address(target)?;
+        (path, Some((start, end)))
+    } else {
+        (target.to_string(), None)
+    };
+
+    let committed_names = {
+        let _perf = crate::perf::span("ls.path-index-lookup");
+        crate::mesh::path_index::matching_mesh_names(repo, &path, range)?
+    };
+    let mut listings = Vec::with_capacity(committed_names.len());
+    {
+        let _perf = crate::perf::span("ls.path-index-candidate-expansion");
+        for name in committed_names {
+            let mesh = match read_mesh_at(repo, &name, None) {
+                Ok(mesh) => mesh,
+                Err(crate::Error::MeshNotFound(_)) => continue,
+                Err(err) => return Err(err.into()),
+            };
+            let anchors = mesh
+                .anchors_v2
+                .into_iter()
+                .map(|(_id, anchor)| AnchorEntry {
+                    path: anchor.path,
+                    extent: anchor.extent,
+                })
+                .collect();
+            listings.push(MeshListing {
+                name,
+                why: String::new(),
+                anchors,
+                state: MeshState::Committed,
+            });
+        }
+    }
+
+    {
+        let _perf = crate::perf::span("ls.path-index-pending-meshes");
+        for name in list_staged_mesh_names(repo)? {
+            let staging = read_staging(repo, &name)?;
+            let anchors: Vec<AnchorEntry> = staging
+                .adds
+                .into_iter()
+                .map(|add| AnchorEntry {
+                    path: add.path,
+                    extent: add.extent,
+                })
+                .collect();
+            if anchors
+                .iter()
+                .any(|anchor| anchor_matches(anchor, &path, range))
+            {
+                listings.push(MeshListing {
+                    name,
+                    why: String::new(),
+                    anchors,
+                    state: MeshState::Pending,
+                });
+            }
+        }
+    }
+
+    Ok(listings)
+}
+
+fn anchor_matches(anchor: &AnchorEntry, path: &str, range: Option<(u32, u32)>) -> bool {
+    if anchor.path != path {
+        return false;
+    }
+    match (anchor.extent, range) {
+        (_, None) => true,
+        (AnchorExtent::WholeFile, Some(_)) => true,
+        (AnchorExtent::LineRange { start, end }, Some((query_start, query_end))) => {
+            start <= query_end && end >= query_start
+        }
+    }
+}
+
 fn apply_path_filter(listings: &mut Vec<MeshListing>, target: &str) -> Result<()> {
     if target.contains("#L") {
         let (path, s, e) = parse_range_address(target)?;
@@ -561,14 +643,18 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
     let include_state = !args.porcelain;
     let mut listings = {
         let _perf = crate::perf::span("ls.collect");
-        if include_why && include_state {
+        if args.porcelain && args.search.is_none() && args.target.is_some() {
+            collect_filtered_porcelain_listings(repo, args.target.as_deref().unwrap())?
+        } else if include_why && include_state {
             collect_listings(repo)?
         } else {
             collect_listings_with_options(repo, include_why, include_state)?
         }
     };
 
-    if let Some(ref t) = args.target {
+    if let Some(ref t) = args.target
+        && !(args.porcelain && args.search.is_none())
+    {
         let _perf = crate::perf::span("ls.filter-path");
         apply_path_filter(&mut listings, t)?;
     }

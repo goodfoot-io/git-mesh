@@ -15,8 +15,9 @@ use crate::{Error, Result};
 use std::path::Path;
 use std::process::Command;
 
-const REFSPECS: [&str; 2] = [
+const REFSPECS: [&str; 3] = [
     "+refs/anchors/*:refs/anchors/*",
+    "+refs/meshes-index/*:refs/meshes-index/*",
     "+refs/meshes/*:refs/meshes/*",
 ];
 
@@ -253,17 +254,25 @@ mod tests {
         let push = get_remote_multi(&repo3, "origin", "push");
         let mesh_fetch_count = fetch
             .iter()
-            .filter(|s| s.contains("refs/anchors/") || s.contains("refs/meshes/"))
+            .filter(|s| {
+                s.contains("refs/anchors/")
+                    || s.contains("refs/meshes/")
+                    || s.contains("refs/meshes-index/")
+            })
             .count();
         let mesh_push_count = push
             .iter()
-            .filter(|s| s.contains("refs/anchors/") || s.contains("refs/meshes/"))
+            .filter(|s| {
+                s.contains("refs/anchors/")
+                    || s.contains("refs/meshes/")
+                    || s.contains("refs/meshes-index/")
+            })
             .count();
         assert_eq!(
-            mesh_fetch_count, 2,
+            mesh_fetch_count, 3,
             "fetch refspecs not idempotent: {fetch:?}"
         );
-        assert_eq!(mesh_push_count, 2, "push refspecs not idempotent: {push:?}");
+        assert_eq!(mesh_push_count, 3, "push refspecs not idempotent: {push:?}");
     }
 
     #[test]

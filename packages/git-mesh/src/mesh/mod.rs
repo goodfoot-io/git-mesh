@@ -6,6 +6,7 @@
 //! - [`structural`] — delete, mv, restore, revert (§6.8).
 
 pub mod commit;
+pub(crate) mod path_index;
 pub mod read;
 pub mod structural;
 

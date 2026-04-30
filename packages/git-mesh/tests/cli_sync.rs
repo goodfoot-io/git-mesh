@@ -88,6 +88,7 @@ fn push_bootstraps_refspec_on_first_push() -> Result<()> {
     repo.mesh_stdout(["push"])?; // default remote
     let fetch = repo.git_stdout(["config", "--get-all", "remote.origin.fetch"])?;
     assert!(fetch.contains("refs/meshes/"));
+    assert!(fetch.contains("refs/meshes-index/"));
     Ok(())
 }
 
@@ -101,9 +102,11 @@ fn push_delivers_mesh_to_upstream() -> Result<()> {
     repo.mesh_stdout(["push", "origin"])?;
     let out = std::process::Command::new("git")
         .current_dir(bare.path())
-        .args(["for-each-ref", "--format=%(refname)", "refs/meshes/"])
+        .args(["for-each-ref", "--format=%(refname)"])
         .output()?;
-    assert!(String::from_utf8_lossy(&out.stdout).contains("refs/meshes/v1/m"));
+    let refs = String::from_utf8_lossy(&out.stdout);
+    assert!(refs.contains("refs/meshes/v1/m"));
+    assert!(refs.contains("refs/meshes-index/v1/path/"));
     Ok(())
 }
 

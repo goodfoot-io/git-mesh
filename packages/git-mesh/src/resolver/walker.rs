@@ -2,7 +2,6 @@
 //! its anchor commit forward through `anchor..HEAD` by replaying each
 //! commit's name-status and hunk diffs against the tracked location.
 
-
 use crate::git;
 use crate::types::{Anchor, AnchorExtent, CopyDetection};
 use crate::{Error, Result};
@@ -678,8 +677,6 @@ fn collect_changes<'a>(
         .map_err(|e| Error::Git(format!("tree diff: {e}")))?;
     Ok(out)
 }
-
-
 
 #[cfg(test)]
 mod scope_tests {

@@ -48,7 +48,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
 
     // Validate removes exist and adds don't collide post-remove. Work on a
     // materialized snapshot `(anchor_id, path, extent)`.
-    let mut snapshots: Vec<(String, crate::types::Anchor)> = anchor_v2_records;
+    let mut snapshots: Vec<(String, crate::types::Anchor)> = anchor_v2_records.clone();
     for rem in &staging.removes {
         let idx = snapshots
             .iter()
@@ -197,7 +197,8 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     }
     for a in &staging.adds {
         let anchor = a.anchor.clone().unwrap_or_else(|| head_sha.clone());
-        let (id, anchor_rec) = create_anchor_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
+        let (id, anchor_rec) =
+            create_anchor_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
         new_anchors.push((id, anchor_rec));
     }
 
@@ -207,6 +208,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     // against the new snapshot, rebuild the tree/commit with the new
     // parent, and retry.
     let mut current_parent = base_tip.clone();
+    let mut current_tip_anchors = anchor_v2_records;
     let mut current_snapshots = snapshots;
     const MAX_RETRIES: usize = 5;
     let new_commit: String;
@@ -218,13 +220,14 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             combined.push((id.clone(), r.clone()));
         }
         combined.sort_by(|a, b| {
-            (a.1.path.as_str(), extent_sort_key(&a.1.extent)).cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
+            (a.1.path.as_str(), extent_sort_key(&a.1.extent))
+                .cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
         });
 
         // Build tree: `anchors.v2` blob + `config` blob.
         let config_text = serialize_config_blob(&new_config);
         let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
-        
+
         let anchors_v2_text: String = {
             let mut s = String::new();
             for (id, r) in &combined {
@@ -244,9 +247,9 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 Entry {
                     mode: EntryKind::Blob.into(),
                     filename: "anchors.v2".into(),
-                    oid: anchors_v2_blob
-                        .parse()
-                        .map_err(|e| crate::Error::Git(format!("parse anchors_v2 blob oid: {e}")))?,
+                    oid: anchors_v2_blob.parse().map_err(|e| {
+                        crate::Error::Git(format!("parse anchors_v2 blob oid: {e}"))
+                    })?,
                 },
                 Entry {
                     mode: EntryKind::Blob.into(),
@@ -270,8 +273,10 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             .unwrap_or_default();
         let candidate = create_commit(repo, &tree_oid, &message, &parents)?;
 
-        // Atomic CAS update.
-        let update = match current_parent.as_deref() {
+        // Atomic CAS update. The authoritative path index is updated in
+        // the same ref transaction as the mesh tip, so a successful mesh
+        // commit cannot leave filtered reads with stale candidates.
+        let mesh_update = match current_parent.as_deref() {
             Some(prev) => RefUpdate::Update {
                 name: mesh_ref.clone(),
                 new_oid: candidate.clone(),
@@ -282,16 +287,19 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 new_oid: candidate.clone(),
             },
         };
+        let mut updates =
+            super::path_index::ref_updates_for_mesh(repo, name, &current_tip_anchors, &combined)?;
+        updates.push(mesh_update);
         // Slice 6d: lazily ensure `core.logAllRefUpdates = always` so
         // refs under `refs/meshes/*` get reflog entries. Doctor reports
         // an INFO finding when it would set this.
         crate::git::ensure_log_all_ref_updates_always(repo)?;
-        match apply_ref_transaction(wd, &[update]) {
+        match apply_ref_transaction(wd, &updates) {
             Ok(()) => {
                 new_commit = candidate;
                 break;
             }
-            Err(e) => {
+            Err(_e) => {
                 attempt += 1;
                 if attempt >= MAX_RETRIES {
                     return Err(Error::ConcurrentUpdate {
@@ -299,12 +307,10 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                         found: resolve_ref_oid_optional(wd, &mesh_ref)?.unwrap_or_default(),
                     });
                 }
-                // Re-read the tip. If it hasn't actually changed, the
-                // error wasn't a CAS conflict — surface it.
+                // Re-read the mesh tip and path-index refs before retrying.
+                // The transaction can fail on either the mesh CAS or one of
+                // the affected path buckets.
                 let latest = resolve_ref_oid_optional(wd, &mesh_ref)?;
-                if latest == current_parent {
-                    return Err(e);
-                }
                 current_parent = latest;
                 // Re-materialize snapshot from new tip and re-run
                 // post-remove / add collision validation.
@@ -315,6 +321,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                     }
                     None => Vec::new(),
                 };
+                current_tip_anchors = new_snapshots.clone();
                 let mut post = new_snapshots;
                 for rem in &staging.removes {
                     let idx = post

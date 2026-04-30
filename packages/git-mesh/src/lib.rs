@@ -27,7 +27,7 @@ pub mod sync;
 pub mod types;
 pub mod validation;
 
-pub use anchor::{create_anchor, parse_anchor, serialize_anchor};
+pub use anchor::{anchor_ref_path, create_anchor, parse_anchor, read_anchor, serialize_anchor};
 pub use file_index::{
     IndexEntry, ls_all, ls_by_path, ls_by_path_line_range, read_index, rebuild_index,
 };

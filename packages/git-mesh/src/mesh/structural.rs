@@ -12,15 +12,16 @@ fn mesh_ref(name: &str) -> String {
 
 pub fn delete_mesh(repo: &gix::Repository, name: &str) -> Result<()> {
     let wd = work_dir(repo)?;
-    let current = resolve_ref_oid_optional(wd, &mesh_ref(name))?
-        .ok_or_else(|| Error::MeshNotFound(name.into()))?;
-    apply_ref_transaction(
-        wd,
-        &[RefUpdate::Delete {
-            name: mesh_ref(name),
-            expected_old_oid: current,
-        }],
-    )
+    let ref_name = mesh_ref(name);
+    let current =
+        resolve_ref_oid_optional(wd, &ref_name)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
+    let mesh = super::read::read_mesh_at(repo, name, Some(&current))?;
+    let mut updates = super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors_v2, &[])?;
+    updates.push(RefUpdate::Delete {
+        name: ref_name,
+        expected_old_oid: current,
+    });
+    apply_ref_transaction(wd, &updates)
 }
 
 pub fn rename_mesh(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
@@ -33,19 +34,19 @@ pub fn rename_mesh(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
     if resolve_ref_oid_optional(wd, &new_ref)?.is_some() {
         return Err(Error::MeshAlreadyExists(new.into()));
     }
-    apply_ref_transaction(
-        wd,
-        &[
-            RefUpdate::Create {
-                name: new_ref,
-                new_oid: old_oid.clone(),
-            },
-            RefUpdate::Delete {
-                name: old_ref,
-                expected_old_oid: old_oid,
-            },
-        ],
-    )
+    let mesh = super::read::read_mesh_at(repo, old, Some(&old_oid))?;
+    let mut updates = super::path_index::ref_updates_for_rename(repo, old, new, &mesh.anchors_v2)?;
+    updates.extend([
+        RefUpdate::Create {
+            name: new_ref,
+            new_oid: old_oid.clone(),
+        },
+        RefUpdate::Delete {
+            name: old_ref,
+            expected_old_oid: old_oid,
+        },
+    ]);
+    apply_ref_transaction(wd, &updates)
 }
 
 pub fn restore_mesh(repo: &gix::Repository, name: &str) -> Result<()> {
@@ -61,14 +62,20 @@ pub fn revert_mesh(repo: &gix::Repository, name: &str, commit_ish: &str) -> Resu
         resolve_ref_oid_optional(wd, &ref_name)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
     let tree_oid = git::commit_tree_oid(repo, &target)?;
     let message = git::commit_meta(repo, &target)?.message;
+    let old_mesh = super::read::read_mesh_at(repo, name, Some(&current))?;
+    let new_mesh = super::read::read_mesh_at(repo, name, Some(&target))?;
     let new_commit = create_commit(repo, &tree_oid, &message, std::slice::from_ref(&current))?;
-    apply_ref_transaction(
-        wd,
-        &[RefUpdate::Update {
-            name: ref_name,
-            new_oid: new_commit.clone(),
-            expected_old_oid: current,
-        }],
+    let mut updates = super::path_index::ref_updates_for_mesh(
+        repo,
+        name,
+        &old_mesh.anchors_v2,
+        &new_mesh.anchors_v2,
     )?;
+    updates.push(RefUpdate::Update {
+        name: ref_name,
+        new_oid: new_commit.clone(),
+        expected_old_oid: current,
+    });
+    apply_ref_transaction(wd, &updates)?;
     Ok(new_commit)
 }

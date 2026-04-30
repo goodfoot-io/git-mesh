@@ -10,7 +10,7 @@
 //! extent <start> <end> <blob>\t<path>
 //! ```
 
-use crate::git::{self, work_dir};
+use crate::git::{self, RefUpdate, apply_ref_transaction, resolve_ref_oid_optional, work_dir};
 use crate::types::{Anchor, AnchorExtent};
 use crate::{Error, Result};
 use chrono::Utc;
@@ -36,13 +36,22 @@ pub fn create_anchor(
     path: &str,
     start: u32,
     end: u32,
-) -> Result<(String, Anchor)> {
-    create_anchor_with_extent(
+) -> Result<String> {
+    let (id, anchor) = create_anchor_with_extent(
         repo,
         anchor_sha,
         path,
         AnchorExtent::LineRange { start, end },
-    )
+    )?;
+    let blob_oid = git::write_blob_bytes(repo, serialize_anchor(&anchor).as_bytes())?;
+    apply_ref_transaction(
+        work_dir(repo)?,
+        &[RefUpdate::Create {
+            name: anchor_ref_path(&id),
+            new_oid: blob_oid,
+        }],
+    )?;
+    Ok(id)
 }
 
 /// Create an Anchor record at the given extent (line-anchor or whole-file).
@@ -242,4 +251,26 @@ pub fn serialize_anchor(anchor: &Anchor) -> String {
             anchor.anchor_sha, anchor.created_at, anchor.blob, anchor.path
         ),
     }
+}
+
+pub fn anchor_ref_path(anchor_id: &str) -> String {
+    format!("refs/anchors/v1/{anchor_id}")
+}
+
+pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
+    if let Some(blob_oid) = resolve_ref_oid_optional(work_dir(repo)?, &anchor_ref_path(anchor_id))?
+    {
+        return parse_anchor(&git::read_git_text(repo, &blob_oid)?);
+    }
+    for name in crate::mesh::read::list_mesh_names(repo)? {
+        let mesh = crate::mesh::read::read_mesh(repo, &name)?;
+        if let Some((_id, anchor)) = mesh
+            .anchors_v2
+            .into_iter()
+            .find(|(id, _anchor)| id == anchor_id)
+        {
+            return Ok(anchor);
+        }
+    }
+    Err(Error::AnchorNotFound(anchor_id.to_string()))
 }
