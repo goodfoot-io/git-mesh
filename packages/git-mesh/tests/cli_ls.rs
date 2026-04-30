@@ -368,6 +368,46 @@ fn ls_batch_porcelain_handles_multiple_queries() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn ls_batch_porcelain_includes_staged_only_meshes_across_queries() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "pending-one", "file1.txt#L1-L2"])?;
+    repo.mesh_stdout(["add", "pending-two", "file2.txt#L1-L3"])?;
+
+    let out = mesh_stdout_with_stdin(
+        &repo,
+        &["ls", "--batch", "--porcelain"],
+        "file1.txt#L1-L1\nfile2.txt#L2-L2\n",
+    )?;
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["pending-one\tfile1.txt\t1-2", "pending-two\tfile2.txt\t1-3"]
+    );
+    Ok(())
+}
+
+#[test]
+fn ls_batch_porcelain_includes_staged_adds_on_committed_meshes() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
+    repo.mesh_stdout(["add", "alpha", "file2.txt#L1-L3"])?;
+
+    let out = mesh_stdout_with_stdin(
+        &repo,
+        &["ls", "--batch", "--porcelain"],
+        "file1.txt#L3-L4\nfile2.txt#L2-L2\n",
+    )?;
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["alpha\tfile1.txt\t1-5", "alpha\tfile2.txt\t1-3"]
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------

@@ -263,18 +263,20 @@ pub(crate) fn render_tokens(
 // Listing pipeline types and helpers
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MeshState {
     Committed,
     Staged,
     Pending,
 }
 
+#[derive(Clone)]
 struct AnchorEntry {
     path: String,
     extent: AnchorExtent,
 }
 
+#[derive(Clone)]
 struct MeshListing {
     name: String,
     why: String,
@@ -386,6 +388,14 @@ fn collect_filtered_porcelain_listings(
     repo: &gix::Repository,
     target: &str,
 ) -> Result<Vec<MeshListing>> {
+    collect_filtered_porcelain_listings_with_staging(repo, target, None)
+}
+
+fn collect_filtered_porcelain_listings_with_staging(
+    repo: &gix::Repository,
+    target: &str,
+    staged_listings: Option<&[MeshListing]>,
+) -> Result<Vec<MeshListing>> {
     let (path, range) = if target.contains("#L") {
         let (path, start, end) = parse_range_address(target)?;
         (path, Some((start, end)))
@@ -425,30 +435,48 @@ fn collect_filtered_porcelain_listings(
 
     {
         let _perf = crate::perf::span("ls.path-index-pending-meshes");
-        for name in list_staged_mesh_names(repo)? {
-            let staging = read_staging(repo, &name)?;
-            let anchors: Vec<AnchorEntry> = staging
-                .adds
-                .into_iter()
-                .map(|add| AnchorEntry {
-                    path: add.path,
-                    extent: add.extent,
-                })
-                .collect();
-            if anchors
+        let staged;
+        let staged_listings = match staged_listings {
+            Some(staged_listings) => staged_listings,
+            None => {
+                staged = collect_staged_porcelain_listings(repo)?;
+                &staged
+            }
+        };
+        for listing in staged_listings {
+            if listing
+                .anchors
                 .iter()
                 .any(|anchor| anchor_matches(anchor, &path, range))
             {
-                listings.push(MeshListing {
-                    name,
-                    why: String::new(),
-                    anchors,
-                    state: MeshState::Pending,
-                });
+                listings.push(listing.clone());
             }
         }
     }
 
+    Ok(listings)
+}
+
+fn collect_staged_porcelain_listings(repo: &gix::Repository) -> Result<Vec<MeshListing>> {
+    let staged_names = list_staged_mesh_names(repo)?;
+    let mut listings = Vec::with_capacity(staged_names.len());
+    for name in staged_names {
+        let staging = read_staging(repo, &name)?;
+        let anchors: Vec<AnchorEntry> = staging
+            .adds
+            .into_iter()
+            .map(|add| AnchorEntry {
+                path: add.path,
+                extent: add.extent,
+            })
+            .collect();
+        listings.push(MeshListing {
+            name,
+            why: String::new(),
+            anchors,
+            state: MeshState::Pending,
+        });
+    }
     Ok(listings)
 }
 
@@ -546,10 +574,18 @@ fn render_porcelain(page: &[MeshListing]) {
 }
 
 fn run_ls_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
+    let staged_listings = {
+        let _perf = crate::perf::span("ls.batch-read-staged-meshes");
+        collect_staged_porcelain_listings(repo)?
+    };
     let stdin = io::stdin();
     for target in stdin.lock().lines() {
         let target = target?;
-        let mut listings = collect_filtered_porcelain_listings(repo, &target)?;
+        let mut listings = collect_filtered_porcelain_listings_with_staging(
+            repo,
+            &target,
+            Some(&staged_listings),
+        )?;
         listings.sort_by(|a, b| a.name.cmp(&b.name));
 
         if listings.is_empty() {
