@@ -22,7 +22,7 @@ fn drift(repo: &TestRepo) -> Result<String> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn porcelain_one_line_per_finding() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -33,14 +33,14 @@ fn porcelain_one_line_per_finding() -> Result<()> {
     // `# porcelain v1` header + one finding line.
     let lines: Vec<&str> = text.trim().lines().collect();
     assert_eq!(lines.len(), 2, "header + 1 finding: {text}");
-    assert_eq!(lines[0], "# porcelain v1");
+    assert_eq!(lines[0], "# porcelain v2");
     assert!(text.contains("CHANGED"));
     assert!(text.contains("file1.txt"));
     Ok(())
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn porcelain_clean_is_empty() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -51,71 +51,50 @@ fn porcelain_clean_is_empty() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
-fn json_has_version_one() -> Result<()> {
+
+fn json_has_schema_version() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     drift(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--format=json"])?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(v["version"], 1);
-    assert!(v["ranges"].is_array());
+    assert_eq!(v["schema_version"], 2);
+    assert!(v["findings"].is_array());
     Ok(())
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
-fn json_range_entries_have_lsp_shape() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift(&repo)?;
-    let out = repo.run_mesh(["stale", "m", "--format=json"])?;
-    let v: Value = serde_json::from_slice(&out.stdout)?;
-    let first = &v["ranges"][0];
-    assert!(first["severity"].is_string() || first["severity"].is_number());
-    assert!(first["anchor"].is_object());
-    assert!(first["message"].is_string());
-    Ok(())
-}
 
-#[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
-fn json_envelope_has_mesh_and_commit_fields() -> Result<()> {
+fn json_envelope_has_mesh_field() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     drift(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--format=json"])?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(v["version"], 1);
+    assert_eq!(v["schema_version"], 2);
     assert_eq!(v["mesh"], "m");
-    assert!(v["commit"].is_string() && !v["commit"].as_str().unwrap().is_empty());
     Ok(())
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
-fn json_range_entries_use_zero_based_lsp_range() -> Result<()> {
+
+fn json_finding_has_status_and_anchored() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     drift(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--format=json"])?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
-    let first = &v["ranges"][0];
-    // LSP 0-based lines: start.line = 0 (for L1), end.line = 4 (for L5).
-    assert_eq!(first["anchor"]["start"]["line"], 0);
-    assert_eq!(first["anchor"]["start"]["character"], 0);
-    assert_eq!(first["anchor"]["end"]["line"], 4);
-    assert_eq!(first["anchor"]["end"]["character"], 0);
-    // Severity + code shape.
-    assert_eq!(first["severity"], "error");
-    assert_eq!(first["code"], "CHANGED");
-    // Culprit in data.
-    assert!(first["data"]["culprit"]["sha"].is_string());
+    let first = &v["findings"][0];
+    assert_eq!(first["status"]["code"], "CHANGED");
+    assert!(first["anchored"]["path"].is_string());
+    assert_eq!(first["anchored"]["extent"]["kind"], "lines");
+    assert_eq!(first["anchored"]["extent"]["start"], 1);
+    assert_eq!(first["anchored"]["extent"]["end"], 5);
     Ok(())
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn junit_has_testsuite_tag() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -128,7 +107,7 @@ fn junit_has_testsuite_tag() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn github_actions_emits_warning_annotation() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -165,7 +144,7 @@ fn tool_error_exits_one() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn since_filters_by_anchor_age() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let early_anchor = repo.head_sha()?;

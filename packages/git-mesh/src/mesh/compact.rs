@@ -227,8 +227,8 @@ pub fn compact_mesh(
     // 2. Already-at-HEAD fast path (Item 6).
     let mesh_ref = format!("refs/meshes/v1/{name}");
     let wd = work_dir(repo)?;
-    let initial_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
-        .ok_or_else(|| Error::MeshNotFound(name.into()))?;
+    let initial_tip =
+        resolve_ref_oid_optional(wd, &mesh_ref)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
     {
         let mesh = read_mesh_at(repo, name, Some(&initial_tip))?;
         let mut state = new_engine_state(repo, options)?;
@@ -564,8 +564,8 @@ fn compact_one_in_batch(
     }
 
     let mesh_ref = format!("refs/meshes/v1/{name}");
-    let initial_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
-        .ok_or_else(|| Error::MeshNotFound(name.into()))?;
+    let initial_tip =
+        resolve_ref_oid_optional(wd, &mesh_ref)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
     let mesh = read_mesh_from_commit(repo, name, &initial_tip)?;
 
     // Already-at-HEAD fast path using the shared state.

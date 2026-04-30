@@ -57,7 +57,7 @@ fn commit_writes_ranges_sorted_by_path_start_end() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: DuplicateRangeLocation removed per plan §D5; dedup is last-write-wins"]
+
 fn commit_dedups_duplicate_location_last_write_wins() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
@@ -404,17 +404,5 @@ fn commit_lfs_line_range_out_of_bounds_still_rejected() -> Result<()> {
         matches!(stage_err, Err(Error::InvalidAnchor { start: 1, end: 200 })),
         "expected InvalidAnchor at stage time, got {stage_err:?}"
     );
-    Ok(())
-}
-
-#[test]
-#[ignore] // TODO: Exercise CAS-failure retry path; requires a seam to
-// advance the ref between snapshot-read and ref-update inside
-// commit_mesh. A reference-transaction hook didn't fire reliably
-// on this Git version, and threading the mesh commit is out of
-// scope for a bounded test. The retry loop itself is exercised
-// by the normal-path test `commit_retries_on_cas_conflict` which
-// verifies the new commit chains onto the advanced tip.
-fn commit_cas_retry_exhausts_after_max_attempts() -> Result<()> {
     Ok(())
 }

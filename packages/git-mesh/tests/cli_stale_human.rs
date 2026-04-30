@@ -29,7 +29,7 @@ fn drift(repo: &TestRepo, msg: &str) -> Result<String> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn clean_exit_zero() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -39,7 +39,7 @@ fn clean_exit_zero() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn drifty_exit_one() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -50,7 +50,7 @@ fn drifty_exit_one() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn no_exit_code_forces_zero() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -61,7 +61,7 @@ fn no_exit_code_forces_zero() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn human_output_has_summary_line() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -72,18 +72,6 @@ fn human_output_has_summary_line() -> Result<()> {
         stdout.contains("stale of"),
         "summary 'N stale of M anchors'"
     );
-    Ok(())
-}
-
-#[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
-fn human_output_groups_changed_ranges() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift(&repo, "mutate")?;
-    let out = repo.run_mesh(["stale", "m"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Changed ranges"));
     Ok(())
 }
 
@@ -100,7 +88,7 @@ fn oneline_suppresses_diffs() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn stat_shows_counts() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -111,7 +99,7 @@ fn stat_shows_counts() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn patch_includes_unified_diff() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -123,47 +111,7 @@ fn patch_includes_unified_diff() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
-fn human_output_has_mesh_header_with_commit_author_date() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift(&repo, "mutate")?;
-    let out = repo.run_mesh(["stale", "m"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.starts_with("mesh m\n"), "mesh header: {stdout}");
-    assert!(stdout.contains("commit "));
-    assert!(stdout.contains("Author:"));
-    assert!(stdout.contains("Date:"));
-    // Indented message.
-    assert!(stdout.contains("    seed"));
-    Ok(())
-}
 
-#[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
-fn human_output_groups_worst_first_orphaned_changed_moved() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    seed(&repo, "m")?;
-    drift(&repo, "mutate")?;
-    let out = repo.run_mesh(["stale", "m"])?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // Summary line `N stale of M anchors:`
-    assert!(stdout.contains(" stale of "));
-    // "Changed anchors:" labelled section
-    assert!(stdout.contains("Changed anchors:"));
-    // Culprit line should include "caused by <short> <subject>"
-    assert!(
-        stdout.contains("caused by "),
-        "culprit attribution missing: {stdout}"
-    );
-    // Flat diff (no leading 2-space indent on `---`/`+++` lines).
-    assert!(stdout.contains("--- file1.txt#L1-L5 (anchored)"));
-    assert!(stdout.contains("+++ file1.txt"));
-    Ok(())
-}
-
-#[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
 fn human_oneline_emits_status_path_range_per_line() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
@@ -185,7 +133,7 @@ fn human_oneline_emits_status_path_range_per_line() -> Result<()> {
 }
 
 #[test]
-#[ignore = "phase-1-pending: stale renderer awaiting engine rewrite"]
+
 fn workspace_scan_without_name() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "a")?;

@@ -42,11 +42,8 @@ fn mesh_candidates_for(repo: &TestRepo, session_id: &str) -> Vec<String> {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
-    let session_dir = git_mesh::advice::session::store::session_dir(
-        repo.path(),
-        gix.git_dir(),
-        session_id,
-    );
+    let session_dir =
+        git_mesh::advice::session::store::session_dir(repo.path(), gix.git_dir(), session_id);
     let path = session_dir.join("mesh-candidates.jsonl");
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Vec::new();
@@ -93,7 +90,9 @@ fn flush_uses_path_index_candidates_not_all_meshes() -> Result<()> {
 
     let candidates = mesh_candidates_for(&repo, &s);
     assert!(
-        candidates.iter().any(|c| c.contains("\"m-file1\"") || c == "m-file1"),
+        candidates
+            .iter()
+            .any(|c| c.contains("\"m-file1\"") || c == "m-file1"),
         "expected m-file1 in mesh-candidates.jsonl; got: {candidates:?}"
     );
     assert!(
@@ -130,7 +129,9 @@ fn read_uses_path_index_candidates_not_all_meshes() -> Result<()> {
 
     let candidates = mesh_candidates_for(&repo, &s);
     assert!(
-        candidates.iter().any(|c| c.contains("m-file1") || c == "m-file1"),
+        candidates
+            .iter()
+            .any(|c| c.contains("m-file1") || c == "m-file1"),
         "expected m-file1 in mesh-candidates.jsonl; got: {candidates:?}"
     );
     assert!(

@@ -112,8 +112,8 @@ where
 {
     let mut out: Vec<String> = Vec::new();
     for (path, range) in paths {
-        let names = crate::mesh::path_index::matching_mesh_names(repo, path, range)
-            .unwrap_or_default();
+        let names =
+            crate::mesh::path_index::matching_mesh_names(repo, path, range).unwrap_or_default();
         for name in names {
             if !out.contains(&name) {
                 out.push(name);
@@ -296,12 +296,9 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
                 .filter(|t| !matches!(t.kind, TouchKind::Added | TouchKind::Deleted))
                 .map(|t| (t.path.as_str(), None)),
         );
-        let resolved = crate::resolver::resolve_named_meshes(
-            repo,
-            &candidate_names,
-            default_engine_options(),
-        )
-        .unwrap_or_default();
+        let resolved =
+            crate::resolver::resolve_named_meshes(repo, &candidate_names, default_engine_options())
+                .unwrap_or_default();
         resolved
             .into_iter()
             .filter_map(|(_, r)| r.ok())
@@ -644,16 +641,11 @@ fn run_advice_read(
     })?;
     let meshes = {
         let _perf = crate::perf::span("advice.read.resolve-candidates");
-        let candidate_names = candidate_mesh_names_for_paths(
-            repo,
-            std::iter::once((rec.path.as_str(), line_anchor)),
-        );
-        let resolved = crate::resolver::resolve_named_meshes(
-            repo,
-            &candidate_names,
-            default_engine_options(),
-        )
-        .unwrap_or_default();
+        let candidate_names =
+            candidate_mesh_names_for_paths(repo, std::iter::once((rec.path.as_str(), line_anchor)));
+        let resolved =
+            crate::resolver::resolve_named_meshes(repo, &candidate_names, default_engine_options())
+                .unwrap_or_default();
         resolved
             .into_iter()
             .filter_map(|(_, r)| r.ok())

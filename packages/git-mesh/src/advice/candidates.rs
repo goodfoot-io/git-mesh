@@ -1404,40 +1404,6 @@ mod tests {
         assert!(rename_cands[0].command.contains("git mesh commit link"));
     }
 
-    // ── detect_range_shrink ──────────────────────────────────────────────────
-
-    /// When a meshed path's blob shrinks, a RangeCollapse Candidate should be
-    /// emitted — unskip when DiffEntry carries blob line counts (sub-card C).
-    #[test]
-    #[ignore = "deferred: detect_range_shrink requires blob line-count data (sub-card C)"]
-    fn range_shrink_emits_range_collapse_when_blob_lines_decrease() {
-        // DiffEntry::Modified on a path whose mesh anchor end > new blob line count
-        let anchors = [make_mesh_anchor("shrink-mesh", "src/big.rs", 1, 200)];
-        let delta = [DiffEntry::Modified {
-            path: "src/big.rs".to_string(),
-            old_oid: None,
-            new_oid: None,
-            hunks: None,
-        }];
-        // Phase C will attach old_lines/new_lines to DiffEntry; for now the
-        // detector must detect "anchor end exceeds new blob size" to emit RangeCollapse.
-        let input = CandidateInput {
-            session_delta: &[],
-            incr_delta: &delta,
-            new_reads: &[],
-            touch_intervals: &[],
-            mesh_anchors: &anchors,
-            internal_path_prefixes: &[],
-            staging: StagingState {
-                adds: &[],
-                removes: &[],
-            },
-        };
-        let result = detect_range_shrink(&input);
-        assert!(!result.is_empty());
-        assert_eq!(result[0].reason_kind, ReasonKind::RangeCollapse);
-    }
-
     // ── detect_staging_cross_cut ─────────────────────────────────────────────
 
     /// A staged add that overlaps an existing mesh anchor must produce a

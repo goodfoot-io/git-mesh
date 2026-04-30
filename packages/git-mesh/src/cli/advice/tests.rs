@@ -110,14 +110,9 @@ fn mark_flush_records_added_untracked_with_id() -> Result<()> {
 
     let touches = touches_for(&repo.session_dir(&s));
     assert!(
-        touches
-            .iter()
-            .any(|t| t.path == "new.txt"
-                && t.id == "tool-A"
-                && matches!(
-                    t.kind,
-                    crate::advice::session::state::TouchKind::Added
-                )),
+        touches.iter().any(|t| t.path == "new.txt"
+            && t.id == "tool-A"
+            && matches!(t.kind, crate::advice::session::state::TouchKind::Added)),
         "expected Added new.txt: {touches:?}"
     );
     Ok(())

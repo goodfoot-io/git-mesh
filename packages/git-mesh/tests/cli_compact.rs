@@ -97,7 +97,10 @@ fn test_compact_fresh_advances() -> Result<()> {
         new_anchor.1.anchor_sha, old_anchor_sha,
         "anchor_sha advanced"
     );
-    assert_eq!(new_anchor.1.created_at, old_created_at, "created_at preserved");
+    assert_eq!(
+        new_anchor.1.created_at, old_created_at,
+        "created_at preserved"
+    );
     Ok(())
 }
 
@@ -115,7 +118,10 @@ fn test_compact_idempotent() -> Result<()> {
     let out1 = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out1.status.code(), Some(0));
     let stdout1 = String::from_utf8_lossy(&out1.stdout);
-    assert!(stdout1.contains("advanced"), "first run should advance: {stdout1}");
+    assert!(
+        stdout1.contains("advanced"),
+        "first run should advance: {stdout1}"
+    );
 
     // Second compact — nothing to do.
     let out2 = repo.run_mesh(["stale", "m", "--compact"])?;
@@ -127,8 +133,7 @@ fn test_compact_idempotent() -> Result<()> {
     );
 
     // Commit message has exactly one git-mesh-compact: trailer.
-    let commit_msg =
-        repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
     let trailer_count = commit_msg
         .lines()
         .filter(|l| l.starts_with("git-mesh-compact:"))
@@ -165,7 +170,10 @@ fn test_compact_moved_skipped() -> Result<()> {
     );
 
     let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
-    assert_eq!(old_tip, new_tip, "mesh ref must not advance when all anchors non-Fresh");
+    assert_eq!(
+        old_tip, new_tip,
+        "mesh ref must not advance when all anchors non-Fresh"
+    );
     Ok(())
 }
 
@@ -226,7 +234,12 @@ fn test_compact_anchor_id_preserved() -> Result<()> {
 
     let gx_before = repo.gix_repo()?;
     let mesh_before = git_mesh::read_mesh(&gx_before, "m")?;
-    let id_before = mesh_before.anchors_v2.first().expect("one anchor").0.clone();
+    let id_before = mesh_before
+        .anchors_v2
+        .first()
+        .expect("one anchor")
+        .0
+        .clone();
 
     repo.run_mesh(["stale", "m", "--compact"])?;
 
@@ -234,7 +247,10 @@ fn test_compact_anchor_id_preserved() -> Result<()> {
     let mesh_after = git_mesh::read_mesh(&gx_after, "m")?;
     let id_after = mesh_after.anchors_v2.first().expect("one anchor").0.clone();
 
-    assert_eq!(id_before, id_after, "anchor_id must be preserved across compaction");
+    assert_eq!(
+        id_before, id_after,
+        "anchor_id must be preserved across compaction"
+    );
     Ok(())
 }
 
@@ -258,7 +274,10 @@ fn test_compact_json_output() -> Result<()> {
     let v: Value = serde_json::from_str(line)?;
     assert_eq!(v["schema"], "compact-v1");
     assert_eq!(v["mesh"], "m");
-    assert!(v["advanced"].as_u64().unwrap() >= 1, "should have advanced >=1");
+    assert!(
+        v["advanced"].as_u64().unwrap() >= 1,
+        "should have advanced >=1"
+    );
     assert!(v["anchors"].is_array());
     Ok(())
 }
@@ -343,8 +362,7 @@ fn test_compact_trailer_idempotent() -> Result<()> {
     repo.commit_all("advance third")?;
     repo.run_mesh(["stale", "m", "--compact"])?;
 
-    let commit_msg =
-        repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
     let trailer_count = commit_msg
         .lines()
         .filter(|l| l.starts_with("git-mesh-compact:"))
@@ -404,7 +422,10 @@ fn test_compact_cas_retry_success() -> Result<()> {
     let out = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("advanced"), "should report advancement: {stdout}");
+    assert!(
+        stdout.contains("advanced"),
+        "should report advancement: {stdout}"
+    );
     Ok(())
 }
 
@@ -432,9 +453,15 @@ fn test_compact_json_conflict_invariant_fields_present() -> Result<()> {
 
     // Verify all card-mandated fields are present.
     assert!(v.get("advanced").is_some(), "missing 'advanced'");
-    assert!(v.get("skipped_clean_not_head").is_some(), "missing 'skipped_clean_not_head'");
+    assert!(
+        v.get("skipped_clean_not_head").is_some(),
+        "missing 'skipped_clean_not_head'"
+    );
     assert!(v.get("skipped_stale").is_some(), "missing 'skipped_stale'");
-    assert!(v.get("skipped_staged").is_some(), "missing 'skipped_staged'");
+    assert!(
+        v.get("skipped_staged").is_some(),
+        "missing 'skipped_staged'"
+    );
     assert!(v.get("conflicts").is_some(), "missing 'conflicts'");
     assert!(v.get("errors").is_some(), "missing 'errors'");
 
@@ -502,7 +529,10 @@ fn test_compact_trailer_doubled_normalizes() -> Result<()> {
         .lines()
         .filter(|l| l.starts_with("git-mesh-compact:"))
         .count();
-    assert_eq!(trailer_count, 1, "doubled trailer must normalize to one: {commit_msg}");
+    assert_eq!(
+        trailer_count, 1,
+        "doubled trailer must normalize to one: {commit_msg}"
+    );
     Ok(())
 }
 
@@ -545,7 +575,11 @@ fn test_compact_json_one_line_per_mesh() -> Result<()> {
 
     let stdout = String::from_utf8(out.stdout)?;
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 2, "expect exactly 2 JSON lines (one per mesh): {stdout}");
+    assert_eq!(
+        lines.len(),
+        2,
+        "expect exactly 2 JSON lines (one per mesh): {stdout}"
+    );
     for line in &lines {
         let v: Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
@@ -570,7 +604,10 @@ fn test_compact_json_changed_anchor_outcome_token() -> Result<()> {
     let stdout = String::from_utf8(out.stdout)?;
     let v: Value = serde_json::from_str(stdout.trim())?;
     let anchors = v["anchors"].as_array().expect("anchors array");
-    assert!(!anchors.is_empty(), "should have at least one anchor record");
+    assert!(
+        !anchors.is_empty(),
+        "should have at least one anchor record"
+    );
     let outcome = anchors[0]["outcome"].as_str().unwrap();
     assert_eq!(
         outcome, "skipped_changed",
@@ -601,7 +638,10 @@ fn test_compact_rejects_incompatible_format() -> Result<()> {
 
     // Mesh ref must not have changed — no mutation occurred.
     let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
-    assert_eq!(old_tip, new_tip, "mesh ref must not change after format rejection");
+    assert_eq!(
+        old_tip, new_tip,
+        "mesh ref must not change after format rejection"
+    );
     Ok(())
 }
 
@@ -625,7 +665,13 @@ fn test_compact_format_rejection_not_suppressed_by_no_exit_code() -> Result<()> 
     seed(&repo, "m")?;
 
     // Even with --no-exit-code, format rejection must be nonzero.
-    let out = repo.run_mesh(["stale", "m", "--compact", "--format=junit", "--no-exit-code"])?;
+    let out = repo.run_mesh([
+        "stale",
+        "m",
+        "--compact",
+        "--format=junit",
+        "--no-exit-code",
+    ])?;
     assert_ne!(
         out.status.code(),
         Some(0),
@@ -664,10 +710,7 @@ fn test_compact_staged_why_skips_mesh() -> Result<()> {
     assert_eq!(v["skipped_staged"].as_u64().unwrap_or(0), 1);
 
     let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
-    assert_eq!(
-        old_tip, new_tip,
-        "staged why must not advance the mesh ref"
-    );
+    assert_eq!(old_tip, new_tip, "staged why must not advance the mesh ref");
     Ok(())
 }
 

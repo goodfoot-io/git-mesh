@@ -1,21 +1,10 @@
-//! Phase 1 acceptance tests for the layered `git mesh stale` engine.
+//! Acceptance tests for the layered `git mesh stale` engine.
 //!
 //! Every test here maps 1:1 to a bullet under
 //! `docs/stale-layers-plan.md` §"Phase 1 — Acceptance tests". They all
 //! call the real public API boundary (`resolve_anchor`, `resolve_mesh`,
 //! `stale_meshes`, `ContentRef::read_normalized`, or the `git-mesh` CLI)
 //! against realistic fixture state.
-//!
-//! All tests are `#[ignore = "phase-1-pending: ..."]`. This slice is the
-//! "Write Skipped Integration Tests" phase of the public-API boundary
-//! technique (see `docs/rust-project-public-api-boundary-technique.md`):
-//! the compiler still type-checks the suite, which is the point. The
-//! engine/reader/renderer slices remove the `#[ignore]`s one coherent
-//! batch at a time.
-//!
-//! Keep the suite in one file for now; splitting is a Phase 2 task per
-//! the technique doc's "Split Large Integration Suites After the
-//! Behavior Stabilizes" guidance.
 
 #![allow(clippy::too_many_lines)]
 
@@ -120,7 +109,7 @@ fn add_submodule_gitlink(repo: &TestRepo, sub_rel: &str) -> Result<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance tests. Every test is `#[ignore = "phase-1-pending: ..."]`.
+// Acceptance tests.
 // ---------------------------------------------------------------------------
 
 /// Plan bullet: HEAD-only mode: byte-identical output on the existing fixture.
