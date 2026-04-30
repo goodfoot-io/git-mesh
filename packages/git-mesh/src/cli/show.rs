@@ -1,6 +1,6 @@
 //! `git mesh` list / `git mesh <name>` show / `git mesh ls` — §10.4, §3.4.
 
-use crate::anchor::read_anchor;
+
 use crate::cli::{LsArgs, ShowArgs, parse_range_address};
 use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Anchor, AnchorExtent};
@@ -312,32 +312,21 @@ fn collect_listings_with_options(
     {
         let _perf = crate::perf::span("ls.read-committed-meshes");
         for (name, commit_oid) in &committed_refs {
-            let (message, anchor_ids) = if include_why {
+            let (message, anchors_v2) = if include_why {
                 let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
-                (mesh.message, mesh.anchors)
+                (mesh.message, mesh.anchors_v2)
             } else {
                 (
                     String::new(),
-                    crate::mesh::read::read_mesh_anchor_ids_at(repo, commit_oid)?,
+                    crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default(),
                 )
             };
             let mut anchors = Vec::new();
-            let anchors_v2 = crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
-            if !anchors_v2.is_empty() {
-                for (_id, r) in anchors_v2 {
-                    anchors.push(AnchorEntry {
-                        path: r.path,
-                        extent: r.extent,
-                    });
-                }
-            } else {
-                for anchor_id in &anchor_ids {
-                    let r = read_anchor(repo, anchor_id)?;
-                    anchors.push(AnchorEntry {
-                        path: r.path,
-                        extent: r.extent,
-                    });
-                }
+            for (_id, r) in anchors_v2 {
+                anchors.push(AnchorEntry {
+                    path: r.path,
+                    extent: r.extent,
+                });
             }
             // Determine if this committed mesh also has staged ops.
             let state = if include_state && staged_name_set.contains(name.as_str()) {
@@ -531,9 +520,8 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
         let _perf = crate::perf::span("show.render-format");
         if has_range_token(&tokens) {
-            for id in &mesh.anchors {
-                let r = read_anchor(repo, id)?;
-                let line = render_tokens(&tokens, &info, &meta, Some(&r));
+            for (_id, r) in &mesh.anchors_v2 {
+                let line = render_tokens(&tokens, &info, &meta, Some(r));
                 println!("{line}");
             }
         } else {
@@ -545,8 +533,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
 
     if args.oneline {
         let _perf = crate::perf::span("show.render-oneline");
-        for id in &mesh.anchors {
-            let r = read_anchor(repo, id)?;
+        for (_id, r) in &mesh.anchors_v2 {
             println!("{}", render_range_address(&r.path, r.extent));
         }
         return Ok(0);
@@ -562,9 +549,8 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
         println!("    {line}");
     }
     println!();
-    println!("Anchors ({}):", mesh.anchors.len());
-    for id in &mesh.anchors {
-        let r = read_anchor(repo, id)?;
+    println!("Anchors ({}):", mesh.anchors_v2.len());
+    for (_id, r) in &mesh.anchors_v2 {
         println!("    {}", render_range_address(&r.path, r.extent));
     }
     Ok(0)

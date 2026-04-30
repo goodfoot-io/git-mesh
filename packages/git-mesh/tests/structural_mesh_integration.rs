@@ -95,7 +95,7 @@ fn revert_mesh_fast_forwards_to_past_tree() -> Result<()> {
     let new_tip = revert_mesh(&gix, "rev", &v1)?;
     assert_ne!(new_tip, v1, "§6.6: revert is fast-forward, not rewind");
     let m = read_mesh(&gix, "rev")?;
-    assert_eq!(m.anchors.len(), 1, "tree content matches v1 state");
+    assert_eq!(m.anchors_v2.len(), 1, "tree content matches v1 state");
     Ok(())
 }
 

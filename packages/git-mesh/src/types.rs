@@ -70,9 +70,6 @@ pub const DEFAULT_IGNORE_WHITESPACE: bool = false;
 pub struct Mesh {
     /// The Mesh's name (ref suffix; the identity).
     pub name: String,
-    /// Active Anchor ids. Canonical order: sorted by the referenced
-    /// Anchor's `(path, start, end)` ascending.
-    pub anchors: Vec<String>,
     /// Active Embedded Anchors (v2 layout).
     pub anchors_v2: Vec<(String, Anchor)>,
     /// The commit's message.

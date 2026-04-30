@@ -567,21 +567,7 @@ pub(crate) fn resolve_ref_oid_optional_repo(
     }
 }
 
-pub(crate) fn git_show_file_lines(
-    repo: &gix::Repository,
-    commit_oid: &str,
-    path: &str,
-) -> Result<Vec<String>> {
-    let blob_oid = path_blob_at(repo, commit_oid, path)?;
-    let data = blob_data(repo, &blob_oid)?;
-    let text =
-        std::str::from_utf8(&data).map_err(|e| Error::Parse(format!("blob not utf-8: {e}")))?;
-    Ok(text
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
-}
+
 
 pub(crate) fn read_blob_bytes(repo: &gix::Repository, blob_oid: &str) -> Result<Vec<u8>> {
     blob_data(repo, blob_oid)

@@ -1,6 +1,6 @@
 //! Mesh commit pipeline — §6.1, §6.2.
 
-use crate::anchor::{create_anchor_with_extent_skipping_blob_bounds, read_anchor};
+use crate::anchor::create_anchor_with_extent_skipping_blob_bounds;
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
@@ -26,10 +26,10 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let base_tip = resolve_ref_oid_optional(wd, &mesh_ref)?;
 
     // Load current state (if any).
-    let (anchor_ids, base_config, base_message) = match base_tip.as_deref() {
+    let (anchor_v2_records, base_config, base_message) = match base_tip.as_deref() {
         Some(tip) => {
             let m = super::read::read_mesh_at(repo, name, Some(tip))?;
-            (m.anchors, m.config, Some(m.message))
+            (m.anchors_v2, m.config, Some(m.message))
         }
         None => (
             Vec::new(),
@@ -48,15 +48,11 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
 
     // Validate removes exist and adds don't collide post-remove. Work on a
     // materialized snapshot `(anchor_id, path, extent)`.
-    let mut snapshots: Vec<(String, String, AnchorExtent)> = Vec::with_capacity(anchor_ids.len());
-    for id in &anchor_ids {
-        let r = read_anchor(repo, id)?;
-        snapshots.push((id.clone(), r.path, r.extent));
-    }
+    let mut snapshots: Vec<(String, crate::types::Anchor)> = anchor_v2_records;
     for rem in &staging.removes {
         let idx = snapshots
             .iter()
-            .position(|(_, p, e)| p == &rem.path && *e == rem.extent)
+            .position(|(_, a)| a.path == rem.path && a.extent == rem.extent)
             .ok_or_else(|| Error::AnchorNotInMesh {
                 path: rem.path.clone(),
                 start: rem.start(),
@@ -75,7 +71,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         let Some(anchor_id) = meta.anchor_id else {
             continue;
         };
-        if let Some(idx) = snapshots.iter().position(|(id, _, _)| id == &anchor_id) {
+        if let Some(idx) = snapshots.iter().position(|(id, _)| id == &anchor_id) {
             snapshots.remove(idx);
         }
     }
@@ -85,7 +81,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     for a in &staging.adds {
         if let Some(idx) = snapshots
             .iter()
-            .position(|(_, p, e)| p == &a.path && *e == a.extent)
+            .position(|(_, a_old)| a_old.path == a.path && a_old.extent == a.extent)
         {
             snapshots.remove(idx);
         }
@@ -159,7 +155,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     // Drift check and anchor creation for staged adds. All-or-nothing:
     // create anchor refs for each add; on any failure propagate.
     let head_sha = git::head_oid(repo)?;
-    let mut new_anchor_ids: Vec<String> = Vec::new();
+    let mut new_anchors: Vec<(String, crate::types::Anchor)> = Vec::new();
     // Pre-validate every add against its resolved anchor (prevent partial
     // writes) BEFORE creating any anchor refs.
     for a in &staging.adds {
@@ -201,8 +197,8 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     }
     for a in &staging.adds {
         let anchor = a.anchor.clone().unwrap_or_else(|| head_sha.clone());
-        let id = create_anchor_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
-        new_anchor_ids.push(id);
+        let (id, anchor_rec) = create_anchor_with_extent_skipping_blob_bounds(repo, &anchor, &a.path, a.extent)?;
+        new_anchors.push((id, anchor_rec));
     }
 
     // CAS retry loop (§6). Anchor blobs are content-addressed and already
@@ -217,54 +213,34 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let mut attempt: usize = 0;
     loop {
         // Combine anchors and canonicalize by (path, extent).
-        let mut combined: Vec<(String, String, AnchorExtent)> = current_snapshots.clone();
-        for id in &new_anchor_ids {
-            let r = read_anchor(repo, id)?;
-            combined.push((id.clone(), r.path, r.extent));
+        let mut combined: Vec<(String, crate::types::Anchor)> = current_snapshots.clone();
+        for (id, r) in &new_anchors {
+            combined.push((id.clone(), r.clone()));
         }
         combined.sort_by(|a, b| {
-            (a.1.as_str(), extent_sort_key(&a.2)).cmp(&(b.1.as_str(), extent_sort_key(&b.2)))
+            (a.1.path.as_str(), extent_sort_key(&a.1.extent)).cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
         });
-        let final_ids: Vec<String> = combined.iter().map(|(id, _, _)| id.clone()).collect();
 
-        // Build tree: `anchors` blob + `config` blob.
-        let anchors_text: String = {
-            let mut s = String::new();
-            for id in &final_ids {
-                s.push_str(id);
-                s.push('\n');
-            }
-            s
-        };
-        let anchors_blob = git::write_blob_bytes(repo, anchors_text.as_bytes())?;
+        // Build tree: `anchors.v2` blob + `config` blob.
         let config_text = serialize_config_blob(&new_config);
         let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
         
         let anchors_v2_text: String = {
             let mut s = String::new();
-            for id in &final_ids {
-                if let Ok(r) = read_anchor(repo, id) {
-                    s.push_str("id ");
-                    s.push_str(id);
-                    s.push('\n');
-                    s.push_str(&crate::anchor::serialize_anchor(&r));
-                    s.push('\n');
-                }
+            for (id, r) in &combined {
+                s.push_str("id ");
+                s.push_str(id);
+                s.push('\n');
+                s.push_str(&crate::anchor::serialize_anchor(r));
+                s.push('\n');
             }
             s
         };
         let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
 
-        // Build a tree with `anchors`, `anchors.v2`, and `config` entries.
+        // Build a tree with `anchors.v2` and `config` entries.
         let tree = Tree {
             entries: vec![
-                Entry {
-                    mode: EntryKind::Blob.into(),
-                    filename: "anchors".into(),
-                    oid: anchors_blob
-                        .parse()
-                        .map_err(|e| crate::Error::Git(format!("parse anchors blob oid: {e}")))?,
-                },
                 Entry {
                     mode: EntryKind::Blob.into(),
                     filename: "anchors.v2".into(),
@@ -335,12 +311,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 let new_snapshots = match current_parent.as_deref() {
                     Some(tip) => {
                         let m = super::read::read_mesh_at(repo, name, Some(tip))?;
-                        let mut out = Vec::with_capacity(m.anchors.len());
-                        for id in &m.anchors {
-                            let r = read_anchor(repo, id)?;
-                            out.push((id.clone(), r.path, r.extent));
-                        }
-                        out
+                        m.anchors_v2
                     }
                     None => Vec::new(),
                 };
@@ -348,7 +319,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 for rem in &staging.removes {
                     let idx = post
                         .iter()
-                        .position(|(_, p, e)| p == &rem.path && *e == rem.extent)
+                        .position(|(_, a)| a.path == rem.path && a.extent == rem.extent)
                         .ok_or_else(|| Error::AnchorNotInMesh {
                             path: rem.path.clone(),
                             start: rem.start(),
@@ -361,7 +332,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                 for a in &staging.adds {
                     if let Some(idx) = post
                         .iter()
-                        .position(|(_, p, e)| p == &a.path && *e == a.extent)
+                        .position(|(_, a_old)| a_old.path == a.path && a_old.extent == a.extent)
                     {
                         post.remove(idx);
                     }

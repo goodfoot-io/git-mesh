@@ -2,7 +2,7 @@
 //! its anchor commit forward through `anchor..HEAD` by replaying each
 //! commit's name-status and hunk diffs against the tracked location.
 
-use crate::anchor::read_anchor as _read_range;
+
 use crate::git;
 use crate::types::{Anchor, AnchorExtent, CopyDetection};
 use crate::{Error, Result};
@@ -679,11 +679,7 @@ fn collect_changes<'a>(
     Ok(out)
 }
 
-// Silence unused-import warning until engine module wires this through.
-#[allow(dead_code)]
-fn _keep(_: fn(&gix::Repository, &str) -> Result<crate::types::Anchor>) {
-    let _ = _read_range;
-}
+
 
 #[cfg(test)]
 mod scope_tests {

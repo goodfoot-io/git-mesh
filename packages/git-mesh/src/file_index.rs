@@ -1,6 +1,5 @@
 //! `.git/mesh/file-index` — derived lookup table (§3.4).
 
-use crate::anchor::read_anchor;
 use crate::git::mesh_dir;
 use crate::mesh::read::{list_mesh_names, read_mesh};
 use crate::types::AnchorExtent;
@@ -46,8 +45,7 @@ fn collect_entries(repo: &gix::Repository) -> Result<Vec<IndexEntry>> {
     let mut out = Vec::new();
     for name in list_mesh_names(repo)? {
         let mesh = read_mesh(repo, &name)?;
-        for id in mesh.anchors {
-            let r = read_anchor(repo, &id)?;
+        for (_id, r) in mesh.anchors_v2 {
             let (start, end) = match r.extent {
                 AnchorExtent::LineRange { start, end } => (start, end),
                 // Whole-file pins are recorded as `0..0` in the index for

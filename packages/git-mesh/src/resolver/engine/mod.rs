@@ -10,7 +10,7 @@ use super::layers::{
     read_index_trailer, read_layer_status, read_worktree_layer, read_worktree_layer_for_paths,
 };
 use super::session::ResolveSession;
-use crate::anchor::read_anchor;
+
 use crate::mesh::read::{list_mesh_refs, read_mesh, read_mesh_from_commit};
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet,
@@ -194,10 +194,9 @@ pub fn resolve_anchor(
     let _perf = crate::perf::span("resolver.resolve-anchor");
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
     let mesh = read_mesh(repo, mesh_name)?;
-    let mut out = match read_anchor(repo, anchor_id) {
-        Ok(r) => resolve_anchor_inner(repo, &mut state, &mesh.config, anchor_id, r)?,
-        Err(Error::AnchorNotFound(_)) => orphaned_placeholder(anchor_id),
-        Err(e) => return Err(e),
+    let mut out = match mesh.anchors_v2.into_iter().find(|(id, _)| id == anchor_id) {
+        Some((_, r)) => resolve_anchor_inner(repo, &mut state, &mesh.config, anchor_id, r)?,
+        None => orphaned_placeholder(anchor_id),
     };
     if state.layers.staged_mesh {
         apply_acknowledgment(repo, mesh_name, &mut out);
@@ -251,55 +250,24 @@ fn resolve_loaded_mesh_with_state(
     mesh: crate::types::Mesh,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
-    let mut anchors = Vec::with_capacity(mesh.anchors.len() + mesh.anchors_v2.len());
+    let mut anchors = Vec::with_capacity(mesh.anchors_v2.len());
     let mut filtered_by_since: usize = 0;
     {
         let _perf = crate::perf::span("resolver.resolve-anchors");
-        if !mesh.anchors_v2.is_empty() {
-            for (id, r) in mesh.anchors_v2 {
-                if let Some(since_oid) = options.since
-                    && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
-                {
-                    filtered_by_since += 1;
-                    continue;
-                }
-                anchors.push(resolve_anchor_inner(
-                    repo,
-                    &mut *state,
-                    &mesh.config,
-                    &id,
-                    r,
-                )?);
+        for (id, r) in mesh.anchors_v2 {
+            if let Some(since_oid) = options.since
+                && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
+            {
+                filtered_by_since += 1;
+                continue;
             }
-        } else {
-            for id in &mesh.anchors {
-                match read_anchor(repo, id) {
-                    Ok(r) => {
-                        // Slice 5: `--since` filter. Skip anchors whose commit is
-                        // strictly older than `since`. Orphaned anchors (whose
-                        // commit is unreachable / unparseable) are always
-                        // included — the filter scopes by history, it does not
-                        // hide orphans.
-                        if let Some(since_oid) = options.since
-                            && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
-                        {
-                            filtered_by_since += 1;
-                            continue;
-                        }
-                        anchors.push(resolve_anchor_inner(
-                            repo,
-                            &mut *state,
-                            &mesh.config,
-                            id,
-                            r,
-                        )?)
-                    }
-                    Err(Error::AnchorNotFound(_)) => {
-                        anchors.push(orphaned_placeholder(id));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+            anchors.push(resolve_anchor_inner(
+                repo,
+                &mut *state,
+                &mesh.config,
+                &id,
+                r,
+            )?);
         }
     }
     if filtered_by_since > 0

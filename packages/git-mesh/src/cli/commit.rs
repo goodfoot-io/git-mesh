@@ -98,10 +98,8 @@ fn mesh_range_id_lookup(
     let Ok(mesh) = read_mesh(repo, mesh_name) else {
         return out;
     };
-    for id in &mesh.anchors {
-        if let Ok(r) = crate::anchor::read_anchor(repo, id) {
-            out.insert((r.path, r.extent), id.clone());
-        }
+    for (id, r) in &mesh.anchors_v2 {
+        out.insert((r.path.clone(), r.extent), id.clone());
     }
     out
 }
@@ -143,9 +141,8 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
         let _perf = crate::perf::span("rm.read-current-anchors");
         match read_mesh(repo, &args.name) {
             Ok(mesh) => {
-                for id in &mesh.anchors {
-                    let r = crate::anchor::read_anchor(repo, id)?;
-                    present.push((r.path, r.extent));
+                for (_id, r) in &mesh.anchors_v2 {
+                    present.push((r.path.clone(), r.extent));
                 }
             }
             Err(crate::Error::MeshNotFound(_)) => {}

@@ -1,9 +1,10 @@
-//! Anchor blob I/O (v1) — see §3.1, §4.1, §6.1.
+//! Anchor blob serialization and memory records — see §3.1, §4.1, §6.1.
 //!
-//! An Anchor is an immutable blob at `refs/anchors/v1/<anchorId>` with a
+//! An Anchor is a memory record embedded in `anchors.v2` with a
 //! commit-object-style text format:
 //!
 //! ```text
+//! id <uuid>
 //! commit <sha>
 //! created <iso-8601>
 //! extent <start> <end> <blob>\t<path>
@@ -14,11 +15,6 @@ use crate::types::{Anchor, AnchorExtent};
 use crate::{Error, Result};
 use chrono::Utc;
 use uuid::Uuid;
-
-/// Canonical ref path for an anchor id.
-pub fn anchor_ref_path(anchor_id: &str) -> String {
-    format!("refs/anchors/v1/{anchor_id}")
-}
 
 fn validate_path(path: &str) -> Result<()> {
     if path.is_empty() {
@@ -33,15 +29,14 @@ fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Create an Anchor record (line-anchor), write the blob, and create
-/// `refs/anchors/v1/<uuid>`.
+/// Create an Anchor record (line-anchor).
 pub fn create_anchor(
     repo: &gix::Repository,
     anchor_sha: &str,
     path: &str,
     start: u32,
     end: u32,
-) -> Result<String> {
+) -> Result<(String, Anchor)> {
     create_anchor_with_extent(
         repo,
         anchor_sha,
@@ -56,22 +51,20 @@ pub fn create_anchor_with_extent(
     anchor_sha: &str,
     path: &str,
     extent: AnchorExtent,
-) -> Result<String> {
+) -> Result<(String, Anchor)> {
     create_anchor_with_extent_inner(repo, anchor_sha, path, extent, true)
 }
 
 /// Variant used by the mesh commit pipeline (Slice 1). The pipeline has
 /// already validated line bounds against the captured sidecar
 /// `line_count`, which is the post-filter source of truth for
-/// `filter=lfs` paths. Re-checking against the raw blob here would
-/// re-introduce the bug fixed in `mesh/commit.rs` (the LFS pointer is
-/// only ~3 lines).
+/// `filter=lfs` paths.
 pub(crate) fn create_anchor_with_extent_skipping_blob_bounds(
     repo: &gix::Repository,
     anchor_sha: &str,
     path: &str,
     extent: AnchorExtent,
-) -> Result<String> {
+) -> Result<(String, Anchor)> {
     create_anchor_with_extent_inner(repo, anchor_sha, path, extent, false)
 }
 
@@ -81,7 +74,7 @@ fn create_anchor_with_extent_inner(
     path: &str,
     extent: AnchorExtent,
     check_blob_bounds: bool,
-) -> Result<String> {
+) -> Result<(String, Anchor)> {
     validate_path(path)?;
     if let AnchorExtent::LineRange { start, end } = extent
         && (start < 1 || end < start)
@@ -120,22 +113,13 @@ fn create_anchor_with_extent_inner(
         extent,
         blob,
     };
-    let blob_oid = git::write_blob_bytes(repo, serialize_anchor(&anchor).as_bytes())?;
     let id = Uuid::new_v4().to_string();
-    git::update_ref_cas(repo, &anchor_ref_path(&id), &blob_oid, None)?;
-    Ok(id)
+    Ok((id, anchor))
 }
 
 fn gitlink_sha_at(repo: &gix::Repository, commit_sha: &str, path: &str) -> Option<String> {
     let (_mode, oid) = git::tree_entry_at(repo, commit_sha, std::path::Path::new(path)).ok()??;
     Some(oid.to_string())
-}
-
-pub fn read_anchor(repo: &gix::Repository, anchor_id: &str) -> Result<Anchor> {
-    let oid = crate::git::resolve_ref_oid_optional_repo(repo, &anchor_ref_path(anchor_id))?
-        .ok_or_else(|| Error::AnchorNotFound(anchor_id.to_string()))?;
-    let raw = crate::git::read_git_text(repo, &oid)?;
-    parse_anchor(&raw)
 }
 
 pub fn parse_anchor(text: &str) -> Result<Anchor> {

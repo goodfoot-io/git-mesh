@@ -1,10 +1,9 @@
 //! Structural handlers (restore, revert, delete, mv) + doctor — §6.6, §6.7, §6.8.
 
-use crate::anchor::anchor_ref_path;
 use crate::cli::{DeleteArgs, MvArgs, RestoreArgs, RevertArgs};
 use crate::sync::default_remote;
 use crate::{
-    delete_mesh, file_index, list_mesh_names, read_mesh, rename_mesh, restore_mesh, revert_mesh,
+    delete_mesh, file_index, list_mesh_names, rename_mesh, restore_mesh, revert_mesh,
 };
 use anyhow::Result;
 use std::collections::BTreeSet;
@@ -139,9 +138,6 @@ pub fn doctor_run(repo: &gix::Repository) -> crate::Result<Vec<DoctorFinding>> {
 
     // ---- Sidecar integrity (Slice 4) --------------------------------
     check_sidecar_integrity(repo, &mut out);
-
-    // ---- Orphan anchor references + dangling anchor refs --------------
-    check_range_reachability(repo, &remote, &mut out);
 
     // ---- File index self-heal ---------------------------------------
     check_file_index(repo, &mut out);
@@ -325,97 +321,6 @@ fn is_valid_addr(s: &str) -> bool {
     a >= 1 && b >= a
 }
 
-fn check_range_reachability(repo: &gix::Repository, remote: &str, out: &mut Vec<DoctorFinding>) {
-    let wd = match crate::git::work_dir(repo) {
-        Ok(w) => w,
-        Err(_) => return,
-    };
-    let Ok(names) = list_mesh_names(repo) else {
-        return;
-    };
-    // Build set of all referenced anchor ids.
-    let mut referenced: BTreeSet<String> = BTreeSet::new();
-    for name in &names {
-        let Ok(mesh) = read_mesh(repo, name) else {
-            continue;
-        };
-        for id in &mesh.anchors {
-            referenced.insert(id.clone());
-            let ref_path = anchor_ref_path(id);
-            let exists = crate::git::resolve_ref_oid_optional(wd, &ref_path)
-                .ok()
-                .flatten()
-                .is_some();
-            if !exists {
-                // Decide remediation based on whether a remote is configured.
-                let remote_url = crate::sync::get_remote_url(repo, remote);
-                let remediation = if remote_url.is_some() {
-                    format!("`git mesh fetch` to pull `{id}` from `{remote}`")
-                } else {
-                    format!("`git mesh rm` from `{name}` and re-anchor")
-                };
-                out.push(DoctorFinding {
-                    code: DoctorCode::OrphanRangeRef,
-                    severity: Severity::Error,
-                    message: format!("mesh `{name}` references missing anchor `{id}`"),
-                    remediation: Some(remediation),
-                });
-            }
-        }
-    }
-
-    // Dangling: every refs/anchors/v1/* not in `referenced`.
-    let Ok(anchor_refs) = crate::git::list_refs_stripped(repo, "refs/anchors/v1") else {
-        return;
-    };
-    let _ = wd;
-    for id in anchor_refs.iter().filter(|s| !s.is_empty()) {
-        if !referenced.contains(id) {
-            let descriptor = match read_range_safe(repo, id) {
-                Some(r) => match r.extent {
-                    crate::types::AnchorExtent::LineRange { start, end } => {
-                        format!("`{}#L{}-L{}`", r.path, start, end)
-                    }
-                    crate::types::AnchorExtent::WholeFile => format!("`{}` (whole)", r.path),
-                },
-                None => format!("`{}`", anchor_ref_path(id)),
-            };
-            out.push(DoctorFinding {
-                code: DoctorCode::DanglingRangeRef,
-                severity: Severity::Info,
-                message: format!(
-                    "dangling anchor ref at {descriptor} is not referenced by any mesh"
-                ),
-                remediation: Some(
-                    "harmless pending `git gc`; delete with `git update-ref -d` if intended".into(),
-                ),
-            });
-        }
-    }
-}
-
-/// Return the parsed `Anchor` for a ref whose object is a blob and parses
-/// as the anchor record format. Returns `None` for non-blob targets (e.g.
-/// a stray ref pointing at a commit) or unparseable contents — those
-/// callers fall back to the raw ref name.
-fn read_range_safe(repo: &gix::Repository, anchor_id: &str) -> Option<crate::types::Anchor> {
-    let wd = crate::git::work_dir(repo).ok()?;
-    let oid_hex = crate::git::resolve_ref_oid_optional(wd, &anchor_ref_path(anchor_id))
-        .ok()
-        .flatten()?;
-    let oid = gix::ObjectId::from_hex(oid_hex.as_bytes()).ok()?;
-    let obj = repo.find_object(oid).ok()?;
-    if obj.kind != gix::object::Kind::Blob {
-        return None;
-    }
-    let text = std::str::from_utf8(&obj.data).ok()?.to_string();
-    crate::anchor::parse_anchor(&text).ok()
-}
-
-/// Slice 4: walk each staging mesh, verify every staged-add sidecar
-/// against its `.meta` `content_sha256`, and emit a `SidecarTampered`
-/// finding for every mismatch (or missing/empty hash). Per
-/// `<fail-closed>`, an empty/absent meta hash is treated as tampering.
 fn check_sidecar_integrity(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
     let dir = crate::git::mesh_dir(repo).join("staging");
     if !dir.exists() {

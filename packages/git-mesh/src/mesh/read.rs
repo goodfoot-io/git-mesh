@@ -1,6 +1,6 @@
 //! Read-only mesh operations — §6.5, §6.6, §10.4.
 
-use crate::git::{self, git_show_file_lines, resolve_ref_oid_optional, work_dir};
+use crate::git::{self, resolve_ref_oid_optional, work_dir};
 use crate::types::{CopyDetection, Mesh, MeshConfig};
 use crate::{Error, Result};
 
@@ -78,12 +78,10 @@ pub(crate) fn read_mesh_from_commit(
     commit_oid: &str,
 ) -> Result<Mesh> {
     let message = git::commit_meta(repo, commit_oid)?.message;
-    let anchors = git::git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default();
     let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
     let config = read_config_blob(repo, commit_oid).unwrap_or_else(|_| default_config());
     Ok(Mesh {
         name: name.to_string(),
-        anchors,
         anchors_v2,
         message,
         config,
@@ -117,14 +115,7 @@ pub(crate) fn read_anchors_v2_blob(repo: &gix::Repository, commit_oid: &str) -> 
 
 pub(crate) struct MeshListingRecord {
     pub message: String,
-    pub anchors: Vec<String>,
-}
-
-pub(crate) fn read_mesh_anchor_ids_at(
-    repo: &gix::Repository,
-    commit_oid: &str,
-) -> Result<Vec<String>> {
-    Ok(git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default())
+    pub anchors_v2: Vec<(String, crate::types::Anchor)>,
 }
 
 pub(crate) fn read_mesh_listing_at(
@@ -132,8 +123,8 @@ pub(crate) fn read_mesh_listing_at(
     commit_oid: &str,
 ) -> Result<MeshListingRecord> {
     let message = git::commit_meta(repo, commit_oid)?.message;
-    let anchors = git_show_file_lines(repo, commit_oid, "anchors").unwrap_or_default();
-    Ok(MeshListingRecord { message, anchors })
+    let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
+    Ok(MeshListingRecord { message, anchors_v2 })
 }
 
 fn default_config() -> MeshConfig {
