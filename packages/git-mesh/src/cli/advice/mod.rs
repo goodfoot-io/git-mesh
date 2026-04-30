@@ -102,6 +102,27 @@ fn active_advice_store_prefixes(
     ]
 }
 
+/// Build a deduped, order-preserving list of candidate mesh names for the
+/// given `(path, optional line range)` pairs, using the path index. Errors
+/// from individual path-index reads are skipped so a single bad bucket cannot
+/// break advice rendering.
+fn candidate_mesh_names_for_paths<'a, I>(repo: &gix::Repository, paths: I) -> Vec<String>
+where
+    I: IntoIterator<Item = (&'a str, Option<(u32, u32)>)>,
+{
+    let mut out: Vec<String> = Vec::new();
+    for (path, range) in paths {
+        let names = crate::mesh::path_index::matching_mesh_names(repo, path, range)
+            .unwrap_or_default();
+        for name in names {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
 fn default_engine_options() -> crate::types::EngineOptions {
     crate::types::EngineOptions {
         layers: crate::types::LayerSet {
@@ -266,7 +287,26 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         })
         .collect();
 
-    let meshes = crate::resolver::all_meshes(repo, default_engine_options()).unwrap_or_default();
+    let meshes = {
+        let _perf = crate::perf::span("advice.flush.resolve-candidates");
+        let candidate_names = candidate_mesh_names_for_paths(
+            repo,
+            touches
+                .iter()
+                .filter(|t| !matches!(t.kind, TouchKind::Added | TouchKind::Deleted))
+                .map(|t| (t.path.as_str(), None)),
+        );
+        let resolved = crate::resolver::resolve_named_meshes(
+            repo,
+            &candidate_names,
+            default_engine_options(),
+        )
+        .unwrap_or_default();
+        resolved
+            .into_iter()
+            .filter_map(|(_, r)| r.ok())
+            .collect::<Vec<_>>()
+    };
     let meshes_seen = store.meshes_seen_set()?;
     let mut flags = store.read_flags()?;
 
@@ -602,7 +642,23 @@ fn run_advice_read(
     let action = action_from_spec(&anchor).ok_or_else(|| {
         anyhow::anyhow!("internal: action_from_spec returned None for `{anchor}`")
     })?;
-    let meshes = crate::resolver::all_meshes(repo, default_engine_options()).unwrap_or_default();
+    let meshes = {
+        let _perf = crate::perf::span("advice.read.resolve-candidates");
+        let candidate_names = candidate_mesh_names_for_paths(
+            repo,
+            std::iter::once((rec.path.as_str(), line_anchor)),
+        );
+        let resolved = crate::resolver::resolve_named_meshes(
+            repo,
+            &candidate_names,
+            default_engine_options(),
+        )
+        .unwrap_or_default();
+        resolved
+            .into_iter()
+            .filter_map(|(_, r)| r.ok())
+            .collect::<Vec<_>>()
+    };
     let meshes_seen = store.meshes_seen_set()?;
 
     let mut new_meshes_seen: Vec<String> = Vec::new();

@@ -366,6 +366,28 @@ pub(crate) fn all_meshes(
     Ok(out)
 }
 
+/// Resolve a small caller-provided list of mesh names without scanning all
+/// mesh refs. Reuses one `EngineState` across the candidate set and resolves
+/// each name through the live mesh ref. Preserves input order; per-name
+/// resolution failures are returned alongside the name rather than aborting
+/// the whole call so the path-index candidate workflow stays robust against a
+/// stale path-index entry.
+pub(crate) fn resolve_named_meshes(
+    repo: &gix::Repository,
+    names: &[String],
+    options: EngineOptions,
+) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
+    let _perf = crate::perf::span("resolver.resolve-named-meshes");
+    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let resolved = resolve_mesh_with_state(repo, &mut state, name, options);
+        out.push((name.clone(), resolved));
+    }
+    state.finish(repo);
+    Ok(out)
+}
+
 pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
     let mesh_refs = {
         let _perf = crate::perf::span("resolver.list-meshes");
