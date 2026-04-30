@@ -9,7 +9,7 @@ use crate::git::{
 use crate::mesh::read::{read_mesh_at, read_mesh_from_commit, serialize_config_blob};
 use crate::resolver::{
     EngineStateHandle, layers_filter_short_circuit, new_engine_state,
-    resolve_loaded_mesh_with_engine_state, resolve_mesh_at,
+    resolve_loaded_mesh_with_engine_state, resolve_mesh_at, resolve_mesh_at_with_engine_state,
 };
 use crate::staging;
 use crate::types::{AnchorExtent, AnchorStatus, EngineOptions, MeshResolved};
@@ -237,7 +237,7 @@ pub fn compact_mesh(
         }
     }
 
-    compact_mesh_with_retry(repo, name, options, initial_tip)
+    compact_mesh_with_retry(repo, name, options, initial_tip, None)
 }
 
 fn compact_mesh_with_retry(
@@ -245,6 +245,7 @@ fn compact_mesh_with_retry(
     name: &str,
     options: EngineOptions,
     initial_tip: String,
+    mut shared_state: Option<&mut EngineStateHandle>,
 ) -> Result<MeshCompactOutcome> {
     const MAX_RETRIES: usize = 5;
     let mesh_ref = format!("refs/meshes/v1/{name}");
@@ -254,7 +255,19 @@ fn compact_mesh_with_retry(
 
     loop {
         let mesh = read_mesh_at(repo, name, Some(&current_tip))?;
-        let resolved = resolve_mesh_at(repo, name, options, &current_tip)?;
+        // If the caller threaded a shared `EngineStateHandle` through
+        // (the batch CAS-conflict path), reuse it as long as HEAD has
+        // not moved since the state was built. The handle's HEAD-blob
+        // cache is keyed on its captured `head_sha`, so reusing across
+        // a HEAD movement would return stale blobs. On HEAD movement
+        // we fall back to a fresh `resolve_mesh_at` for safety.
+        let live_head = git::head_oid(repo)?;
+        let resolved = match shared_state.as_deref_mut() {
+            Some(handle) if handle.head_sha() == live_head.as_str() => {
+                resolve_mesh_at_with_engine_state(repo, handle, name, options, &current_tip)?
+            }
+            _ => resolve_mesh_at(repo, name, options, &current_tip)?,
+        };
 
         match apply_compact_attempt(repo, name, &mesh, &resolved, &current_tip)? {
             AttemptResult::Done(out) => return Ok(out),
@@ -583,7 +596,7 @@ fn compact_one_in_batch(
             // the retry classifies against the latest blob.
             let fresh_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
                 .ok_or_else(|| Error::MeshNotFound(name.into()))?;
-            compact_mesh_with_retry(repo, name, options, fresh_tip)
+            compact_mesh_with_retry(repo, name, options, fresh_tip, Some(state))
         }
     }
 }

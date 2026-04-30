@@ -769,3 +769,52 @@ fn test_compact_json_staged_ops_reason_token() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Test: batch path (no name) compacts multiple meshes correctly.
+//
+// Exercises `compact_meshes_batch`, which threads a shared
+// `EngineStateHandle` across each mesh and now also threads it into the
+// CAS-conflict retry path. This test covers the batch happy path: two
+// meshes both Fresh → both advance to HEAD with the same outcome shape
+// as the single-mesh path. Forcing a true CAS conflict from an
+// integration test would require a new test-only ref-mutation hook
+// inside `apply_compact_attempt` to wedge a competing ref update
+// between resolution and apply; that is out of scope here.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_batch_two_meshes_advance() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m-one")?;
+    seed(&repo, "m-two")?;
+
+    let old_one = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-one"])?;
+    let old_two = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-two"])?;
+
+    let new_head = advance_head(&repo)?;
+
+    // Run --compact with no name → batch path through `compact_meshes_batch`.
+    let out = repo.run_mesh(["stale", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0), "batch compact should exit 0");
+
+    let stdout = String::from_utf8(out.stdout)?;
+    // NDJSON: one outcome per line.
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 2, "expected two outcomes, got: {stdout}");
+
+    for line in lines {
+        let v: Value = serde_json::from_str(line)?;
+        assert_eq!(v["advanced"].as_u64(), Some(1), "each mesh advances 1: {v}");
+        assert_eq!(v["conflicts"].as_u64(), Some(0));
+        assert_eq!(v["errors"].as_u64(), Some(0));
+        let new_commit = v["anchors"][0]["new_commit"].as_str().unwrap_or("");
+        assert_eq!(new_commit, new_head, "anchor advanced to HEAD: {v}");
+    }
+
+    let new_one = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-one"])?;
+    let new_two = repo.git_stdout(["rev-parse", "refs/meshes/v1/m-two"])?;
+    assert_ne!(old_one, new_one, "m-one ref advanced");
+    assert_ne!(old_two, new_two, "m-two ref advanced");
+    Ok(())
+}

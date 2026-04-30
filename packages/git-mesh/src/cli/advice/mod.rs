@@ -110,12 +110,14 @@ fn candidate_mesh_names_for_paths<'a, I>(repo: &gix::Repository, paths: I) -> Ve
 where
     I: IntoIterator<Item = (&'a str, Option<(u32, u32)>)>,
 {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for (path, range) in paths {
         let names =
             crate::mesh::path_index::matching_mesh_names(repo, path, range).unwrap_or_default();
         for name in names {
-            if !out.contains(&name) {
+            if seen.insert(name.clone()) {
                 out.push(name);
             }
         }
@@ -312,6 +314,26 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
     let mut new_mesh_candidates: Vec<String> = Vec::new();
     let mut emitted_meshes_this_call: Vec<String> = Vec::new();
 
+    // Precompute, per candidate mesh, a path → anchors index so the per-touch
+    // emission loop runs an O(1) lookup keyed on `t.path` and only re-checks
+    // overlap against path-matching anchors. Without this, each (touch, mesh)
+    // pair walked the mesh's full anchor list — which becomes the dominant
+    // cost on a tool call that mass-edits many files.
+    let mesh_anchor_index: Vec<
+        std::collections::HashMap<String, Vec<&crate::types::AnchorResolved>>,
+    > = meshes
+        .iter()
+        .map(|mesh| {
+            let mut map: std::collections::HashMap<String, Vec<&crate::types::AnchorResolved>> =
+                std::collections::HashMap::new();
+            for a in &mesh.anchors {
+                let key = a.anchored.path.to_string_lossy().into_owned();
+                map.entry(key).or_default().push(a);
+            }
+            map
+        })
+        .collect();
+
     for t in &touches {
         if matches!(t.kind, TouchKind::Added | TouchKind::Deleted) {
             continue;
@@ -319,11 +341,18 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         let action = Action::WholeFile {
             path: t.path.clone(),
         };
-        for mesh in &meshes {
+        for (mesh, anchor_index) in meshes.iter().zip(mesh_anchor_index.iter()) {
             if emitted_meshes_this_call.contains(&mesh.name) {
                 continue;
             }
-            let Some(active) = mesh.anchors.iter().find(|a| edit_overlaps(&action, a)) else {
+            let Some(path_anchors) = anchor_index.get(&t.path) else {
+                continue;
+            };
+            let Some(active) = path_anchors
+                .iter()
+                .copied()
+                .find(|a| edit_overlaps(&action, a))
+            else {
                 continue;
             };
             let stale = mesh_is_stale(mesh);

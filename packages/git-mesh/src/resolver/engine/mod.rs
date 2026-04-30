@@ -304,6 +304,24 @@ pub(crate) fn resolve_loaded_mesh_with_engine_state(
     resolve_loaded_mesh_with_state(repo, &mut handle.0, mesh, options)
 }
 
+/// Resolve a mesh against the anchors stored at a specific mesh-ref
+/// commit, reusing the caller's shared `EngineStateHandle`.
+///
+/// Used by the batch compact CAS-conflict retry path so the per-mesh
+/// retry can keep the HEAD-blob cache warmed by the earlier batch
+/// classification, instead of throwing away that cache and rebuilding
+/// an `EngineState` from scratch.
+pub(crate) fn resolve_mesh_at_with_engine_state(
+    repo: &gix::Repository,
+    handle: &mut EngineStateHandle,
+    name: &str,
+    options: EngineOptions,
+    commit_oid: &str,
+) -> Result<MeshResolved> {
+    let _perf = crate::perf::span("resolver.resolve-mesh-at-with-engine-state");
+    resolve_mesh_with_state_at(repo, &mut handle.0, name, commit_oid, options)
+}
+
 fn resolve_loaded_mesh_with_state(
     repo: &gix::Repository,
     state: &mut EngineState,
@@ -372,38 +390,6 @@ fn resolve_loaded_mesh_with_state(
 
 fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
     m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
-}
-
-/// Resolve every mesh in the repository, sorted worst-status-first.
-/// Used by the advice engine, which needs routing context for all meshes
-/// regardless of drift state.
-pub(crate) fn all_meshes(
-    repo: &gix::Repository,
-    options: EngineOptions,
-) -> Result<Vec<MeshResolved>> {
-    let mesh_refs = {
-        let _perf = crate::perf::span("resolver.list-meshes");
-        list_mesh_refs(repo)?
-    };
-    let mut out = Vec::with_capacity(mesh_refs.len());
-    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
-    {
-        let _perf = crate::perf::span("resolver.resolve-meshes");
-        for (name, commit_oid) in mesh_refs {
-            out.push(resolve_mesh_with_state_at(
-                repo,
-                &mut state,
-                &name,
-                &commit_oid,
-                options,
-            )?);
-        }
-    }
-    state.finish(repo);
-    if out.len() > 1 {
-        sort_meshes_worst_first(&mut out);
-    }
-    Ok(out)
 }
 
 /// Resolve a small caller-provided list of mesh names without scanning all
