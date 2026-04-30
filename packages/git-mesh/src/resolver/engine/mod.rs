@@ -218,6 +218,25 @@ pub fn resolve_mesh(
     Ok(out)
 }
 
+/// Resolve a mesh against the anchors stored at a specific mesh-ref commit.
+///
+/// Compaction uses this to keep the resolver's view consistent with the
+/// `current_tip` it captured for the CAS expected-old-oid. Without this,
+/// if the live ref drifts between read and classification, anchor data
+/// comes from a different commit than the CAS guard expects.
+pub fn resolve_mesh_at(
+    repo: &gix::Repository,
+    name: &str,
+    options: EngineOptions,
+    commit_oid: &str,
+) -> Result<MeshResolved> {
+    let _perf = crate::perf::span("resolver.resolve-mesh-at");
+    let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+    let out = resolve_mesh_with_state_at(repo, &mut state, name, commit_oid, options)?;
+    state.finish(repo);
+    Ok(out)
+}
+
 fn resolve_mesh_with_state(
     repo: &gix::Repository,
     state: &mut EngineState,

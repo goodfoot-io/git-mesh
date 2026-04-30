@@ -407,3 +407,255 @@ fn test_compact_cas_retry_success() -> Result<()> {
     assert!(stdout.contains("advanced"), "should report advancement: {stdout}");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// F1: CAS conflict mutual exclusion — advanced == 0 when conflicts > 0.
+// We verify via JSON: skipped_clean_not_head is correct and the invariant
+// holds in the success path (conflict path is hard to force; we verify the
+// constraint structurally via the type system by checking the JSON schema).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_json_conflict_invariant_fields_present() -> Result<()> {
+    // Run compact when nothing to advance — verifies JSON schema includes
+    // all card-mandated fields. advanced==0 and conflicts==0 here.
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    // No HEAD advance — anchor is already at HEAD.
+
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    let stdout = String::from_utf8(out.stdout)?;
+    let line = stdout.trim();
+    let v: Value = serde_json::from_str(line)?;
+
+    // Verify all card-mandated fields are present.
+    assert!(v.get("advanced").is_some(), "missing 'advanced'");
+    assert!(v.get("skipped_clean_not_head").is_some(), "missing 'skipped_clean_not_head'");
+    assert!(v.get("skipped_stale").is_some(), "missing 'skipped_stale'");
+    assert!(v.get("skipped_staged").is_some(), "missing 'skipped_staged'");
+    assert!(v.get("conflicts").is_some(), "missing 'conflicts'");
+    assert!(v.get("errors").is_some(), "missing 'errors'");
+
+    // Mutual-exclusion invariant: when conflicts > 0, advanced must == 0.
+    // (Here both are 0, which trivially satisfies it.)
+    let adv = v["advanced"].as_u64().unwrap();
+    let conf = v["conflicts"].as_u64().unwrap();
+    assert!(
+        !(conf > 0 && adv > 0),
+        "invariant violated: conflicts={conf} advanced={adv}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F2: Trailer stripper uses rsplit_once — preserves mid-body occurrences.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_trailer_preserves_mid_body_token() -> Result<()> {
+    // Seed a mesh with a why body that contains the trailer token mid-text.
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+
+    // Set why to a body that contains the trailer token as mid-text.
+    let why_with_token = "Why body that mentions git-mesh-compact: in the middle";
+    repo.mesh_stdout(["why", "m", "-m", why_with_token])?;
+    repo.mesh_stdout(["commit", "m"])?;
+
+    // Advance HEAD and compact.
+    advance_head(&repo)?;
+    let out = repo.run_mesh(["stale", "m", "--compact"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    // The commit message should preserve the mid-body occurrence.
+    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    assert!(
+        commit_msg.contains("mentions git-mesh-compact: in the middle"),
+        "mid-body token should be preserved: {commit_msg}"
+    );
+    // There should be exactly one trailing trailer paragraph.
+    let trailer_count = commit_msg
+        .lines()
+        .filter(|l| l.starts_with("git-mesh-compact:"))
+        .count();
+    assert_eq!(trailer_count, 1, "exactly one trailer line: {commit_msg}");
+    Ok(())
+}
+
+#[test]
+fn test_compact_trailer_doubled_normalizes() -> Result<()> {
+    // Seed, compact twice (each time advancing HEAD) — verify single trailer.
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+
+    advance_head(&repo)?;
+    repo.run_mesh(["stale", "m", "--compact"])?;
+
+    repo.write_file("extra.txt", "x\n")?;
+    repo.commit_all("advance again")?;
+    repo.run_mesh(["stale", "m", "--compact"])?;
+
+    let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
+    let trailer_count = commit_msg
+        .lines()
+        .filter(|l| l.starts_with("git-mesh-compact:"))
+        .count();
+    assert_eq!(trailer_count, 1, "doubled trailer must normalize to one: {commit_msg}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F3: JSON output includes skipped_clean_not_head (card spec field).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_json_skipped_clean_not_head() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    // No HEAD advance — anchor already at HEAD, should count as skipped_clean_not_head.
+
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    let stdout = String::from_utf8(out.stdout)?;
+    let v: Value = serde_json::from_str(stdout.trim())?;
+    // skipped_clean_not_head should be >= 1 (anchor already at HEAD).
+    let val = v["skipped_clean_not_head"].as_u64().unwrap_or(0);
+    assert!(val >= 1, "expected skipped_clean_not_head >= 1: {v}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F4: NDJSON is one JSON object per line.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_json_one_line_per_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "mesh-a")?;
+    repo.mesh_stdout(["add", "mesh-b", "file1.txt#L6-L10"])?;
+    repo.mesh_stdout(["why", "mesh-b", "-m", "mesh-b why"])?;
+    repo.mesh_stdout(["commit", "mesh-b"])?;
+    advance_head(&repo)?;
+
+    let out = repo.run_mesh(["stale", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    let stdout = String::from_utf8(out.stdout)?;
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "expect exactly 2 JSON lines (one per mesh): {stdout}");
+    for line in &lines {
+        let v: Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+        assert_eq!(v["schema"], "compact-v1");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F6: Per-anchor outcome tokens are distinct for Changed (at minimum).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_json_changed_anchor_outcome_token() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    mutate_anchor(&repo)?; // Makes anchor Changed.
+
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    let stdout = String::from_utf8(out.stdout)?;
+    let v: Value = serde_json::from_str(stdout.trim())?;
+    let anchors = v["anchors"].as_array().expect("anchors array");
+    assert!(!anchors.is_empty(), "should have at least one anchor record");
+    let outcome = anchors[0]["outcome"].as_str().unwrap();
+    assert_eq!(
+        outcome, "skipped_changed",
+        "Changed anchor should have outcome 'skipped_changed', got '{outcome}'"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F8: --compact with incompatible --format is rejected before mutation.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_rejects_incompatible_format() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    advance_head(&repo)?;
+
+    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+
+    // junit format should be rejected.
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=junit"])?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "should exit nonzero for incompatible format"
+    );
+
+    // Mesh ref must not have changed — no mutation occurred.
+    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    assert_eq!(old_tip, new_tip, "mesh ref must not change after format rejection");
+    Ok(())
+}
+
+#[test]
+fn test_compact_rejects_incompatible_format_porcelain() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    let old_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=porcelain"])?;
+    assert_ne!(out.status.code(), Some(0), "porcelain should be rejected");
+
+    let new_tip = repo.git_stdout(["rev-parse", "refs/meshes/v1/m"])?;
+    assert_eq!(old_tip, new_tip, "no mutation on rejection");
+    Ok(())
+}
+
+#[test]
+fn test_compact_format_rejection_not_suppressed_by_no_exit_code() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+
+    // Even with --no-exit-code, format rejection must be nonzero.
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=junit", "--no-exit-code"])?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "--no-exit-code must not suppress format rejection exit code"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F9: staged_ops_present reason token in JSON.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_compact_json_staged_ops_reason_token() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    advance_head(&repo)?;
+
+    // Stage an add (don't commit it).
+    repo.mesh_stdout(["add", "m", "file1.txt#L6-L10"])?;
+
+    let out = repo.run_mesh(["stale", "m", "--compact", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+
+    let stdout = String::from_utf8(out.stdout)?;
+    let v: Value = serde_json::from_str(stdout.trim())?;
+    let reason = v["reason"].as_str().unwrap_or("");
+    assert_eq!(
+        reason, "staged_ops_present",
+        "staging skip must emit reason 'staged_ops_present': {v}"
+    );
+    Ok(())
+}

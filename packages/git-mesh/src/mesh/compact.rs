@@ -5,7 +5,7 @@
 
 use crate::git::{self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir};
 use crate::mesh::read::{read_mesh_at, serialize_config_blob};
-use crate::resolver::resolve_mesh;
+use crate::resolver::resolve_mesh_at;
 use crate::staging;
 use crate::types::{AnchorExtent, AnchorStatus, EngineOptions};
 use crate::{Error, Result};
@@ -20,12 +20,14 @@ pub struct MeshCompactOutcome {
     pub advanced: u32,
     pub skipped_stale: u32,
     pub skipped_moved: u32,
-    pub skipped_already_at_head: u32,
+    pub skipped_clean_not_head: u32,
     pub skipped_staged: u32,
     pub conflicts: u32,
     pub errors: u32,
     pub anchors: Vec<AnchorCompactRecord>,
     pub hard_error: Option<String>,
+    /// Set when whole mesh is skipped due to staged ops.
+    pub staged_ops_present: bool,
 }
 
 impl MeshCompactOutcome {
@@ -39,12 +41,13 @@ impl MeshCompactOutcome {
             advanced: 0,
             skipped_stale: 0,
             skipped_moved: 0,
-            skipped_already_at_head: 0,
+            skipped_clean_not_head: 0,
             skipped_staged: 0,
             conflicts: 0,
             errors: 1,
             anchors: Vec::new(),
             hard_error: Some(e.to_string()),
+            staged_ops_present: false,
         }
     }
 
@@ -54,34 +57,52 @@ impl MeshCompactOutcome {
             advanced: 0,
             skipped_stale: 0,
             skipped_moved: 0,
-            skipped_already_at_head: 0,
+            skipped_clean_not_head: 0,
             skipped_staged: 1,
             conflicts: 0,
             errors: 0,
             anchors: Vec::new(),
             hard_error: None,
+            staged_ops_present: true,
         }
     }
 
+    /// Returns a conflict outcome. Per the mutual-exclusion invariant,
+    /// `advanced` is always 0 and any per-anchor Advanced records are
+    /// rewritten to ConflictExhausted (the ref was never updated).
     fn conflict(
         name: &str,
-        advanced: u32,
         skipped_stale: u32,
         skipped_moved: u32,
-        skipped_already_at_head: u32,
+        skipped_clean_not_head: u32,
         anchors: Vec<AnchorCompactRecord>,
     ) -> Self {
+        // Rewrite any Advanced records — those commits are orphans.
+        let anchors = anchors
+            .into_iter()
+            .map(|mut a| {
+                if a.outcome == AnchorCompactOutcome::Advanced {
+                    a.outcome = AnchorCompactOutcome::ConflictExhausted;
+                    a.new_commit = None;
+                    a.new_path = None;
+                    a.new_extent = None;
+                    a.new_blob = None;
+                }
+                a
+            })
+            .collect();
         Self {
             name: name.to_string(),
-            advanced,
+            advanced: 0, // invariant: conflicts > 0 => advanced == 0
             skipped_stale,
             skipped_moved,
-            skipped_already_at_head,
+            skipped_clean_not_head,
             skipped_staged: 0,
             conflicts: 1,
             errors: 0,
             anchors,
             hard_error: None,
+            staged_ops_present: false,
         }
     }
 }
@@ -103,7 +124,18 @@ pub struct AnchorCompactRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnchorCompactOutcome {
     Advanced,
-    SkippedStale,
+    /// CAS retries exhausted; ref never updated — these commits are orphans.
+    ConflictExhausted,
+    /// AnchorStatus::Changed
+    SkippedChanged,
+    /// AnchorStatus::Orphaned
+    SkippedOrphaned,
+    /// AnchorStatus::MergeConflict
+    SkippedMergeConflict,
+    /// AnchorStatus::Submodule
+    SkippedSubmodule,
+    /// AnchorStatus::ContentUnavailable
+    SkippedUnavailable,
     SkippedMoved,
     SkippedStagedOps,
     SkippedAlreadyHead,
@@ -138,8 +170,8 @@ pub fn compact_mesh(
         let mesh = read_mesh_at(repo, name, Some(&current_tip))?;
         let head_sha = git::head_oid(repo)?; // re-read per attempt
 
-        // 4. Resolve anchors HEAD-only.
-        let resolved = resolve_mesh(repo, name, options)?;
+        // 4. Resolve anchors HEAD-only, consistent with the captured current_tip.
+        let resolved = resolve_mesh_at(repo, name, options, &current_tip)?;
 
         // 5. Classify each anchor.
         let mut compacted_anchors: Vec<(String, crate::types::Anchor)> = Vec::new();
@@ -148,7 +180,7 @@ pub fn compact_mesh(
         let mut advanced = 0u32;
         let mut skipped_stale = 0u32;
         let mut skipped_moved = 0u32;
-        let mut skipped_already_at_head = 0u32;
+        let mut skipped_clean_not_head = 0u32;
 
         for ar in &resolved.anchors {
             // Build old anchor view from mesh.anchors_v2 by anchor_id.
@@ -182,7 +214,7 @@ pub fn compact_mesh(
                             old_blob: old_anchor.blob.clone(),
                             new_blob: None,
                         });
-                        skipped_already_at_head += 1;
+                        skipped_clean_not_head += 1;
                         continue;
                     }
                     // Rewrite: preserve anchor_id and created_at; advance to HEAD.
@@ -229,15 +261,75 @@ pub fn compact_mesh(
                 }
                 // Exhaustive — no `_` wildcard. A future AnchorStatus variant
                 // causes a compile error, forcing an explicit decision.
-                AnchorStatus::Changed
-                | AnchorStatus::Orphaned
-                | AnchorStatus::MergeConflict
-                | AnchorStatus::Submodule
-                | AnchorStatus::ContentUnavailable(_) => {
+                AnchorStatus::Changed => {
                     unchanged_anchors.push((ar.anchor_id.clone(), old_anchor.clone()));
                     anchor_records.push(AnchorCompactRecord {
                         anchor_id: ar.anchor_id.clone(),
-                        outcome: AnchorCompactOutcome::SkippedStale,
+                        outcome: AnchorCompactOutcome::SkippedChanged,
+                        old_commit: old_anchor.anchor_sha.clone(),
+                        new_commit: None,
+                        old_path: old_anchor.path.clone(),
+                        new_path: None,
+                        old_extent: old_anchor.extent,
+                        new_extent: None,
+                        old_blob: old_anchor.blob.clone(),
+                        new_blob: None,
+                    });
+                    skipped_stale += 1;
+                }
+                AnchorStatus::Orphaned => {
+                    unchanged_anchors.push((ar.anchor_id.clone(), old_anchor.clone()));
+                    anchor_records.push(AnchorCompactRecord {
+                        anchor_id: ar.anchor_id.clone(),
+                        outcome: AnchorCompactOutcome::SkippedOrphaned,
+                        old_commit: old_anchor.anchor_sha.clone(),
+                        new_commit: None,
+                        old_path: old_anchor.path.clone(),
+                        new_path: None,
+                        old_extent: old_anchor.extent,
+                        new_extent: None,
+                        old_blob: old_anchor.blob.clone(),
+                        new_blob: None,
+                    });
+                    skipped_stale += 1;
+                }
+                AnchorStatus::MergeConflict => {
+                    unchanged_anchors.push((ar.anchor_id.clone(), old_anchor.clone()));
+                    anchor_records.push(AnchorCompactRecord {
+                        anchor_id: ar.anchor_id.clone(),
+                        outcome: AnchorCompactOutcome::SkippedMergeConflict,
+                        old_commit: old_anchor.anchor_sha.clone(),
+                        new_commit: None,
+                        old_path: old_anchor.path.clone(),
+                        new_path: None,
+                        old_extent: old_anchor.extent,
+                        new_extent: None,
+                        old_blob: old_anchor.blob.clone(),
+                        new_blob: None,
+                    });
+                    skipped_stale += 1;
+                }
+                AnchorStatus::Submodule => {
+                    unchanged_anchors.push((ar.anchor_id.clone(), old_anchor.clone()));
+                    anchor_records.push(AnchorCompactRecord {
+                        anchor_id: ar.anchor_id.clone(),
+                        outcome: AnchorCompactOutcome::SkippedSubmodule,
+                        old_commit: old_anchor.anchor_sha.clone(),
+                        new_commit: None,
+                        old_path: old_anchor.path.clone(),
+                        new_path: None,
+                        old_extent: old_anchor.extent,
+                        new_extent: None,
+                        old_blob: old_anchor.blob.clone(),
+                        new_blob: None,
+                    });
+                    skipped_stale += 1;
+                }
+                AnchorStatus::ContentUnavailable(_) => {
+                    unchanged_anchors.push((ar.anchor_id.clone(), old_anchor.clone()));
+                    anchor_records.push(AnchorCompactRecord {
+                        anchor_id: ar.anchor_id.clone(),
+                        outcome: AnchorCompactOutcome::SkippedUnavailable,
                         old_commit: old_anchor.anchor_sha.clone(),
                         new_commit: None,
                         old_path: old_anchor.path.clone(),
@@ -253,17 +345,35 @@ pub fn compact_mesh(
         }
 
         if advanced == 0 {
+            // F7: Even when no anchor advances, repair any path-index drift.
+            let drift_updates = super::path_index::ref_updates_for_mesh(
+                repo,
+                name,
+                &mesh.anchors_v2,
+                &mesh.anchors_v2,
+            )?;
+            let repair_updates: Vec<RefUpdate> = drift_updates
+                .into_iter()
+                .filter(|u| matches!(u, RefUpdate::Update { new_oid, expected_old_oid, .. } if new_oid != expected_old_oid))
+                .collect();
+            if !repair_updates.is_empty() {
+                let wd = work_dir(repo)?;
+                crate::git::ensure_log_all_ref_updates_always(repo)?;
+                // Best-effort: ignore errors (another writer may have already repaired).
+                let _ = apply_ref_transaction(wd, &repair_updates);
+            }
             return Ok(MeshCompactOutcome {
                 name: name.to_string(),
                 advanced: 0,
                 skipped_stale,
                 skipped_moved,
-                skipped_already_at_head,
+                skipped_clean_not_head,
                 skipped_staged: 0,
                 conflicts: 0,
                 errors: 0,
                 anchors: anchor_records,
                 hard_error: None,
+                staged_ops_present: false,
             });
         }
 
@@ -297,10 +407,11 @@ pub fn compact_mesh(
 
         // Commit message: inherit why from parent mesh commit; strip any prior
         // git-mesh-compact: trailer before re-appending (idempotent).
+        // Use rsplit_once so mid-text occurrences of the token are preserved.
         let why_body = mesh
             .message
             .trim()
-            .split_once("\n\ngit-mesh-compact:")
+            .rsplit_once("\n\ngit-mesh-compact:")
             .map(|(body, _)| body.trim())
             .unwrap_or_else(|| mesh.message.trim());
         let message = format!(
@@ -332,12 +443,13 @@ pub fn compact_mesh(
                     advanced,
                     skipped_stale,
                     skipped_moved,
-                    skipped_already_at_head,
+                    skipped_clean_not_head,
                     skipped_staged: 0,
                     conflicts: 0,
                     errors: 0,
                     anchors: anchor_records,
                     hard_error: None,
+                    staged_ops_present: false,
                 });
             }
             Err(_) => {
@@ -345,10 +457,9 @@ pub fn compact_mesh(
                 if attempt >= MAX_RETRIES {
                     return Ok(MeshCompactOutcome::conflict(
                         name,
-                        advanced,
                         skipped_stale,
                         skipped_moved,
-                        skipped_already_at_head,
+                        skipped_clean_not_head,
                         anchor_records,
                     ));
                 }

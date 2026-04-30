@@ -26,4 +26,4 @@ pub(crate) mod walker;
 pub use attribution::culprit_commit;
 pub use engine::pending::build_pending_findings;
 pub(crate) use engine::{all_meshes, resolve_meshes_in_order};
-pub use engine::{resolve_anchor, resolve_mesh, stale_meshes};
+pub use engine::{resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes};
