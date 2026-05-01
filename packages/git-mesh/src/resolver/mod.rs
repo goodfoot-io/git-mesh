@@ -21,6 +21,7 @@ pub mod attribution;
 pub(crate) mod engine;
 pub(crate) mod layers;
 pub(crate) mod session;
+pub(crate) mod trail_cache;
 pub(crate) mod walker;
 
 pub use attribution::culprit_commit;

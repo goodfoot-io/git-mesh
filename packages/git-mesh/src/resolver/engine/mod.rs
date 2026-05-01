@@ -472,6 +472,8 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.interesting-commits", state.session.interesting_commits);
     crate::perf::counter("session.skipped-commits", state.session.skipped_commits);
     crate::perf::counter("session.pass1-ms", state.session.pass1_ms);
+    crate::perf::counter("session.trail-cache-hits", state.session.trail_cache_hits);
+    crate::perf::counter("session.trail-cache-misses", state.session.trail_cache_misses);
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_worst_first(&mut out);

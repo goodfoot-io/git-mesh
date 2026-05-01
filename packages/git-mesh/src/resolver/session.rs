@@ -38,6 +38,7 @@
 
 use crate::Result;
 use crate::git;
+use crate::resolver::trail_cache::{self, TrailCacheEntry};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
 use std::collections::{HashMap, HashSet};
@@ -103,6 +104,10 @@ pub(crate) struct ResolveSession {
     /// Counter: total wall-clock milliseconds spent in Pass 1 (rename-trail
     /// closure via `git log --name-status` subprocesses) across all walks.
     pub(crate) pass1_ms: u64,
+    /// Counter: cache hits in the cross-invocation rename-trail cache.
+    pub(crate) trail_cache_hits: u64,
+    /// Counter: cache misses (including I/O errors) in the trail cache.
+    pub(crate) trail_cache_misses: u64,
 }
 
 impl ResolveSession {
@@ -114,6 +119,8 @@ impl ResolveSession {
             skipped_commits: 0,
             interesting_commits: 0,
             pass1_ms: 0,
+            trail_cache_hits: 0,
+            trail_cache_misses: 0,
         }
     }
 
@@ -146,6 +153,8 @@ impl ResolveSession {
             &mut self.skipped_commits,
             &mut self.interesting_commits,
             &mut self.pass1_ms,
+            &mut self.trail_cache_hits,
+            &mut self.trail_cache_misses,
         )?;
         self.walks.insert(key, walk);
         Ok(())
@@ -185,6 +194,8 @@ impl ResolveSession {
                 &mut self.skipped_commits,
                 &mut self.interesting_commits,
                 &mut self.pass1_ms,
+                &mut self.trail_cache_hits,
+                &mut self.trail_cache_misses,
             )?;
             self.walks.insert(key.clone(), walk);
         } else {
@@ -211,6 +222,8 @@ fn build_grouped_walk(
     skipped_counter: &mut u64,
     interesting_counter: &mut u64,
     pass1_ms_counter: &mut u64,
+    trail_cache_hits_counter: &mut u64,
+    trail_cache_misses_counter: &mut u64,
 ) -> Result<GroupedWalk> {
     let head_sha = git::head_oid(repo)?;
     let mut commits =
@@ -237,19 +250,93 @@ fn build_grouped_walk(
     // `git log --name-status` queries until the path set stops growing.
     // When no seed is provided (single-anchor / test fallback) the gate
     // is bypassed and every commit is treated as interesting.
+    //
+    // When a seed is provided, we first probe the cross-invocation trail
+    // cache (Route C). On hit, Pass 1 is skipped entirely and we return
+    // the persisted (closed, interesting) pair directly. On miss (file
+    // absent, key mismatch, I/O error), we run compute_rename_trail and
+    // store the result when !fell_back. Cache I/O failures are caught and
+    // downgraded to a miss; they never propagate.
     let (closed_paths, interesting_set, pass1_fell_back) = match candidate_paths {
         Some(seed) => {
-            let t0 = std::time::Instant::now();
-            let (closed, interesting, fell_back) =
-                compute_rename_trail(repo, anchor_sha, seed, copy_detection, &walk_parents, warnings)?;
-            *pass1_ms_counter += t0.elapsed().as_millis() as u64;
-            // On fallback, `closed` is just the seed (or a partial set) —
-            // not the authoritative trail closure the field's contract
-            // promises. Drop it so future cache consumers (Route C) can
-            // distinguish "trail closed" from "trail unknown" without
-            // mistaking a seed-only result for a real closure.
-            let cached_closed = if fell_back { None } else { Some(closed) };
-            (cached_closed, Some(interesting), fell_back)
+            // Probe the cross-invocation trail cache. Returns:
+            //   `Some(pair)` → cache hit (counter already incremented)
+            //   `None`       → miss or shadow-miss (counter NOT yet incremented)
+            //
+            // Shadow miss (I/O error) is counted here so the outer else
+            // branch increments exactly once in all miss paths.
+            enum CacheProbe {
+                Hit(HashSet<String>, HashSet<String>),
+                Miss,
+            }
+            let probe = match trail_cache::compute_key(
+                repo,
+                anchor_sha,
+                &head_sha,
+                copy_detection,
+                seed,
+            ) {
+                Err(e) => {
+                    eprintln!("trail_cache compute_key error: {e}");
+                    CacheProbe::Miss
+                }
+                Ok(key) => match trail_cache::load(repo, &key) {
+                    Ok(Some(entry)) => {
+                        *trail_cache_hits_counter += 1;
+                        CacheProbe::Hit(entry.closed, entry.interesting)
+                    }
+                    Ok(None) => CacheProbe::Miss,
+                    Err(e) => {
+                        eprintln!("trail_cache load error (shadow miss): {e}");
+                        CacheProbe::Miss
+                    }
+                },
+            };
+
+            match probe {
+                CacheProbe::Hit(closed, interesting) => {
+                    // Cache hit: skip Pass 1 entirely.
+                    (Some(closed), Some(interesting), false)
+                }
+                CacheProbe::Miss => {
+                    // Cache miss (including shadow miss): run Pass 1 then conditionally store.
+                    *trail_cache_misses_counter += 1;
+                    let t0 = std::time::Instant::now();
+                    let (closed, interesting, fell_back) =
+                        compute_rename_trail(repo, anchor_sha, seed, copy_detection, &walk_parents, warnings)?;
+                    *pass1_ms_counter += t0.elapsed().as_millis() as u64;
+
+                    if !fell_back {
+                        // Attempt to store; failure is logged and ignored.
+                        if let Ok(key) = trail_cache::compute_key(
+                            repo,
+                            anchor_sha,
+                            &head_sha,
+                            copy_detection,
+                            seed,
+                        ) {
+                            let mut sorted_seed: Vec<String> = seed.iter().cloned().collect();
+                            sorted_seed.sort();
+                            let entry = TrailCacheEntry {
+                                seed: sorted_seed,
+                                closed: closed.clone(),
+                                interesting: interesting.clone(),
+                            };
+                            if let Err(e) = trail_cache::store(repo, &key, &entry) {
+                                eprintln!("trail_cache store error (ignored): {e}");
+                            }
+                        }
+                    }
+
+                    // On fallback, `closed` is just the seed (or a partial set) —
+                    // not the authoritative trail closure the field's contract
+                    // promises. Drop it so future cache consumers can
+                    // distinguish "trail closed" from "trail unknown" without
+                    // mistaking a seed-only result for a real closure.
+                    let cached_closed = if fell_back { None } else { Some(closed) };
+                    (cached_closed, Some(interesting), fell_back)
+                }
+            }
         }
         None => (None, None, false),
     };
