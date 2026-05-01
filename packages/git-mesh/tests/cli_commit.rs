@@ -498,6 +498,34 @@ fn cli_commit_no_name_commits_all_staged() -> Result<()> {
 }
 
 #[test]
+fn cli_commit_no_name_picks_up_why_only_staging() -> Result<()> {
+    // Repro: after a mesh has been committed and its staging cleared,
+    // running `git mesh why <name> -m ...` stages only a `<name>.why`
+    // sidecar file (no dot-less ops file). `git mesh commit` (no name)
+    // must still pick this up and commit it. Previously the candidate
+    // scan filtered to filenames without a dot, skipping `.why`-only
+    // staging and printing "nothing staged".
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L2"])?;
+    repo.mesh_stdout(["why", "m", "-m", "v1 why"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    // Stage only a new why on the already-committed mesh.
+    repo.mesh_stdout(["why", "m", "-m", "v2 why"])?;
+    let stdout = repo.mesh_stdout(["commit"])?;
+    assert!(
+        stdout.contains("refs/meshes/v1/m"),
+        "expected commit to update mesh ref; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("nothing staged"),
+        "should not report 'nothing staged' when a why is staged; stdout={stdout}"
+    );
+    let current = repo.mesh_stdout(["why", "m"])?;
+    assert!(current.contains("v2 why"), "current={current}");
+    Ok(())
+}
+
+#[test]
 fn cli_commit_no_name_nothing_staged_exits_zero() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["commit"])?;
