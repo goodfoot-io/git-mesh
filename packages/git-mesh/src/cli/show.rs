@@ -537,26 +537,32 @@ fn apply_search(listings: &mut Vec<MeshListing>, re: &regex::Regex) {
 }
 
 fn render_blocks(page: &[MeshListing]) {
+    let total = page.len();
     for (i, listing) in page.iter().enumerate() {
-        if i > 0 {
-            println!();
-        }
         let marker = match listing.state {
             MeshState::Committed => String::new(),
             MeshState::Staged => " (staged)".to_string(),
             MeshState::Pending => " (pending)".to_string(),
         };
         println!("{}{}:", listing.name, marker);
-        for line in listing.why.lines() {
-            if line.is_empty() {
-                println!();
-            } else {
-                println!("  {line}");
-            }
-        }
         for a in &listing.anchors {
-            let addr = render_range_address(&a.path, a.extent);
-            println!("  - {addr}");
+            let addr = match a.extent {
+                AnchorExtent::LineRange { start, end } => {
+                    format!("{}#L{start}-L{end}", a.path)
+                }
+                AnchorExtent::WholeFile => a.path.clone(),
+            };
+            println!("- {addr}");
+        }
+        let trimmed_why = listing.why.trim();
+        if !trimmed_why.is_empty() {
+            println!();
+            println!("{trimmed_why}");
+        }
+        if i + 1 < total {
+            println!();
+            println!("---");
+            println!();
         }
     }
 }

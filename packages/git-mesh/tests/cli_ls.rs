@@ -89,12 +89,12 @@ fn ls_one_committed_mesh_block_format() -> Result<()> {
     );
     // Why indented
     assert!(
-        out.contains("  the parser honors the spec"),
-        "expected indented why, got: {out}"
+        out.contains("the parser honors the spec"),
+        "expected why, got: {out}"
     );
     // Anchor line
     assert!(
-        out.contains("  - file1.txt#L1-L5"),
+        out.contains("- file1.txt#L1-L5"),
         "expected anchor line, got: {out}"
     );
     // No state marker for committed
@@ -148,7 +148,7 @@ fn ls_pending_marker_on_staging_only_mesh() -> Result<()> {
         "expected '(pending)' marker, got: {out}"
     );
     assert!(
-        out.contains("  pending relationship"),
+        out.contains("pending relationship"),
         "expected why text, got: {out}"
     );
     Ok(())
@@ -162,9 +162,9 @@ fn ls_multiline_why_renders_all_lines_indented() -> Result<()> {
     repo.mesh_stdout(["why", "multi", "-m", "line one\nline two\nline three"])?;
     repo.mesh_stdout(["commit", "multi"])?;
     let out = repo.mesh_stdout(["ls"])?;
-    assert!(out.contains("  line one"), "line one: {out}");
-    assert!(out.contains("  line two"), "line two: {out}");
-    assert!(out.contains("  line three"), "line three: {out}");
+    assert!(out.contains("line one"), "line one: {out}");
+    assert!(out.contains("line two"), "line two: {out}");
+    assert!(out.contains("line three"), "line three: {out}");
     Ok(())
 }
 
@@ -175,8 +175,12 @@ fn ls_whole_file_anchor_renders_whole_label() -> Result<()> {
     commit_mesh(&repo, "wf", "file1.txt", "whole file relationship")?;
     let out = repo.mesh_stdout(["ls"])?;
     assert!(
-        out.contains("  - file1.txt  (whole)"),
-        "expected whole-file anchor format, got: {out}"
+        out.contains("- file1.txt"),
+        "expected whole-file anchor line, got: {out}"
+    );
+    assert!(
+        !out.contains("(whole)"),
+        "human ls should drop `(whole)` decoration: {out}"
     );
     Ok(())
 }
@@ -206,8 +210,8 @@ fn ls_path_filter_renders_full_anchor_list() -> Result<()> {
     repo.mesh_stdout(["commit", "alpha"])?;
     let out = repo.mesh_stdout(["ls", "file1.txt"])?;
     // Both anchors should appear, not just the matching one.
-    assert!(out.contains("  - file1.txt#L1-L5"), "file1 anchor: {out}");
-    assert!(out.contains("  - file2.txt#L1-L3"), "file2 anchor: {out}");
+    assert!(out.contains("- file1.txt#L1-L5"), "file1 anchor: {out}");
+    assert!(out.contains("- file2.txt#L1-L3"), "file2 anchor: {out}");
     Ok(())
 }
 

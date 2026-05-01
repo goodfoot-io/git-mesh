@@ -523,6 +523,14 @@ fn render_human(
                 )
             })
             .collect();
+        // Prefer the committed why on the mesh ref. The pending Why
+        // (if any) is shown afterwards so a staged edit is visible
+        // alongside the live message.
+        let trimmed_why = m.message.trim();
+        if !trimmed_why.is_empty() {
+            println!();
+            println!("{trimmed_why}");
+        }
         for p in &info {
             match p {
                 PendingFinding::Why { body, .. } => {
