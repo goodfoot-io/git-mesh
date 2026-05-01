@@ -1,18 +1,6 @@
 {
   "description": "Surface git-mesh advice as Claude crosses anchored line-range couplings.",
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/advice-session-start.sh",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|Bash|mcp__.*",
