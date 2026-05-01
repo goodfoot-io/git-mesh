@@ -236,17 +236,74 @@ fn audit_trail_commit_message_format() -> Result<()> {
 
     repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
 
-    // The new mesh tip must preserve the original why verbatim.
+    // The raw mesh commit message must have the original why + Mesh-Follow trailer.
+    let raw_msg = repo.git_stdout([
+        "log",
+        "-1",
+        "--format=%B",
+        "refs/meshes/v1/m",
+    ])?;
+    assert!(
+        raw_msg.contains(original_msg.trim()),
+        "auto-follow commit must contain the original why; raw_msg={raw_msg}"
+    );
+    assert!(
+        raw_msg.contains("Mesh-Follow:"),
+        "auto-follow commit must contain Mesh-Follow trailer; raw_msg={raw_msg}"
+    );
+
+    // git mesh show must return only the original why (no trailer leak).
+    let show_out = repo.mesh_stdout(["show", "m"])?;
+    assert!(
+        show_out.contains(original_msg.trim()),
+        "git mesh show must include original why; show_out={show_out}"
+    );
+    assert!(
+        !show_out.contains("Mesh-Follow:"),
+        "git mesh show must not expose the Mesh-Follow trailer; show_out={show_out}"
+    );
+
+    // git log --grep must find the follow commit via the trailer.
+    let grep_out = repo.git_stdout([
+        "log",
+        "refs/meshes/v1/m",
+        "--grep=Mesh-Follow",
+        "--format=%H",
+    ])?;
+    assert!(
+        !grep_out.trim().is_empty(),
+        "git log --grep=Mesh-Follow must find the follow commit"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 10. Subsequent normal mesh commit does not inherit the Mesh-Follow trailer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn subsequent_commit_does_not_inherit_trailer() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    setup_verbatim_move(&repo)?;
+
+    // auto-follow writes the trailer into the mesh commit.
+    repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
+
+    // Now re-anchor: add a new anchor and commit — no explicit `-m` so the
+    // message is inherited from the current mesh tip (which has the trailer).
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L2"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+
+    // The new mesh commit must NOT contain the Mesh-Follow trailer.
     let new_msg = repo.git_stdout([
         "log",
         "-1",
         "--format=%B",
         "refs/meshes/v1/m",
     ])?;
-    assert_eq!(
-        new_msg.trim(),
-        original_msg.trim(),
-        "auto-follow must preserve the original why; new_msg={new_msg}"
+    assert!(
+        !new_msg.contains("Mesh-Follow:"),
+        "normal mesh commit must not carry Mesh-Follow trailer; msg={new_msg}"
     );
     Ok(())
 }

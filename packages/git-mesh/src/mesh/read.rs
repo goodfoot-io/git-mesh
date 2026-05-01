@@ -72,12 +72,31 @@ pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>
     read_mesh_from_commit(repo, name, &commit_oid)
 }
 
+/// Strip a trailing `Mesh-Follow: …` trailer line (plus the preceding blank
+/// line) from a raw commit message.  This ensures that `git mesh show`
+/// displays the original why without the auto-follow audit token.
+pub(crate) fn strip_mesh_follow_trailer(msg: &str) -> String {
+    // Trim trailing whitespace/newlines then check for the trailer line.
+    let trimmed = msg.trim_end();
+    if let Some(rest) = trimmed.rsplit_once('\n') {
+        let (body, last_line) = rest;
+        if last_line.starts_with("Mesh-Follow:") {
+            // Also remove the blank line separating why from the trailer.
+            return body.trim_end().to_string();
+        }
+    } else if trimmed.starts_with("Mesh-Follow:") {
+        return String::new();
+    }
+    trimmed.to_string()
+}
+
 pub(crate) fn read_mesh_from_commit(
     repo: &gix::Repository,
     name: &str,
     commit_oid: &str,
 ) -> Result<Mesh> {
-    let message = git::commit_meta(repo, commit_oid)?.message;
+    let raw_message = git::commit_meta(repo, commit_oid)?.message;
+    let message = strip_mesh_follow_trailer(&raw_message);
     let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
     let config = read_config_blob(repo, commit_oid).unwrap_or_else(|_| default_config());
     let anchors = anchors_v2.iter().map(|(id, _anchor)| id.clone()).collect();
