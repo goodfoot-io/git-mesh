@@ -1,6 +1,5 @@
 //! `git mesh advice` subcommand — per-`tool_use_id` snapshot/diff that
-//! attributes working-tree changes to the tool call that caused them, plus
-//! corpus-wide mesh suggester output for the `suggest` debug surface.
+//! attributes working-tree changes to the tool call that caused them.
 
 #[cfg(test)]
 mod tests;
@@ -60,8 +59,6 @@ pub enum AdviceCommand {
     /// Remove the session directory and all snapshot artefacts. Best-effort
     /// and idempotent — missing directory is not an error.
     End,
-    /// Corpus-wide debug/parity surface for the n-ary mesh suggester.
-    Suggest,
     /// List repo-relative paths created, updated, or deleted during this
     /// session. Read-only: does not modify any session state.
     Touched,
@@ -76,9 +73,6 @@ pub enum TouchKindArg {
 
 /// Top-level dispatch.
 pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
-    if matches!(args.command, Some(AdviceCommand::Suggest)) {
-        return run_advice_suggest();
-    }
     let session_id = args.session_id.ok_or_else(|| {
         anyhow::anyhow!("git mesh advice: a <SESSION_ID> is required (e.g. `git mesh advice <id>`)")
     })?;
@@ -92,7 +86,6 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
         }
         Some(AdviceCommand::End) => run_advice_end(repo, session_id),
         Some(AdviceCommand::Touched) => run_advice_touched(repo, session_id),
-        Some(AdviceCommand::Suggest) => unreachable!("handled above"),
         None => bail!(
             "git mesh advice: a subcommand is required; run `git mesh advice --help` for usage"
         ),
@@ -1145,243 +1138,6 @@ pub(crate) fn collect_touched_paths(touches_path: &std::path::Path) -> Result<Ve
         }
     }
     Ok(order)
-}
-
-// ── suggest (corpus-wide) ───────────────────────────────────────────────────
-
-pub fn run_advice_suggest_standalone() -> Result<i32> {
-    run_advice_suggest()
-}
-
-fn run_advice_suggest() -> Result<i32> {
-    use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
-
-    let advice_dir_str = std::env::var("GIT_MESH_ADVICE_DIR").unwrap_or_default();
-    if advice_dir_str.is_empty() {
-        bail!(
-            "GIT_MESH_ADVICE_DIR is not set; the suggester is the parity surface \
-             and requires a captured session corpus"
-        );
-    }
-    let advice_dir = std::path::PathBuf::from(&advice_dir_str);
-    if !advice_dir.exists() {
-        bail!(
-            "GIT_MESH_ADVICE_DIR points at a directory that does not exist: `{}`",
-            advice_dir.display()
-        );
-    }
-    let cfg = SuggestConfig::from_env();
-    let sessions = load_all_sessions(&advice_dir)?;
-    if sessions.is_empty() {
-        bail!("{}", no_sessions_error_message(&advice_dir));
-    }
-    let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
-    if fixture_mode {
-        eprintln!(
-            "fixture mode: GIT_MESH_SUGGEST_FIXTURE is set; historical-cochange channel disabled"
-        );
-    }
-    let (repo_opt, repo_root) = if cfg.history_enabled && !fixture_mode {
-        match gix::discover(".") {
-            Ok(repo) => {
-                let root = repo
-                    .workdir()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-                (Some(repo), root)
-            }
-            Err(_) => (None, std::path::PathBuf::from(".")),
-        }
-    } else {
-        (None, std::path::PathBuf::from("."))
-    };
-    let repo_root = if let Ok(override_root) = std::env::var("GIT_MESH_SUGGEST_REPO_ROOT") {
-        if !override_root.is_empty() {
-            std::path::PathBuf::from(override_root)
-        } else {
-            repo_root
-        }
-    } else {
-        repo_root
-    };
-    // Corpus-wide run: no single session dir available for the history cache.
-    let suggestions = run_suggest_pipeline(&sessions, repo_opt.as_ref(), &repo_root, &cfg, None);
-
-    use std::io::Write;
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
-    for s in &suggestions {
-        let line =
-            serde_json::to_string(s).map_err(|e| anyhow::anyhow!("serialize suggestion: {e}"))?;
-        writeln!(handle, "{line}").map_err(|e| anyhow::anyhow!("write suggestion: {e}"))?;
-    }
-    Ok(0)
-}
-
-fn load_jsonl_lines<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<Vec<T>> {
-    use std::io::BufRead;
-    let f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(anyhow::anyhow!("open `{}`: {e}", path.display())),
-    };
-    let mut out = Vec::new();
-    for (idx, line) in std::io::BufReader::new(f).lines().enumerate() {
-        let line = line.map_err(|e| anyhow::anyhow!("read `{}`: {e}", path.display()))?;
-        if line.is_empty() {
-            continue;
-        }
-        let v: T = serde_json::from_str(&line)
-            .map_err(|e| anyhow::anyhow!("parse `{}` line {}: {e}", path.display(), idx + 1))?;
-        out.push(v);
-    }
-    Ok(out)
-}
-
-fn load_all_sessions(dir: &std::path::Path) -> Result<Vec<crate::advice::suggest::SessionRecord>> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
-    let preferred_key: Option<String> = gix::discover(".").ok().and_then(|repo| {
-        let root = repo.workdir().map(|p| p.to_path_buf())?;
-        let git_dir = repo.git_dir().to_path_buf();
-        Some(crate::advice::session::store::repo_key(&root, &git_dir))
-    });
-    let cross_corpus = fixture_mode || preferred_key.is_none();
-
-    fn nested_session_dirs(session_root: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
-        if !session_root.exists() {
-            return Ok(Vec::new());
-        }
-        let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(session_root)
-            .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", session_root.display()))?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-            .map(|e| e.path())
-            .filter(|p| p.join("reads.jsonl").exists() || p.join("touches.jsonl").exists())
-            .collect();
-        dirs.sort();
-        Ok(dirs)
-    }
-
-    fn sessions_from_dirs(
-        dirs: Vec<std::path::PathBuf>,
-    ) -> Result<Vec<crate::advice::suggest::SessionRecord>> {
-        use crate::advice::session::state::{ReadRecord, TouchInterval};
-        use crate::advice::suggest::SessionRecord;
-        let mut sessions = Vec::new();
-        for entry in dirs {
-            let reads_path = entry.join("reads.jsonl");
-            let touches_path = entry.join("touches.jsonl");
-            let sid = entry
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if sid.is_empty() {
-                continue;
-            }
-            let reads = load_jsonl_lines::<ReadRecord>(&reads_path)?;
-            let touches = load_jsonl_lines::<TouchInterval>(&touches_path)?;
-            sessions.push(SessionRecord {
-                sid,
-                reads,
-                touches,
-            });
-        }
-        Ok(sessions)
-    }
-
-    let mut flat_dirs: Vec<std::path::PathBuf> = Vec::new();
-    let mut keyed_sessions: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
-        std::collections::HashMap::new();
-    let first_level: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| anyhow::anyhow!("read_dir `{}`: {e}", dir.display()))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-        .map(|e| e.path())
-        .collect();
-    for entry in first_level {
-        let has_own_session_files =
-            entry.join("reads.jsonl").exists() || entry.join("touches.jsonl").exists();
-        let nested = nested_session_dirs(&entry)?;
-        let has_nested_sessions = !nested.is_empty();
-        match (has_own_session_files, has_nested_sessions) {
-            (true, false) => flat_dirs.push(entry),
-            (false, true) => {
-                let key = entry
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                keyed_sessions.entry(key).or_default().extend(nested);
-            }
-            (true, true) => {
-                eprintln!(
-                    "git mesh advice suggest: warning: `{}` contains both session files \
-                     (reads.jsonl/touches.jsonl) and session subdirectories; \
-                     treating as a repo-key directory (nested sessions preferred)",
-                    entry.display()
-                );
-                let key = entry
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                keyed_sessions.entry(key).or_default().extend(nested);
-            }
-            (false, false) => {}
-        }
-    }
-    let mut chosen_dirs: Vec<std::path::PathBuf> = Vec::new();
-    if cross_corpus {
-        chosen_dirs.extend(flat_dirs);
-        for (_, dirs) in keyed_sessions {
-            chosen_dirs.extend(dirs);
-        }
-    } else {
-        if !flat_dirs.is_empty() {
-            eprintln!(
-                "warning: skipping {} top-level flat session dir(s) under `{}` \
-                 (only sessions under `{}/{}` are eligible in strict mode; \
-                 set GIT_MESH_SUGGEST_FIXTURE=1 to include them)",
-                flat_dirs.len(),
-                dir.display(),
-                dir.display(),
-                preferred_key.as_deref().unwrap_or("<repo-key>"),
-            );
-        }
-        let pk = preferred_key.as_deref().unwrap_or("");
-        if let Some(dirs) = keyed_sessions.remove(pk) {
-            chosen_dirs.extend(dirs);
-        }
-    }
-    chosen_dirs.sort();
-    sessions_from_dirs(chosen_dirs)
-}
-
-pub(crate) fn no_sessions_error_message(advice_dir: &std::path::Path) -> String {
-    let preferred_key: Option<String> = gix::discover(".").ok().and_then(|repo| {
-        let root = repo.workdir().map(|p| p.to_path_buf())?;
-        let git_dir = repo.git_dir().to_path_buf();
-        Some(crate::advice::session::store::repo_key(&root, &git_dir))
-    });
-    let fixture_mode = std::env::var("GIT_MESH_SUGGEST_FIXTURE").as_deref() == Ok("1");
-    match (preferred_key, fixture_mode) {
-        (Some(key), false) => format!(
-            "no sessions found under `{}/{key}`; a session directory must contain \
-             reads.jsonl or touches.jsonl",
-            advice_dir.display()
-        ),
-        (None, false) => format!(
-            "no sessions found under `{}` (running outside a repo: cross-corpus mode); \
-             a session directory must contain reads.jsonl or touches.jsonl",
-            advice_dir.display()
-        ),
-        _ => format!(
-            "no sessions found under `{}`; a session directory must contain \
-             reads.jsonl or touches.jsonl",
-            advice_dir.display()
-        ),
-    }
 }
 
 // ── validation ───────────────────────────────────────────────────────────────

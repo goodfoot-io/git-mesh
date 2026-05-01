@@ -85,20 +85,6 @@ fn run() -> Result<i32> {
     let cli = Cli::parse();
     git_mesh::perf::init(cli.perf);
 
-    // The hidden `git mesh advice suggest` subcommand does not need a git
-    // repository — it reads sessions from GIT_MESH_ADVICE_DIR and emits JSONL
-    // to stdout. Intercept here before `discover_repo` so the binary works
-    // outside a worktree (e.g. in the parity test fixtures).
-    if let Some(cli::Commands::Advice(ref advice_args)) = cli.command
-        && matches!(
-            advice_args.command,
-            Some(cli::advice::AdviceCommand::Suggest)
-        )
-    {
-        let _perf = git_mesh::perf::span("command.advice.suggest");
-        return cli::advice::run_advice_suggest_standalone();
-    }
-
     let repo = discover_repo()?;
     match cli.command {
         Some(cmd) => cli::dispatch(&repo, cmd),
