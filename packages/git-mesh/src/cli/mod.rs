@@ -418,6 +418,11 @@ pub struct DoctorArgs {
     /// Promote INFO and WARN findings to a non-zero exit.
     #[arg(long)]
     pub strict: bool,
+    /// Sweep orphan trail-cache files left by anchors that no longer exist
+    /// and stale tempfiles older than one hour. Runs additively to the
+    /// normal doctor checks.
+    #[arg(long)]
+    pub gc_trail_cache: bool,
 }
 
 /// Parse a `<path>#L<start>-L<end>` anchor address.

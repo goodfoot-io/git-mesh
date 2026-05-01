@@ -330,6 +330,7 @@ fn apply_compact_attempt(
     let mut compacted_by_id: HashMap<String, crate::types::Anchor> = HashMap::new();
     let mut unchanged_by_id: HashMap<String, crate::types::Anchor> = HashMap::new();
     let mut anchor_records: Vec<AnchorCompactRecord> = Vec::with_capacity(resolved.anchors.len());
+    let mut advanced_old_anchor_shas: Vec<String> = Vec::new();
     let mut advanced = 0u32;
     let mut skipped_stale = 0u32;
     let mut skipped_moved = 0u32;
@@ -374,6 +375,7 @@ fn apply_compact_attempt(
                     old_blob: old_anchor.blob.clone(),
                     new_blob: Some(blob),
                 });
+                advanced_old_anchor_shas.push(old_anchor.anchor_sha.clone());
                 compacted_by_id.insert(ar.anchor_id.clone(), new_anchor);
                 advanced += 1;
             }
@@ -509,19 +511,26 @@ fn apply_compact_attempt(
     crate::git::ensure_log_all_ref_updates_always(repo)?;
 
     match apply_ref_transaction(wd, &updates) {
-        Ok(()) => Ok(AttemptResult::Done(MeshCompactOutcome {
-            name: name.to_string(),
-            advanced,
-            skipped_stale,
-            skipped_moved,
-            skipped_clean_not_head,
-            skipped_staged: 0,
-            conflicts: 0,
-            errors: 0,
-            anchors: anchor_records,
-            hard_error: None,
-            staged_ops_present: false,
-        })),
+        Ok(()) => {
+            for sha in &advanced_old_anchor_shas {
+                if let Err(e) = crate::resolver::trail_cache::clear(repo, sha) {
+                    eprintln!("git-mesh: trail_cache::clear failed for {sha}: {e}");
+                }
+            }
+            Ok(AttemptResult::Done(MeshCompactOutcome {
+                name: name.to_string(),
+                advanced,
+                skipped_stale,
+                skipped_moved,
+                skipped_clean_not_head,
+                skipped_staged: 0,
+                conflicts: 0,
+                errors: 0,
+                anchors: anchor_records,
+                hard_error: None,
+                staged_ops_present: false,
+            }))
+        }
         Err(_) => Ok(AttemptResult::CasConflict {
             skipped_stale,
             skipped_moved,
