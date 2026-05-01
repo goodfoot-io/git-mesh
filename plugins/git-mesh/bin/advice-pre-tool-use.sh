@@ -16,7 +16,7 @@ tuid="$(hook_field '.tool_use_id')"
 tool="$(hook_field '.tool_name')"
 
 case "$tool" in
-  Read|Grep|Glob|LS|WebFetch|WebSearch) exit 0 ;;
+  Read|Grep|Glob|LS|WebFetch|WebSearch|Edit|Write|MultiEdit) exit 0 ;;
 esac
 
 cwd="$(hook_field '.cwd')"

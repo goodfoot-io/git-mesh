@@ -221,15 +221,17 @@ assert_stdout_empty "PostToolUse(Glob)"
 # now emits inline at PostToolUse via additionalContext.
 
 # ---------------------------------------------------------------------------
-# Test 8: PostToolUse without a matching mark is a silent no-op.
+# Test 8: PostToolUse Write emits advice via the payload-driven `touch` verb
+# without any prior `mark`. Edit/Write/MultiEdit are exempt from the mark
+# snapshot — `tool_response.type` (absent here) defaults to `modified`.
 # ---------------------------------------------------------------------------
-log "Test 8: PostToolUse with no prior mark is a silent no-op"
+log "Test 8: PostToolUse Write emits advice via touch with no prior mark"
 REPO8="$(make_repo repo8)"
 PAYLOAD8="$(jq -nc --arg c "$REPO8" \
   '{session_id:"never-marked", transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t8", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD8"
 assert_rc_zero "PostToolUse(no mark)"
-assert_stdout_empty "PostToolUse(no mark)"
+assert_stdout_contains "PostToolUse(no mark)" "demo mesh"
 
 # Test 9 is deleted: it tested PostToolUse Write resolving the repo from the
 # file path — Write is no longer in the PostToolUse matcher and has no
