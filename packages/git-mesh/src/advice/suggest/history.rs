@@ -2,10 +2,16 @@
 //!
 //! Loads git history via `git::git_log_name_only` (no subprocess) and builds
 //! a per-path commit index with recency-decay weights.
+//!
+//! When `session_dir` is provided the result is cached to
+//! `<session_dir>/history_cache.json` so repeated flushes within the same
+//! session skip the walk entirely.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::advice::suggest::SuggestConfig;
+use crate::advice::suggest::history_cache;
 use crate::{Result, git};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -46,14 +52,35 @@ pub struct HistoryIndex {
 /// Per-commit `mass_refactor_cap` (p90 auto-tune): qualifying commits whose
 /// total changed-path count exceeds the cap are excluded from the index but
 /// still count toward the `n`-qualifying-commit budget used during the walk.
+///
+/// When `session_dir` is `Some`, the result is read from / written to
+/// `<session_dir>/history_cache.json` so repeated flushes within the same
+/// session skip the git walk entirely. Cache misses and write errors degrade
+/// silently to a full rebuild / in-memory-only result.
 pub fn load_git_history(
     repo: &gix::Repository,
     seed_paths: &[String],
     cfg: &SuggestConfig,
+    session_dir: Option<&Path>,
 ) -> Result<HistoryIndex> {
     let fallback = HistoryIndex::default();
     if !cfg.history_enabled || seed_paths.is_empty() {
         return Ok(fallback);
+    }
+
+    // Resolve current HEAD SHA for cache validation.
+    let head_sha: String = repo
+        .head_id()
+        .ok()
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+
+    // Try to serve from session-local cache before touching git history.
+    if let Some(dir) = session_dir
+        && !head_sha.is_empty()
+        && let Some(cached) = history_cache::try_load(dir, &head_sha, seed_paths, cfg)
+    {
+        return Ok(cached);
     }
 
     // Walk only commits that touch at least one seed path.
@@ -103,13 +130,22 @@ pub fn load_git_history(
         }
     }
 
-    Ok(HistoryIndex {
+    let index = HistoryIndex {
         available: true,
         commits_by_path,
         commit_weight,
         total_commits: total_kept,
         mass_refactor_cap,
-    })
+    };
+
+    // Persist to session-local cache so subsequent flushes skip the walk.
+    if let Some(dir) = session_dir
+        && !head_sha.is_empty()
+    {
+        history_cache::try_write(dir, &head_sha, seed_paths, cfg, &index);
+    }
+
+    Ok(index)
 }
 
 /// Score a (path_a, path_b) pair against the history index.

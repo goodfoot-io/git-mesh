@@ -142,7 +142,7 @@ fn load_git_history_builds_correct_index() {
     let (_td, repo) = seed_repo_with_history();
     let paths = vec!["a.rs".to_string(), "b.rs".to_string()];
     let cfg = SuggestConfig::default();
-    let history = load_git_history(&repo, &paths, &cfg).unwrap();
+    let history = load_git_history(&repo, &paths, &cfg, None).unwrap();
     assert!(history.available);
     // a.rs should appear in 2 commits.
     let a_count = history.commits_by_path.get("a.rs").map_or(0, |s| s.len());

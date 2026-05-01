@@ -6,6 +6,7 @@
 //! which accepts pre-loaded `SessionRecord`s and an optional git repo.
 
 pub mod apriori;
+pub(crate) mod history_cache;
 pub mod band;
 pub mod canonical;
 pub mod cliques;
@@ -158,12 +159,15 @@ impl SuggestConfig {
 
 /// Run the full v4 suggest pipeline and return scored `Suggestion`s.
 ///
-/// `sessions`   — pre-loaded session records (reads + touches).
-/// `repo`       — optional git repository for the history channel.
-/// `repo_root`  — filesystem root used for file I/O in the cohesion stage.
-///                Pass the worktree root when a real repo is available,
-///                or any path when history is disabled (cohesion reads will
-///                silently return empty tokens).
+/// `sessions`    — pre-loaded session records (reads + touches).
+/// `repo`        — optional git repository for the history channel.
+/// `repo_root`   — filesystem root used for file I/O in the cohesion stage.
+///                 Pass the worktree root when a real repo is available,
+///                 or any path when history is disabled (cohesion reads will
+///                 silently return empty tokens).
+/// `session_dir` — optional path to the session directory used to cache the
+///                 git history walk across repeated flushes. Pass `None` when
+///                 no session-local cache is desired (e.g. corpus-wide runs).
 ///
 /// This is the primary entry point for parity testing and the CLI
 /// `git mesh advice <id> suggest` subcommand.
@@ -172,6 +176,7 @@ pub fn run_suggest_pipeline(
     repo: Option<&gix::Repository>,
     repo_root: &Path,
     cfg: &SuggestConfig,
+    session_dir: Option<&Path>,
 ) -> Vec<Suggestion> {
     if sessions.is_empty() {
         return Vec::new();
@@ -225,7 +230,7 @@ pub fn run_suggest_pipeline(
     let history = if cfg.history_enabled {
         if let Some(r) = repo {
             let all_paths: Vec<String> = canonical.ranges.iter().map(|r| r.path.clone()).collect();
-            match load_git_history(r, &all_paths, cfg) {
+            match load_git_history(r, &all_paths, cfg, session_dir) {
                 Ok(h) => h,
                 Err(_) => {
                     effective_cfg.history_enabled = false;

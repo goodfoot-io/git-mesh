@@ -594,7 +594,7 @@ fn process_touches(
         };
         if !sessions.is_empty() {
             let cfg = SuggestConfig::from_env();
-            let suggestions = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg);
+            let suggestions = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg, Some(store.dir()));
             let advice_seen = store.advice_seen_set()?;
             for sug in &suggestions {
                 use crate::advice::suggestion::ConfidenceBand;
@@ -1186,7 +1186,8 @@ fn run_advice_suggest() -> Result<i32> {
     } else {
         repo_root
     };
-    let suggestions = run_suggest_pipeline(&sessions, repo_opt.as_ref(), &repo_root, &cfg);
+    // Corpus-wide run: no single session dir available for the history cache.
+    let suggestions = run_suggest_pipeline(&sessions, repo_opt.as_ref(), &repo_root, &cfg, None);
 
     use std::io::Write;
     let stdout = std::io::stdout();
