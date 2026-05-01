@@ -246,7 +246,7 @@ fn staging_only_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.contains('.') {
-            out.push(name);
+            out.push(crate::staging::decode_name_from_fs(&name));
         }
     }
     out.sort();
@@ -401,10 +401,25 @@ fn render_human(
             .iter()
             .filter(|f| f.status != AnchorStatus::Fresh)
             .count();
-        println!(
-            "Mesh {} has {} out of {} stale anchors:",
-            m.name, mesh_stale, mesh_total
-        );
+        let pending_adds = mesh_pending
+            .iter()
+            .filter(|p| matches!(p, PendingFinding::Add { .. }))
+            .count();
+        if mesh_total == 0 {
+            if pending_adds > 0 {
+                println!(
+                    "Mesh {} has no committed anchors yet ({} pending):",
+                    m.name, pending_adds
+                );
+            } else {
+                println!("Mesh {} has no anchors.", m.name);
+            }
+        } else {
+            println!(
+                "Mesh {} has {} out of {} stale anchors:",
+                m.name, mesh_stale, mesh_total
+            );
+        }
         println!();
         if options.stat {
             for f in &mesh_findings {
@@ -449,51 +464,39 @@ fn render_human(
                 }
             }
         }
-        // Pending adds/removes (trailing in the mesh's section).
-        let pending_drift_section: Vec<&&PendingFinding> = mesh_pending
-            .iter()
-            .filter(|p| {
-                matches!(
-                    p,
-                    PendingFinding::Add { .. } | PendingFinding::Remove { .. }
-                )
-            })
-            .collect();
-        if !pending_drift_section.is_empty() {
-            println!();
-            println!("Pending mesh ops:");
-            for p in &pending_drift_section {
-                match p {
-                    PendingFinding::Add {
-                        anchor_id,
-                        op,
-                        drift,
-                        ..
-                    } => {
-                        let drift_note = drift_note(drift.as_ref());
-                        println!(
-                            "  ADD    {}{}{}",
-                            render_path_extent_human(std::path::Path::new(&op.path), op.extent),
-                            render_pending_range_id(anchor_id),
-                            drift_note,
-                        );
-                    }
-                    PendingFinding::Remove {
-                        anchor_id,
-                        op,
-                        drift,
-                        ..
-                    } => {
-                        let drift_note = drift_note(drift.as_ref());
-                        println!(
-                            "  REMOVE {}{}{}",
-                            render_path_extent_human(std::path::Path::new(&op.path), op.extent),
-                            render_pending_range_id(anchor_id),
-                            drift_note,
-                        );
-                    }
-                    _ => {}
+        // Pending adds/removes — rendered inline with the same
+        // `- <path> (<Status>)` shape as committed anchor findings.
+        for p in &mesh_pending {
+            match p {
+                PendingFinding::Add {
+                    anchor_id,
+                    op,
+                    drift,
+                    ..
+                } => {
+                    let drift_note = drift_note(drift.as_ref());
+                    println!(
+                        "- {}{} (Pending add){}",
+                        render_path_extent_human(std::path::Path::new(&op.path), op.extent),
+                        render_pending_range_id(anchor_id),
+                        drift_note,
+                    );
                 }
+                PendingFinding::Remove {
+                    anchor_id,
+                    op,
+                    drift,
+                    ..
+                } => {
+                    let drift_note = drift_note(drift.as_ref());
+                    println!(
+                        "- {}{} (Pending remove){}",
+                        render_path_extent_human(std::path::Path::new(&op.path), op.extent),
+                        render_pending_range_id(anchor_id),
+                        drift_note,
+                    );
+                }
+                _ => {}
             }
         }
         // Informational pending (Why / ConfigChange) — never drives exit.
@@ -506,19 +509,19 @@ fn render_human(
                 )
             })
             .collect();
-        if !info.is_empty() {
-            println!();
-            println!("Pending mesh metadata:");
-            for p in &info {
-                match p {
-                    PendingFinding::Why { body, .. } => {
-                        println!("  why: {body}");
-                    }
-                    PendingFinding::ConfigChange { change, .. } => {
-                        println!("  config:  {}", config_str(change));
-                    }
-                    _ => {}
+        for p in &info {
+            match p {
+                PendingFinding::Why { body, .. } => {
+                    println!();
+                    println!("[Why]");
+                    println!("{body}");
                 }
+                PendingFinding::ConfigChange { change, .. } => {
+                    println!();
+                    println!("[Config]");
+                    println!("{}", config_str(change));
+                }
+                _ => {}
             }
         }
         println!();

@@ -208,8 +208,10 @@ fn discovery_human_includes_staging_only_mesh() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("Mesh new-mesh"), "stdout={text}");
-    assert!(text.contains("Pending mesh ops:"), "stdout={text}");
-    assert!(text.contains("ADD    file1.txt#L1-L5"), "stdout={text}");
+    assert!(
+        text.contains("file1.txt#L1-L5 (Pending add)"),
+        "stdout={text}"
+    );
     Ok(())
 }
 
@@ -266,8 +268,14 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
     repo.mesh_stdout(["rm", "m", "file1.txt#L1-L5"])?;
 
     let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
-    assert!(out.contains("ADD    file2.txt#L1-L5"), "stdout={out}");
-    assert!(out.contains("REMOVE file1.txt#L1-L5"), "stdout={out}");
+    assert!(
+        out.contains("file2.txt#L1-L5 (Pending add)"),
+        "stdout={out}"
+    );
+    assert!(
+        out.contains("file1.txt#L1-L5 (Pending remove)"),
+        "stdout={out}"
+    );
     assert!(
         !out.contains("file2.txt L1-L5") && !out.contains("file1.txt L1-L5"),
         "pending ops should use anchor-address syntax: {out}"
@@ -314,7 +322,9 @@ fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
     let out = repo.mesh_stdout(["stale", "new-mesh", "--no-exit-code"])?;
     assert!(out.contains("Mesh new-mesh"), "stdout={out}");
-    assert!(out.contains("Pending mesh ops:"), "stdout={out}");
-    assert!(out.contains("ADD    file1.txt#L1-L5"), "stdout={out}");
+    assert!(
+        out.contains("file1.txt#L1-L5 (Pending add)"),
+        "stdout={out}"
+    );
     Ok(())
 }
