@@ -532,24 +532,46 @@ fn render_human(
                 )
             })
             .collect();
-        // Prefer the committed why on the mesh ref. The pending Why
-        // (if any) is shown afterwards so a staged edit is visible
-        // alongside the live message.
+        // Prefer the committed why on the mesh ref. If a pending Why
+        // edits it, render an old/new diff block instead of printing
+        // the committed why followed by the new body — that makes the
+        // change explicit.
         let trimmed_why = m.message.trim();
-        if !trimmed_why.is_empty() {
-            println!();
-            println!("{trimmed_why}");
+        let pending_why_body: Option<&str> = info.iter().find_map(|p| match p {
+            PendingFinding::Why { body, .. } => {
+                let t = body.trim();
+                if t == trimmed_why { None } else { Some(t) }
+            }
+            _ => None,
+        });
+        match (trimmed_why.is_empty(), pending_why_body) {
+            (true, None) => {}
+            (false, None) => {
+                println!();
+                println!("{trimmed_why}");
+            }
+            (true, Some(new_body)) => {
+                println!();
+                println!("{new_body}");
+            }
+            (false, Some(new_body)) => {
+                println!();
+                println!("Why updated from:");
+                println!();
+                println!("```old");
+                println!("{trimmed_why}");
+                println!("```");
+                println!();
+                println!("to:");
+                println!();
+                println!("```new");
+                println!("{new_body}");
+                println!("```");
+            }
         }
         for p in &info {
             match p {
-                PendingFinding::Why { body, .. } => {
-                    let trimmed_body = body.trim();
-                    if trimmed_body == trimmed_why {
-                        continue;
-                    }
-                    println!();
-                    println!("{trimmed_body}");
-                }
+                PendingFinding::Why { .. } => {}
                 PendingFinding::ConfigChange { change, .. } => {
                     println!();
                     println!("{}", config_str(change));
