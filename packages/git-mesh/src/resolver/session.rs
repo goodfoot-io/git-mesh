@@ -76,8 +76,15 @@ pub(crate) struct GroupedWalk {
     /// Pass 1's closed rename-trail set: every historical name any
     /// candidate path has had in the in-range history. Cached on the
     /// walk so a future cross-invocation cache (Route C) can persist it
-    /// without restructuring. `None` when no candidate seed was provided
-    /// (single-anchor / test fallback path that runs without Pass 1).
+    /// without restructuring.
+    ///
+    /// `None` semantics:
+    /// - No candidate seed was provided (single-anchor / test fallback
+    ///   path bypassed Pass 1 entirely).
+    /// - Pass 1 ran but fell back (`AnyFileInRepo`, rename-budget
+    ///   exhaustion). The seed alone does not satisfy the
+    ///   "every historical name" contract, so the field is dropped
+    ///   rather than handed downstream as if it were a real closure.
     #[allow(dead_code)]
     pub(crate) closed_paths: Option<HashSet<String>>,
 }
@@ -210,6 +217,22 @@ fn build_grouped_walk(
         git::rev_walk_excluding(repo, &[&head_sha], &[anchor_sha], None).unwrap_or_default();
     commits.reverse(); // oldest-first
 
+    // Walk-order parent map: each commit's "parent" for rename detection
+    // is the commit immediately preceding it in the reversed `rev_walk`
+    // output, with the anchor as the parent of the first commit.
+    // `compute_rename_trail` consumes this same map so Pass 1's per-commit
+    // gix `name_status` always diffs against the same baseline that Pass
+    // 2's `build_grouped_walk` loop uses — important on merge commits,
+    // where first-parent and walk-order can disagree.
+    let mut walk_parents: HashMap<String, String> = HashMap::with_capacity(commits.len());
+    {
+        let mut prev = anchor_sha.to_string();
+        for commit in &commits {
+            walk_parents.insert(commit.clone(), prev.clone());
+            prev = commit.clone();
+        }
+    }
+
     // Pass 1: rename-trail closure. Caller-supplied seed + iterative
     // `git log --name-status` queries until the path set stops growing.
     // When no seed is provided (single-anchor / test fallback) the gate
@@ -217,9 +240,16 @@ fn build_grouped_walk(
     let (closed_paths, interesting_set, pass1_fell_back) = match candidate_paths {
         Some(seed) => {
             let t0 = std::time::Instant::now();
-            let result = compute_rename_trail(repo, anchor_sha, seed, copy_detection, warnings)?;
+            let (closed, interesting, fell_back) =
+                compute_rename_trail(repo, anchor_sha, seed, copy_detection, &walk_parents, warnings)?;
             *pass1_ms_counter += t0.elapsed().as_millis() as u64;
-            (Some(result.0), Some(result.1), result.2)
+            // On fallback, `closed` is just the seed (or a partial set) —
+            // not the authoritative trail closure the field's contract
+            // promises. Drop it so future cache consumers (Route C) can
+            // distinguish "trail closed" from "trail unknown" without
+            // mistaking a seed-only result for a real closure.
+            let cached_closed = if fell_back { None } else { Some(closed) };
+            (cached_closed, Some(interesting), fell_back)
         }
         None => (None, None, false),
     };
@@ -281,9 +311,14 @@ fn build_grouped_walk(
 ///    subtrees and skips rename detection entirely.
 /// 2. **Per-commit rename detection in-process via gix.** For each
 ///    touched commit, [`walker::name_status`] is called against the
-///    commit's first parent (no subprocess overhead). New rename/copy
-///    pairs that intersect the trail grow `closed_paths`; the loop
-///    iterates to fixed point.
+///    commit's *walk-order* parent — the same baseline Pass 2 uses, so
+///    the rename rows Pass 1 surfaces are exactly the rows Pass 2's
+///    [`walker::advance_with_entries`] will encounter. (On merge
+///    commits the walk-order predecessor is whichever parent the gix
+///    rev-walk emitted next; that may differ from `commit^1`, but it's
+///    the only baseline whose entries Pass 2 actually consumes.) New
+///    rename/copy pairs that intersect the trail grow `closed_paths`;
+///    the loop iterates to fixed point.
 /// 3. **Phase B for `AnyFileInCommit`.** Copies whose source was *not*
 ///    modified in the commit can't be detected from the cheap pass at
 ///    all; a single full-range `-C -C` `git log` scan completes the
@@ -303,6 +338,7 @@ fn compute_rename_trail(
     anchor_sha: &str,
     seed: &HashSet<String>,
     copy_detection: CopyDetection,
+    walk_parents: &HashMap<String, String>,
     warnings: &mut Vec<String>,
 ) -> Result<(HashSet<String>, HashSet<String>, bool)> {
     let range = format!("{anchor_sha}..HEAD");
@@ -314,9 +350,15 @@ fn compute_rename_trail(
 
     let mut closed: HashSet<String> = seed.clone();
     let mut interesting: HashSet<String> = HashSet::new();
-    // Commits already passed through per-commit rename detection. Avoids
-    // re-running gix `name_status` on the same commit across iterations.
+    // Per-commit cache of `(from, to)` rename + copy pairs from gix
+    // `name_status`, populated once per commit on first inspection.
+    // Pairs are kept in a flat list so the fixed-point loop can revisit
+    // them every iteration — both across commits AND within a single
+    // commit's entry list (intra-commit rename chains like
+    // `R foo→a; R a→b` only converge after both pairs are re-scanned in
+    // the iteration where `closed` grew to include the prerequisite).
     let mut inspected: HashSet<String> = HashSet::new();
+    let mut all_pairs: Vec<(String, String)> = Vec::new();
 
     loop {
         let paths: Vec<String> = closed.iter().cloned().collect();
@@ -330,37 +372,52 @@ fn compute_rename_trail(
         // (--no-renames means "renames disabled" is meaningless here; the
         // budget warning fires only with -M / -C.)
 
-        let mut grew = false;
         for row in rows {
             interesting.insert(row.commit.clone());
             if !inspected.insert(row.commit.clone()) {
                 continue;
             }
-            // Pathspec clipping can hide a rename/copy pair when only one
-            // side matches `closed`. Per-commit rename detection runs
-            // in-process via gix (no subprocess overhead) against the
-            // commit's first parent.
-            let Some(parent) = first_parent_oid(repo, &row.commit) else {
+            // Pathspec clipping can hide a rename/copy pair when only
+            // one side matches `closed`. Per-commit rename detection
+            // runs in-process via gix (no subprocess overhead) against
+            // the commit's walk-order parent — the same baseline Pass 2
+            // uses, so the rename rows Pass 1 surfaces are exactly the
+            // ones Pass 2's `walker::advance_with_entries` will see.
+            // The pairs join the flat `all_pairs` list so the
+            // fixed-point loop below can grow `closed` regardless of
+            // intra- or inter-commit chain ordering.
+            let Some(parent) = walk_parents.get(&row.commit) else {
+                // Touched commit not in the gix walk (set-agreement
+                // gap between `git log` and `gix::rev_walk`); skip.
                 continue;
             };
             let entries =
-                walker::name_status(repo, &parent, &row.commit, copy_detection, warnings)?;
+                walker::name_status(repo, parent, &row.commit, copy_detection, warnings)?;
             for e in &entries {
-                let pair = match e {
-                    NS::Renamed { from, to } | NS::Copied { from, to } => Some((from, to)),
-                    _ => None,
-                };
-                if let Some((from, to)) = pair
-                    && (closed.contains(from) || closed.contains(to))
-                {
+                if let NS::Renamed { from, to } | NS::Copied { from, to } = e {
+                    all_pairs.push((from.clone(), to.clone()));
+                }
+            }
+        }
+
+        // Fixed-point closure across every pair seen so far.
+        let mut grew = false;
+        loop {
+            let mut grew_inner = false;
+            for (from, to) in &all_pairs {
+                if closed.contains(from) || closed.contains(to) {
                     if closed.insert(from.clone()) {
-                        grew = true;
+                        grew_inner = true;
                     }
                     if closed.insert(to.clone()) {
-                        grew = true;
+                        grew_inner = true;
                     }
                 }
             }
+            if !grew_inner {
+                break;
+            }
+            grew = true;
         }
         if !grew {
             break;
@@ -429,16 +486,6 @@ fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
 }
 
-/// First-parent OID for `commit`, or `None` for root commits / unresolvable
-/// IDs. Used by Pass 1 to compute per-commit rename detection against the
-/// canonical parent rather than the walk-order predecessor.
-fn first_parent_oid(repo: &gix::Repository, commit: &str) -> Option<String> {
-    use std::str::FromStr;
-    let oid = gix::ObjectId::from_str(commit).ok()?;
-    let c = repo.find_commit(oid).ok()?;
-    let parent = c.parent_ids().next()?;
-    Some(parent.detach().to_string())
-}
 
 /// Shared replacement for `walker::resolve_at_head`. Consumes deltas from
 /// the session's grouped walk instead of running its own rev_walk +
@@ -761,6 +808,63 @@ mod candidate_filter_tests {
             &mut warnings,
         );
         assert_eq!(new_path.as_deref(), Some("baz.rs"));
+    }
+
+    /// Merge-commit baseline alignment: a rename that lives on a
+    /// side-branch (parent P2) reaches HEAD only after a non-fast-forward
+    /// merge. Pass 1 must diff the merge commit against the *same*
+    /// parent Pass 2's `advance_with_entries` will see; otherwise the
+    /// rename row is invisible on one or both passes and the anchor
+    /// reports `Orphaned`.
+    #[test]
+    fn merge_commit_rename_is_visible_to_both_passes() {
+        let td = init_repo();
+        let dir = td.path();
+        let content: String = (1..=30).map(|i| format!("line_{i}\n")).collect();
+        commit_file(dir, "foo.rs", &content, "init foo");
+        let anchor_sha = rev_parse(dir, "HEAD");
+        // Mainline: a noise commit that doesn't touch foo.rs.
+        commit_file(dir, "main_noise.txt", "x\n", "main noise");
+        let main_tip = rev_parse(dir, "HEAD");
+        // Side branch from anchor: rename foo.rs → bar.rs.
+        run_git(dir, &["checkout", "-q", "-b", "side", &anchor_sha]);
+        std::fs::rename(dir.join("foo.rs"), dir.join("bar.rs")).unwrap();
+        run_git(dir, &["add", "-A"]);
+        run_git(dir, &["commit", "-m", "side: rename foo to bar"]);
+        // Merge side into main with --no-ff so the merge commit is real.
+        run_git(dir, &["checkout", "-q", "main"]);
+        run_git(dir, &["reset", "-q", "--hard", &main_tip]);
+        run_git(dir, &["merge", "--no-ff", "-m", "merge side", "side"]);
+
+        let repo = gix::open(dir).unwrap();
+        let mut session = ResolveSession::new();
+        let mut candidate = HashSet::new();
+        candidate.insert("foo.rs".to_string());
+        let mut warnings = Vec::new();
+        session
+            .prepare_group(
+                &repo,
+                &anchor_sha,
+                CopyDetection::Off,
+                &candidate,
+                &mut warnings,
+            )
+            .unwrap();
+        // The trail must reach bar.rs regardless of which parent the
+        // merge commit is diffed against.
+        let new_path = follow_path_to_head_shared(
+            &repo,
+            &mut session,
+            &anchor_sha,
+            "foo.rs",
+            CopyDetection::Off,
+            &mut warnings,
+        );
+        assert_eq!(
+            new_path.as_deref(),
+            Some("bar.rs"),
+            "side-branch rename foo.rs → bar.rs must be observed across the merge"
+        );
     }
 
     /// (d) Two anchors share a walk via the same candidate-path union.
