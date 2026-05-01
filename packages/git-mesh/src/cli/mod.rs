@@ -386,8 +386,8 @@ pub struct ConfigArgs {
     pub name: String,
 
     #[arg(
-        help = "Config key. Omit to print all keys. Known: copy-detection, ignore-whitespace",
-        long_help = "Config key. Omit to print all keys. Known keys:\n  copy-detection     off | same-file | same-commit | any\n  ignore-whitespace  true | false"
+        help = "Config key. Omit to print all keys. Known: copy-detection, ignore-whitespace, follow-moves",
+        long_help = "Config key. Omit to print all keys. Known keys:\n  copy-detection     off | same-file | same-commit | any\n  ignore-whitespace  true | false\n  follow-moves       true | false"
     )]
     pub key: Option<String>,
 

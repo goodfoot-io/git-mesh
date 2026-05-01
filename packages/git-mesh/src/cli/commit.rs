@@ -387,6 +387,9 @@ pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
                 "ignore-whitespace" => {
                     StagedConfig::IgnoreWhitespace(crate::types::DEFAULT_IGNORE_WHITESPACE)
                 }
+                "follow-moves" => {
+                    StagedConfig::FollowMoves(crate::types::DEFAULT_FOLLOW_MOVES)
+                }
                 other => return Err(anyhow!("unknown config key `{other}`")),
             };
             crate::staging::append_config(repo, &args.name, &entry)?;
@@ -394,12 +397,13 @@ pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
         }
         (None, None, _) => {
             let staging = crate::staging::read_staging(repo, &args.name).unwrap_or_default();
-            let (staged_cd, staged_iw) = crate::staging::resolve_staged_config(
+            let (staged_cd, staged_iw, staged_fm) = crate::staging::resolve_staged_config(
                 &staging,
-                (mesh.config.copy_detection, mesh.config.ignore_whitespace),
+                (mesh.config.copy_detection, mesh.config.ignore_whitespace, mesh.config.follow_moves),
             );
             let cd_changed = staged_cd != mesh.config.copy_detection;
             let iw_changed = staged_iw != mesh.config.ignore_whitespace;
+            let fm_changed = staged_fm != mesh.config.follow_moves;
             println!(
                 "{}copy-detection {}{}",
                 if cd_changed { "* " } else { "" },
@@ -412,12 +416,19 @@ pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
                 staged_iw,
                 if iw_changed { " (staged)" } else { "" }
             );
+            println!(
+                "{}follow-moves {}{}",
+                if fm_changed { "* " } else { "" },
+                staged_fm,
+                if fm_changed { " (staged)" } else { "" }
+            );
             Ok(0)
         }
         (None, Some(key), None) => {
             match key.as_str() {
                 "copy-detection" => println!("{}", cd_str(mesh.config.copy_detection)),
                 "ignore-whitespace" => println!("{}", mesh.config.ignore_whitespace),
+                "follow-moves" => println!("{}", mesh.config.follow_moves),
                 other => return Err(anyhow!("unknown config key `{other}`")),
             }
             Ok(0)
@@ -435,6 +446,11 @@ pub fn run_config(repo: &gix::Repository, args: ConfigArgs) -> Result<i32> {
                     "true" => true,
                     "false" => false,
                     _ => return Err(anyhow!("invalid ignore-whitespace value `{value}`")),
+                }),
+                "follow-moves" => StagedConfig::FollowMoves(match value.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(anyhow!("invalid follow-moves value `{value}`")),
                 }),
                 other => return Err(anyhow!("unknown config key `{other}`")),
             };

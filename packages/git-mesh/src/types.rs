@@ -59,10 +59,12 @@ pub enum CopyDetection {
 pub struct MeshConfig {
     pub copy_detection: CopyDetection,
     pub ignore_whitespace: bool,
+    pub follow_moves: bool,
 }
 
 pub const DEFAULT_COPY_DETECTION: CopyDetection = CopyDetection::SameCommit;
 pub const DEFAULT_IGNORE_WHITESPACE: bool = false;
+pub const DEFAULT_FOLLOW_MOVES: bool = false;
 
 /// A Mesh is a commit whose tree contains `anchors` and `config` files
 /// and whose commit message is the Mesh's message.

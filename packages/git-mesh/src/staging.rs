@@ -18,8 +18,8 @@
 
 use crate::git;
 use crate::types::{
-    AnchorExtent, CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE,
-    NormalizationStamp,
+    AnchorExtent, CopyDetection, DEFAULT_COPY_DETECTION, DEFAULT_FOLLOW_MOVES,
+    DEFAULT_IGNORE_WHITESPACE, NormalizationStamp,
 };
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -92,6 +92,7 @@ impl StagedRemove {
 pub enum StagedConfig {
     CopyDetection(CopyDetection),
     IgnoreWhitespace(bool),
+    FollowMoves(bool),
 }
 
 /// A single staged mesh operation in `.git/mesh/staging/<mesh>`.
@@ -327,6 +328,14 @@ fn parse_line(line: &str) -> Result<Option<ParsedLine>> {
                     _ => return Err(Error::ParseStaging { line: line.into() }),
                 };
                 StagedConfig::IgnoreWhitespace(b)
+            }
+            "follow-moves" => {
+                let b = match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(Error::ParseStaging { line: line.into() }),
+                };
+                StagedConfig::FollowMoves(b)
             }
             _ => return Err(Error::ParseStaging { line: line.into() }),
         };
@@ -708,6 +717,7 @@ pub fn append_config(repo: &gix::Repository, name: &str, entry: &StagedConfig) -
             ("copy-detection", serialize_copy_detection(*cd).to_string())
         }
         StagedConfig::IgnoreWhitespace(b) => ("ignore-whitespace", b.to_string()),
+        StagedConfig::FollowMoves(b) => ("follow-moves", b.to_string()),
     };
     append_line(repo, name, &format!("config {key} {value}"))?;
     Ok(())
@@ -760,22 +770,24 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
 
 pub(crate) fn resolve_staged_config(
     staging: &Staging,
-    baseline: (CopyDetection, bool),
-) -> (CopyDetection, bool) {
+    baseline: (CopyDetection, bool, bool),
+) -> (CopyDetection, bool, bool) {
     let mut cd = baseline.0;
     let mut iw = baseline.1;
+    let mut fm = baseline.2;
     for entry in &staging.configs {
         match entry {
             StagedConfig::CopyDetection(v) => cd = *v,
             StagedConfig::IgnoreWhitespace(v) => iw = *v,
+            StagedConfig::FollowMoves(v) => fm = *v,
         }
     }
-    (cd, iw)
+    (cd, iw, fm)
 }
 
 #[allow(dead_code)]
-pub(crate) fn default_config() -> (CopyDetection, bool) {
-    (DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE)
+pub(crate) fn default_config() -> (CopyDetection, bool, bool) {
+    (DEFAULT_COPY_DETECTION, DEFAULT_IGNORE_WHITESPACE, DEFAULT_FOLLOW_MOVES)
 }
 
 fn path_exists_in_tree(repo: &gix::Repository, commit_sha: &str, path: &str) -> bool {

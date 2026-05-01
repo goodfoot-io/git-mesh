@@ -139,6 +139,7 @@ fn default_config() -> MeshConfig {
     MeshConfig {
         copy_detection: crate::types::DEFAULT_COPY_DETECTION,
         ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
+        follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
     }
 }
 
@@ -174,6 +175,13 @@ pub(crate) fn parse_config_blob(text: &str) -> Result<MeshConfig> {
                     _ => return Err(Error::Parse(format!("invalid ignore-whitespace `{v}`"))),
                 };
             }
+            "follow-moves" => {
+                cfg.follow_moves = match v {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(Error::Parse(format!("invalid follow-moves `{v}`"))),
+                };
+            }
             _ => {
                 // Unknown keys tolerated.
             }
@@ -184,9 +192,10 @@ pub(crate) fn parse_config_blob(text: &str) -> Result<MeshConfig> {
 
 pub(crate) fn serialize_config_blob(cfg: &MeshConfig) -> String {
     format!(
-        "copy-detection {}\nignore-whitespace {}\n",
+        "copy-detection {}\nignore-whitespace {}\nfollow-moves {}\n",
         crate::staging::serialize_copy_detection(cfg.copy_detection),
-        cfg.ignore_whitespace
+        cfg.ignore_whitespace,
+        cfg.follow_moves
     )
 }
 
@@ -240,4 +249,64 @@ pub fn is_ancestor_commit(repo: &gix::Repository, name: &str, ancestor: &str) ->
 
 pub fn resolve_commit_ish(repo: &gix::Repository, name: &str, commit_ish: &str) -> Result<String> {
     resolve_mesh_revision(repo, name, Some(commit_ish))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_config_blob, serialize_config_blob};
+    use crate::types::{CopyDetection, MeshConfig, DEFAULT_FOLLOW_MOVES};
+
+    fn default_cfg() -> MeshConfig {
+        MeshConfig {
+            copy_detection: CopyDetection::SameCommit,
+            ignore_whitespace: false,
+            follow_moves: false,
+        }
+    }
+
+    #[test]
+    fn follow_moves_default_preserved_in_round_trip() {
+        let cfg = default_cfg();
+        let serialized = serialize_config_blob(&cfg);
+        let parsed = parse_config_blob(&serialized).unwrap();
+        assert_eq!(parsed.follow_moves, DEFAULT_FOLLOW_MOVES);
+    }
+
+    #[test]
+    fn follow_moves_true_round_trips() {
+        let mut cfg = default_cfg();
+        cfg.follow_moves = true;
+        let serialized = serialize_config_blob(&cfg);
+        assert!(serialized.contains("follow-moves true"), "serialized={serialized}");
+        let parsed = parse_config_blob(&serialized).unwrap();
+        assert!(parsed.follow_moves);
+    }
+
+    #[test]
+    fn follow_moves_false_round_trips() {
+        let mut cfg = default_cfg();
+        cfg.follow_moves = false;
+        let serialized = serialize_config_blob(&cfg);
+        assert!(serialized.contains("follow-moves false"), "serialized={serialized}");
+        let parsed = parse_config_blob(&serialized).unwrap();
+        assert!(!parsed.follow_moves);
+    }
+
+    #[test]
+    fn follow_moves_invalid_value_returns_parse_error() {
+        let result = parse_config_blob("follow-moves maybe\n");
+        assert!(result.is_err(), "invalid follow-moves value must error");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("follow-moves"), "error must mention the key; msg={msg}");
+    }
+
+    #[test]
+    fn serialize_config_always_includes_follow_moves_line() {
+        let cfg = default_cfg();
+        let serialized = serialize_config_blob(&cfg);
+        assert!(
+            serialized.contains("follow-moves"),
+            "serialized config must include follow-moves line; got={serialized}"
+        );
+    }
 }

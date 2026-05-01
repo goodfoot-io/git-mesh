@@ -257,6 +257,70 @@ fn cli_config_unset_stages_default() -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// follow-moves config key tests (mirrors the ignore-whitespace tests above).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_config_read_lists_follow_moves() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    let out = repo.mesh_stdout(["config", "m"])?;
+    assert!(out.contains("follow-moves"), "stdout={out}");
+    Ok(())
+}
+
+#[test]
+fn cli_config_follow_moves_read_single_key() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    let out = repo.mesh_stdout(["config", "m", "follow-moves"])?;
+    assert!(out.trim() == "false", "stdout={out}");
+    Ok(())
+}
+
+#[test]
+fn cli_config_follow_moves_set_and_stage() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    repo.mesh_stdout(["config", "m", "follow-moves", "true"])?;
+    let out = repo.mesh_stdout(["config", "m"])?;
+    assert!(out.contains("* follow-moves"), "stdout={out}");
+    assert!(out.contains("(staged)"), "stdout={out}");
+    Ok(())
+}
+
+#[test]
+fn cli_config_follow_moves_invalid_value_errors() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    let out = repo.run_mesh(["config", "m", "follow-moves", "yes"])?;
+    assert!(!out.status.success(), "invalid value must error");
+    Ok(())
+}
+
+#[test]
+fn cli_config_follow_moves_unset_stages_default() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    repo.mesh_stdout(["config", "m", "follow-moves", "true"])?;
+    repo.mesh_stdout(["config", "m", "--unset", "follow-moves"])?;
+    let out = repo.mesh_stdout(["config", "m"])?;
+    // Final resolved value is `false` (default); no star.
+    assert!(out.contains("follow-moves false"), "stdout={out}");
+    Ok(())
+}
+
 /// Build a POSIX-shell editor script that replaces the EDITMSG file
 /// with `content`. Returns the path to the script.
 fn make_editor_script(repo: &TestRepo, content: &str) -> Result<std::path::PathBuf> {

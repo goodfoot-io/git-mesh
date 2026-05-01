@@ -36,6 +36,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
             MeshConfig {
                 copy_detection: crate::types::DEFAULT_COPY_DETECTION,
                 ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
+                follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
             },
             None,
         ),
@@ -89,12 +90,13 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
 
     // Resolve final config: baseline <- staged (last-write-wins).
     let mut new_config = base_config;
-    let (new_cd, new_iw) = staging::resolve_staged_config(
+    let (new_cd, new_iw, new_fm) = staging::resolve_staged_config(
         &staging,
-        (base_config.copy_detection, base_config.ignore_whitespace),
+        (base_config.copy_detection, base_config.ignore_whitespace, base_config.follow_moves),
     );
     new_config.copy_detection = new_cd;
     new_config.ignore_whitespace = new_iw;
+    new_config.follow_moves = new_fm;
 
     let config_changed = new_config != base_config;
     let meaningful_adds = !staging.adds.is_empty();
@@ -113,6 +115,7 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
                     staging::serialize_copy_detection(*cd).to_string(),
                 ),
                 StagedConfig::IgnoreWhitespace(b) => ("ignore-whitespace", b.to_string()),
+                StagedConfig::FollowMoves(b) => ("follow-moves", b.to_string()),
             };
             return Err(Error::ConfigNoOp {
                 key: key.into(),

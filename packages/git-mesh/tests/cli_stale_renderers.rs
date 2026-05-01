@@ -328,3 +328,108 @@ fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Phase A: always-on Moved arrow + moved_to JSON field.
+// ---------------------------------------------------------------------------
+
+/// Helper: seed a line-range anchor on file1.txt#L1-L5 and commit.
+fn seed_line_range(repo: &TestRepo, name: &str) -> Result<()> {
+    repo.mesh_stdout(["add", name, "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", name, "-m", "seed"])?;
+    repo.mesh_stdout(["commit", name])?;
+    Ok(())
+}
+
+/// Helper: shift lines down (prepend 2 lines) so the range moves.
+fn shift_lines(repo: &TestRepo) -> Result<()> {
+    repo.write_file(
+        "file1.txt",
+        "extra1\nextra2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("shift")?;
+    Ok(())
+}
+
+#[test]
+fn human_moved_row_shows_arrow_with_destination() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range(&repo, "m")?;
+    shift_lines(&repo)?;
+    let out = repo.run_mesh(["stale", "m"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    // The bullet should include "→" followed by the new location.
+    assert!(
+        text.contains("file1.txt#L1-L5") && text.contains('→'),
+        "expected arrow in Moved bullet; stdout={text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn human_fresh_row_has_no_trailing_parenthesis() -> Result<()> {
+    // Fresh anchors must render as bare `- <path>` with no status word.
+    let repo = TestRepo::seeded()?;
+    seed_line_range(&repo, "m")?;
+    let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
+    // The line must start with "- file1.txt" and must NOT contain "(Fresh)"
+    // or any other trailing parenthetical.
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("- file1.txt"))
+        .unwrap_or_else(|| panic!("no anchor bullet in stdout={out}"));
+    assert!(
+        !line.contains('('),
+        "Fresh bullet must not have trailing parenthesis; line={line}"
+    );
+    Ok(())
+}
+
+#[test]
+fn json_moved_finding_has_moved_to_field() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_line_range(&repo, "m")?;
+    shift_lines(&repo)?;
+    let out = repo.run_mesh(["stale", "m", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    let findings = v["findings"].as_array().expect("findings array");
+    let moved = findings
+        .iter()
+        .find(|f| f["status"]["code"] == "MOVED")
+        .expect("at least one MOVED finding");
+    assert!(
+        moved["moved_to"].is_object(),
+        "MOVED finding must have moved_to object; finding={moved}"
+    );
+    assert!(
+        moved["moved_to"]["path"].is_string(),
+        "moved_to must have path; finding={moved}"
+    );
+    assert!(
+        moved["moved_to"]["extent"].is_object(),
+        "moved_to must have extent; finding={moved}"
+    );
+    Ok(())
+}
+
+#[test]
+fn json_changed_finding_has_no_moved_to_field() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    drift_in_head(&repo)?;
+    let out = repo.run_mesh(["stale", "m", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    let findings = v["findings"].as_array().expect("findings array");
+    let changed = findings
+        .iter()
+        .find(|f| f["status"]["code"] == "CHANGED")
+        .expect("at least one CHANGED finding");
+    assert!(
+        changed["moved_to"].is_null(),
+        "non-MOVED finding must not have moved_to; finding={changed}"
+    );
+    Ok(())
+}

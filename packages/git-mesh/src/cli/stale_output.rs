@@ -466,6 +466,15 @@ fn render_human(
                 f.anchored.extent,
             ));
             if f.status != AnchorStatus::Fresh {
+                // For Moved findings with a known destination, render the arrow.
+                if f.status == AnchorStatus::Moved
+                    && let Some(cur) = &f.current
+                {
+                    line.push_str(&format!(
+                        " → {}",
+                        render_path_extent_plain(&cur.path, cur.extent)
+                    ));
+                }
                 let status_word = status_word(&f.status);
                 match (options.show_src, f.source) {
                     (true, Some(src)) => {
@@ -679,6 +688,7 @@ fn config_str(c: &StagedConfig) -> String {
     match c {
         StagedConfig::CopyDetection(cd) => format!("copy-detection={cd:?}"),
         StagedConfig::IgnoreWhitespace(b) => format!("ignore-whitespace={b}"),
+        StagedConfig::FollowMoves(b) => format!("follow-moves={b}"),
     }
 }
 
@@ -791,6 +801,16 @@ fn status_json(s: &AnchorStatus) -> Value {
 }
 
 fn finding_json(f: &Finding) -> Value {
+    let moved_to = if f.status == AnchorStatus::Moved {
+        f.current.as_ref().map(|loc| {
+            json!({
+                "path": loc.path.display().to_string(),
+                "extent": extent_json(loc.extent),
+            })
+        })
+    } else {
+        None
+    };
     json!({
         "mesh": f.mesh,
         "status": status_json(&f.status),
@@ -801,6 +821,7 @@ fn finding_json(f: &Finding) -> Value {
         }),
         "anchored": location_json(&f.anchored),
         "current": f.current.as_ref().map(location_json),
+        "moved_to": moved_to,
         "acknowledged_by": f.acknowledged_by.as_ref().map(staged_op_ref_json),
         "culprit": f.culprit.as_ref().map(|c| json!({
             "commit": c.commit.to_string(),
@@ -838,6 +859,10 @@ fn staged_config_json(c: &StagedConfig) -> Value {
         }),
         StagedConfig::IgnoreWhitespace(b) => json!({
             "kind": "ignore_whitespace",
+            "value": b,
+        }),
+        StagedConfig::FollowMoves(b) => json!({
+            "kind": "follow_moves",
             "value": b,
         }),
     }
