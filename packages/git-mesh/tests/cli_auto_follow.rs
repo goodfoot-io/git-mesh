@@ -424,6 +424,45 @@ fn worktree_only_move_does_not_auto_follow() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// 10. Staged why starting with "mesh: follow " is rejected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reserved_why_prefix_rejected() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    // Attempt to stage a why that starts with the reserved prefix.
+    let out = repo.run_mesh(["why", "m", "-m", "mesh: follow the rate-limit retry path"])?;
+    // `git mesh why` itself only stages the message, so the error surfaces at
+    // `git mesh commit`. Stage the why, then attempt to commit.
+    // (If `why` itself rejects, the test still passes because we check commit.)
+    let _ = out; // may succeed or fail — we rely on commit to enforce the guard
+    // Ensure the why is staged (re-stage unconditionally with a known message).
+    // Use `git mesh commit m` which should fail due to the reserved prefix.
+    // First, set the why to the reserved prefix via the staging file directly
+    // through the CLI, then commit.
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    // Stage the reserved-prefix why.
+    let why_out = repo.run_mesh(["why", "m", "-m", "mesh: follow the rate-limit retry path"])?;
+    let _ = why_out;
+    let commit_out = repo.run_mesh(["commit", "m"])?;
+    assert!(
+        !commit_out.status.success(),
+        "commit with reserved-prefix why must fail; stdout={} stderr={}",
+        String::from_utf8_lossy(&commit_out.stdout),
+        String::from_utf8_lossy(&commit_out.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&commit_out.stderr);
+    let stdout = String::from_utf8_lossy(&commit_out.stdout);
+    let combined = format!("{stderr}{stdout}");
+    assert!(
+        combined.contains("mesh: follow"),
+        "error must mention the reserved prefix; output={combined}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // 7. Without --auto-follow and follow-moves=false → arrow rendered, no rewrite
 // ---------------------------------------------------------------------------
 

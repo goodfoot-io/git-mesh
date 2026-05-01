@@ -129,8 +129,20 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     // the parent mesh commit's message, else hard-fail with `WhyRequired`.
     // The `message` variable below is git-layer vocabulary — it is the
     // bytes handed to `gix::commit` as the commit message.
+    const FOLLOW_SUBJECT_PREFIX: &str = "mesh: follow ";
     let message = match (&staging.why, &base_message) {
-        (Some(m), _) => m.clone(),
+        (Some(m), _) => {
+            // Reject a staged why whose first line begins with the reserved
+            // prefix used by auto-follow commits. Allowing it would cause
+            // `why_walking_past_follows` to silently skip the user's commit
+            // and surface an older why instead.
+            if m.lines().next().unwrap_or("").starts_with(FOLLOW_SUBJECT_PREFIX) {
+                return Err(Error::ReservedWhyPrefix {
+                    prefix: FOLLOW_SUBJECT_PREFIX.to_string(),
+                });
+            }
+            m.clone()
+        }
         (None, Some(prior)) => prior.clone(),
         (None, None) => return Err(Error::WhyRequired(name.into())),
     };

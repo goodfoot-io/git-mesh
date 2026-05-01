@@ -110,8 +110,13 @@ fn why_walking_past_follows(repo: &gix::Repository, tip_oid: &str) -> Result<Str
             .map(|id| id.detach().to_string())
             .collect();
     }
-    // Exhausted the chain — fall back to tip message.
-    Ok(tip_meta.message)
+    // Exhausted the chain — every commit in the mesh history carries the
+    // follow-subject prefix, which is only possible if the writer guard in
+    // `commit_mesh` was bypassed. Fail closed rather than leaking the marker
+    // as the displayed why.
+    Err(Error::Git(
+        "mesh history contains only follow commits — no why to display".into(),
+    ))
 }
 
 pub(crate) fn read_mesh_from_commit(

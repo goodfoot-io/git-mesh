@@ -227,6 +227,12 @@ pub enum Error {
     )]
     WhyRequired(String),
 
+    /// The staged why begins with a prefix reserved for internal mesh
+    /// machinery (e.g. `"mesh: follow "`). Reject at the writer so the
+    /// parent-walk in `why_walking_past_follows` cannot be confused.
+    #[error("why may not begin with reserved prefix `{prefix}`: choose a different message")]
+    ReservedWhyPrefix { prefix: String },
+
     /// `anchor_sha` is not reachable; resolver classifies the anchor as
     /// `Orphaned` rather than erroring, but callers writing new anchors
     /// surface this as a hard error (§5.3, §6.8).
