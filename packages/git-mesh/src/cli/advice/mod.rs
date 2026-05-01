@@ -331,7 +331,7 @@ fn process_touches(
     use crate::advice::session::state::TouchKind;
     use crate::advice::structured::{
         Action, BasicOutput, Status, creation_instructions, edit_overlaps, format_anchor_resolved,
-        mesh_is_stale, reconciliation_instructions,
+        reconciliation_instructions,
     };
 
     let wd = work_dir(repo)?;
@@ -416,10 +416,7 @@ fn process_touches(
             else {
                 continue;
             };
-            let stale = mesh_is_stale(mesh);
-            let already_seen =
-                meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name);
-            if !stale && already_seen {
+            if meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name) {
                 continue;
             }
             let active_anchor_str = format_anchor_resolved(active);
@@ -444,9 +441,7 @@ fn process_touches(
             };
             output.push_str(&block.to_string());
             emitted_meshes_this_call.push(mesh.name.clone());
-            if !already_seen {
-                new_meshes_seen.push(mesh.name.clone());
-            }
+            new_meshes_seen.push(mesh.name.clone());
             if !new_mesh_candidates.contains(&mesh.name) {
                 new_mesh_candidates.push(mesh.name.clone());
             }
