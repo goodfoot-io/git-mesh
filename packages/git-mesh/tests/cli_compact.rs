@@ -390,7 +390,7 @@ fn test_compact_multi_mesh_partial() -> Result<()> {
     // Advance HEAD — both meshes have Fresh anchors.
     advance_head(&repo)?;
 
-    let out = repo.run_mesh(["stale", "--compact"])?;
+    let out = repo.run_mesh(["stale", "--compact", "--verbose"])?;
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Both meshes should have advanced.

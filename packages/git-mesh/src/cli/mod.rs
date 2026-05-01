@@ -210,7 +210,7 @@ pub enum StaleFormat {
     GithubActions,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct StaleArgs {
     /// Optional mesh name; omit for a workspace-wide scan.
     pub name: Option<String>,
@@ -258,6 +258,11 @@ pub struct StaleArgs {
     /// read-only; --compact is its only mutation gate.
     #[arg(long, conflicts_with_all = ["patch", "stat", "oneline", "since", "no_worktree", "no_index"])]
     pub compact: bool,
+
+    /// With `--compact`, show full per-mesh compaction details after the
+    /// stale output (otherwise a single-line summary is shown).
+    #[arg(long, requires = "compact")]
+    pub verbose: bool,
 }
 
 #[derive(Debug, clap::Args)]

@@ -57,6 +57,10 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
     // Per-mesh stream callback: NDJSON when --format=json. The batch
     // path expects the crate `Result` type, so we surface I/O errors
     // through `Error::Git` rather than letting `anyhow` leak in.
+    //
+    // For `--format=human` we defer all rendering until after compaction
+    // so the regular `stale` view (post-compaction) renders first and the
+    // compaction summary trails it.
     let stream_outcome = |outcome: &MeshCompactOutcome| -> crate::Result<()> {
         if args.format == StaleFormat::Json {
             render_json_one(outcome).map_err(|e| crate::Error::Git(e.to_string()))?;
@@ -83,9 +87,21 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
         crate::mesh::compact::compact_meshes_batch(repo, &mesh_names, options, stream_outcome)?
     };
 
-    // Human format rendered at the end (order is deterministic, per-mesh isolation preserved).
+    // Human format: render the regular `stale` view (post-compaction
+    // state) and then either a short summary line or the detailed
+    // per-mesh outcomes when `--verbose` is set.
     if args.format == StaleFormat::Human {
-        render_human(&outcomes)?;
+        let mut stale_args = args.clone();
+        stale_args.compact = false;
+        stale_args.verbose = false;
+        stale_args.no_exit_code = true;
+        let _ = super::stale_output::run_stale(repo, stale_args)?;
+
+        if args.verbose {
+            render_human(&outcomes)?;
+        } else {
+            render_human_summary(&outcomes);
+        }
     }
 
     // Exit code.
@@ -134,6 +150,43 @@ fn render_human(outcomes: &[MeshCompactOutcome]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// One-line summary trailing the regular stale output when `--compact`
+/// is invoked without `--verbose`. Mentions the words other tooling and
+/// tests look for: `advanced`, `nothing to compact`, `staging ops
+/// present`, `CAS conflict`. Hard errors are still reported on stderr.
+fn render_human_summary(outcomes: &[MeshCompactOutcome]) {
+    for o in outcomes {
+        if let Some(err) = &o.hard_error {
+            eprintln!("[{}] error: {}", o.name, err);
+        }
+    }
+
+    let advanced: u32 = outcomes.iter().map(|o| o.advanced).sum();
+    let advanced_meshes = outcomes.iter().filter(|o| o.advanced > 0).count();
+    let staged_skipped = outcomes.iter().filter(|o| o.skipped_staged > 0).count();
+    let conflicts = outcomes.iter().filter(|o| o.conflicts > 0).count();
+
+    let mut parts: Vec<String> = Vec::new();
+    if advanced > 0 {
+        parts.push(format!(
+            "advanced {advanced} anchor(s) across {advanced_meshes} mesh(es)"
+        ));
+    }
+    if staged_skipped > 0 {
+        parts.push(format!(
+            "{staged_skipped} mesh(es) skipped (staging ops present)"
+        ));
+    }
+    if conflicts > 0 {
+        parts.push(format!("{conflicts} mesh(es) had CAS conflict"));
+    }
+    if parts.is_empty() {
+        println!("nothing to compact.");
+    } else {
+        println!("{}.", parts.join("; "));
+    }
 }
 
 fn render_json_one(o: &MeshCompactOutcome) -> Result<()> {
