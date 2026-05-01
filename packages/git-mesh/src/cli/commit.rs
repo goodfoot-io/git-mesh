@@ -313,22 +313,12 @@ pub fn run_commit(repo: &gix::Repository, args: CommitArgs) -> Result<i32> {
     // both `.git/mesh/staging/` files and any mesh that still has an
     // existing staging entry. If any commit fails, report all failures
     // and exit non-zero. If none are staged, exit 0 with a clear message.
-    let dir = crate::git::mesh_dir(repo).join("staging");
-    let mut candidates: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    {
+    let candidates: std::collections::BTreeSet<String> = {
         let _perf = crate::perf::span("commit.scan-staging");
-        if dir.exists() {
-            for entry in std::fs::read_dir(&dir)? {
-                let entry = entry?;
-                let fname = entry.file_name();
-                let fn_str = fname.to_string_lossy().into_owned();
-                // Ops files have no extension; `.why` and `.<N>` are sidecars.
-                if !fn_str.contains('.') {
-                    candidates.insert(crate::staging::decode_name_from_fs(&fn_str));
-                }
-            }
-        }
-    }
+        crate::staging::list_staged_mesh_names(repo)?
+            .into_iter()
+            .collect()
+    };
 
     // Filter to meshes that actually have something staged (ops or why).
     let mut staged: Vec<String> = Vec::new();
