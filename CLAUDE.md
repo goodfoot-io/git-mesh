@@ -87,9 +87,9 @@ echo $HOME 2>&1 # returns '/home/user'
 </bash-tool-env-var-bug>
 
 <validation>
-Run validation from the package directory containing the changed files, using that package's scripts from `package.json` (e.g., `yarn lint`, `yarn typecheck`, `yarn test`).
+Lint and typecheck the entire project frequently — these operations are cheap. During development, focus test runs as tightly as possible: a single failing test or suite should be re-run alone until it passes. Broaden scope only for final confirmations or when a fix demands wider information.
 
-Always focus test runs as much as possible; i.e. `yarn test path/to/example.test.ts`.
+Run validation from the package directory containing the changed files, using that package's scripts from `package.json` (e.g., `yarn lint`, `yarn typecheck`, `yarn test`).
 
 Run `yarn validate` from the workspace root for final validations — it typechecks, lints, tests, and builds all packages. The script merges stderr into stdout, prints `Exit code: N` at the end, and writes everything to `./yarn-validate-output.log`. **Run only `yarn validate` — do not add `2>&1`, `echo $?`, or any other wrapper.** Exit code 0 means all checks passed.
 </validation>
