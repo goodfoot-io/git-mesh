@@ -72,22 +72,46 @@ pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>
     read_mesh_from_commit(repo, name, &commit_oid)
 }
 
-/// Strip a trailing `Mesh-Follow: …` trailer line (plus the preceding blank
-/// line) from a raw commit message.  This ensures that `git mesh show`
-/// displays the original why without the auto-follow audit token.
-pub(crate) fn strip_mesh_follow_trailer(msg: &str) -> String {
-    // Trim trailing whitespace/newlines then check for the trailer line.
-    let trimmed = msg.trim_end();
-    if let Some(rest) = trimmed.rsplit_once('\n') {
-        let (body, last_line) = rest;
-        if last_line.starts_with("Mesh-Follow:") {
-            // Also remove the blank line separating why from the trailer.
-            return body.trim_end().to_string();
-        }
-    } else if trimmed.starts_with("Mesh-Follow:") {
-        return String::new();
+const FOLLOW_SUBJECT_PREFIX: &str = "mesh: follow ";
+
+/// Walk the parent chain of `tip_oid` backwards, skipping commits whose
+/// subject starts with `"mesh: follow "`, and return the message of the first
+/// commit that doesn't match.  Falls back to the tip message when the chain is
+/// exhausted (degenerate root that is itself a follow commit).
+fn why_walking_past_follows(repo: &gix::Repository, tip_oid: &str) -> Result<String> {
+    let tip_meta = git::commit_meta(repo, tip_oid)?;
+    if !tip_meta.summary.starts_with(FOLLOW_SUBJECT_PREFIX) {
+        return Ok(tip_meta.message);
     }
-    trimmed.to_string()
+    // Walk first parents until we find a non-follow commit.
+    let tip_oid_parsed = tip_oid
+        .parse::<gix::ObjectId>()
+        .map_err(|e| Error::Git(format!("parse oid {tip_oid}: {e}")))?;
+    let commit = repo
+        .find_commit(tip_oid_parsed)
+        .map_err(|e| Error::Git(format!("find commit {tip_oid}: {e}")))?;
+    let mut parent_ids: Vec<String> = commit
+        .parent_ids()
+        .map(|id| id.detach().to_string())
+        .collect();
+    while let Some(parent_oid) = parent_ids.into_iter().next() {
+        let meta = git::commit_meta(repo, &parent_oid)?;
+        if !meta.summary.starts_with(FOLLOW_SUBJECT_PREFIX) {
+            return Ok(meta.message);
+        }
+        let oid_parsed = parent_oid
+            .parse::<gix::ObjectId>()
+            .map_err(|e| Error::Git(format!("parse oid {parent_oid}: {e}")))?;
+        let parent_commit = repo
+            .find_commit(oid_parsed)
+            .map_err(|e| Error::Git(format!("find commit {parent_oid}: {e}")))?;
+        parent_ids = parent_commit
+            .parent_ids()
+            .map(|id| id.detach().to_string())
+            .collect();
+    }
+    // Exhausted the chain — fall back to tip message.
+    Ok(tip_meta.message)
 }
 
 pub(crate) fn read_mesh_from_commit(
@@ -95,8 +119,7 @@ pub(crate) fn read_mesh_from_commit(
     name: &str,
     commit_oid: &str,
 ) -> Result<Mesh> {
-    let raw_message = git::commit_meta(repo, commit_oid)?.message;
-    let message = strip_mesh_follow_trailer(&raw_message);
+    let message = why_walking_past_follows(repo, commit_oid)?;
     let anchors_v2 = read_anchors_v2_blob(repo, commit_oid).unwrap_or_default();
     let config = read_config_blob(repo, commit_oid).unwrap_or_else(|_| default_config());
     let anchors = anchors_v2.iter().map(|(id, _anchor)| id.clone()).collect();

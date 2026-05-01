@@ -217,7 +217,8 @@ fn blob_mismatch_does_not_auto_follow() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Original why is preserved in the new mesh commit
+// 6. Audit trail: follow commit subject is the structured marker; show
+//    returns the original why; git log --grep finds the follow commit.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -226,17 +227,22 @@ fn audit_trail_commit_message_format() -> Result<()> {
     // setup_verbatim_move writes why "seed" before the shift commit.
     setup_verbatim_move(&repo)?;
 
-    // Read the mesh tip commit message before auto-follow.
-    let original_msg = repo.git_stdout([
-        "log",
-        "-1",
-        "--format=%B",
-        "refs/meshes/v1/m",
-    ])?;
-
     repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
 
-    // The raw mesh commit message must have the original why + Mesh-Follow trailer.
+    // The raw tip commit subject must be the structured audit marker.
+    let raw_subject = repo.git_stdout([
+        "log",
+        "-1",
+        "--format=%s",
+        "refs/meshes/v1/m",
+    ])?;
+    assert_eq!(
+        raw_subject.trim(),
+        "mesh: follow 1 moved anchor",
+        "follow commit subject must be structured audit marker; got={raw_subject}"
+    );
+
+    // The raw body must NOT contain the original why on the subject line.
     let raw_msg = repo.git_stdout([
         "log",
         "-1",
@@ -244,41 +250,37 @@ fn audit_trail_commit_message_format() -> Result<()> {
         "refs/meshes/v1/m",
     ])?;
     assert!(
-        raw_msg.contains(original_msg.trim()),
-        "auto-follow commit must contain the original why; raw_msg={raw_msg}"
-    );
-    assert!(
-        raw_msg.contains("Mesh-Follow:"),
-        "auto-follow commit must contain Mesh-Follow trailer; raw_msg={raw_msg}"
+        !raw_msg.trim().contains("Mesh-Follow:"),
+        "no Mesh-Follow trailer expected; raw_msg={raw_msg}"
     );
 
-    // git mesh show must return only the original why (no trailer leak).
+    // git mesh show must return the original why ("seed"), not the follow marker.
     let show_out = repo.mesh_stdout(["show", "m"])?;
     assert!(
-        show_out.contains(original_msg.trim()),
+        show_out.contains("seed"),
         "git mesh show must include original why; show_out={show_out}"
     );
     assert!(
-        !show_out.contains("Mesh-Follow:"),
-        "git mesh show must not expose the Mesh-Follow trailer; show_out={show_out}"
+        !show_out.contains("mesh: follow"),
+        "git mesh show must not expose the follow subject; show_out={show_out}"
     );
 
-    // git log --grep must find the follow commit via the trailer.
+    // git log --grep (case-sensitive, no -i) must find the follow commit.
     let grep_out = repo.git_stdout([
         "log",
         "refs/meshes/v1/m",
-        "--grep=Mesh-Follow",
+        "--grep=^mesh: follow",
         "--format=%H",
     ])?;
     assert!(
         !grep_out.trim().is_empty(),
-        "git log --grep=Mesh-Follow must find the follow commit"
+        "git log --grep=^mesh: follow must find the follow commit"
     );
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// 10. Subsequent normal mesh commit does not inherit the Mesh-Follow trailer
+// 10. Subsequent normal mesh commit inherits original why, not follow marker
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -286,15 +288,15 @@ fn subsequent_commit_does_not_inherit_trailer() -> Result<()> {
     let repo = TestRepo::seeded()?;
     setup_verbatim_move(&repo)?;
 
-    // auto-follow writes the trailer into the mesh commit.
+    // auto-follow writes a "mesh: follow ..." commit.
     repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
 
     // Now re-anchor: add a new anchor and commit — no explicit `-m` so the
-    // message is inherited from the current mesh tip (which has the trailer).
+    // message is inherited (read layer walks past follow commits to find "seed").
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L2"])?;
     repo.mesh_stdout(["commit", "m"])?;
 
-    // The new mesh commit must NOT contain the Mesh-Follow trailer.
+    // The new mesh commit must carry the original why ("seed"), not the follow marker.
     let new_msg = repo.git_stdout([
         "log",
         "-1",
@@ -302,8 +304,60 @@ fn subsequent_commit_does_not_inherit_trailer() -> Result<()> {
         "refs/meshes/v1/m",
     ])?;
     assert!(
-        !new_msg.contains("Mesh-Follow:"),
-        "normal mesh commit must not carry Mesh-Follow trailer; msg={new_msg}"
+        new_msg.contains("seed"),
+        "normal mesh commit must inherit original why; msg={new_msg}"
+    );
+    assert!(
+        !new_msg.contains("mesh: follow"),
+        "normal mesh commit must not carry follow subject; msg={new_msg}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 11. Two consecutive auto-follows: both get follow subjects; show returns original why
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_consecutive_auto_follows_preserve_original_why() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    setup_verbatim_move(&repo)?;
+
+    // First auto-follow.
+    repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
+
+    // Shift again so the anchor becomes Moved once more.
+    repo.write_file(
+        "file1.txt",
+        "extra\nprefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("shift2")?;
+
+    // Second auto-follow.
+    repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
+
+    // Both follow commits must have the structured subject.
+    let log_subjects = repo.git_stdout([
+        "log",
+        "refs/meshes/v1/m",
+        "--grep=^mesh: follow",
+        "--format=%s",
+    ])?;
+    assert_eq!(
+        log_subjects.trim().lines().count(),
+        2,
+        "must have two follow commits; log_subjects={log_subjects}"
+    );
+
+    // git mesh show must still surface the original why.
+    let show_out = repo.mesh_stdout(["show", "m"])?;
+    assert!(
+        show_out.contains("seed"),
+        "git mesh show must still return original why after two follows; show_out={show_out}"
+    );
+    assert!(
+        !show_out.contains("mesh: follow"),
+        "git mesh show must not expose follow subject; show_out={show_out}"
     );
     Ok(())
 }

@@ -151,22 +151,15 @@ pub fn follow_moves(
             .detach()
             .to_string();
 
-        // Commit message: original why + blank line + structured trailer.
-        // The trailer `Mesh-Follow:` approximates the card spec token
-        // `mesh: follow N moved anchors` while being a valid git trailer
-        // (capital M, capital F, hyphen, colon, single space).
-        // `read_mesh_from_commit` strips this trailer before returning the
-        // message so `git mesh show` displays the original why unchanged.
-        let parent_why = current_parent
-            .as_deref()
-            .and_then(|p| git::commit_meta(repo, p).ok().map(|m| m.message))
-            .unwrap_or_default();
-        // Strip any pre-existing trailer from the inherited why so it does
-        // not accumulate across repeated auto-follows.
-        let clean_why = crate::mesh::read::strip_mesh_follow_trailer(&parent_why);
+        // Commit message: structured audit subject on the subject line.
+        // This makes `git log --oneline refs/meshes/v1/<mesh>` and
+        // case-sensitive `git log --grep="^mesh: follow"` find the follow
+        // commits.  `read_mesh_from_commit` walks past commits whose subject
+        // starts with "mesh: follow " to recover the original user why.
         let n = decisions.len();
         let message = format!(
-            "{clean_why}\nMesh-Follow: {n} moved anchor{}\n",
+            "mesh: follow {} moved anchor{}\n",
+            n,
             if n == 1 { "" } else { "s" }
         );
 
