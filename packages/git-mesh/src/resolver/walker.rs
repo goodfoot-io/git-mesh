@@ -267,6 +267,75 @@ pub(crate) enum NS {
     Copied { from: String, to: String },
 }
 
+/// Cheap per-commit changed-path snapshot used by `ResolveSession` to
+/// skip commits that can't possibly affect any candidate path. Disables
+/// rewrite tracking — the goal is to enumerate the (Added | Modified |
+/// Deleted) path set as quickly as possible. Returns `(changed_paths,
+/// has_any_added)`. Callers that have copy detection enabled use
+/// `has_any_added` to decide whether to opt the commit into the full
+/// rewrite-aware `name_status` pass even when no changed path matches a
+/// candidate (since a copy can introduce a tracked path with no parent-side
+/// modification).
+pub(crate) fn changed_paths_no_rewrites(
+    repo: &gix::Repository,
+    parent: &str,
+    commit: &str,
+) -> Result<(Vec<String>, bool)> {
+    let parent_oid = gix::ObjectId::from_str(parent)
+        .map_err(|e| Error::Git(format!("parse parent oid: {e}")))?;
+    let commit_oid = gix::ObjectId::from_str(commit)
+        .map_err(|e| Error::Git(format!("parse commit oid: {e}")))?;
+    let parent_commit = repo
+        .find_commit(parent_oid)
+        .map_err(|e| Error::Git(format!("find parent: {e}")))?;
+    let commit_obj = repo
+        .find_commit(commit_oid)
+        .map_err(|e| Error::Git(format!("find commit: {e}")))?;
+    let parent_tree = parent_commit
+        .tree()
+        .map_err(|e| Error::Git(format!("parent tree: {e}")))?;
+    let new_tree = commit_obj
+        .tree()
+        .map_err(|e| Error::Git(format!("commit tree: {e}")))?;
+    let mut platform = parent_tree
+        .changes()
+        .map_err(|e| Error::Git(format!("tree changes: {e}")))?;
+    platform.options(|opts| {
+        opts.track_path().track_rewrites(None);
+    });
+    let mut paths: Vec<String> = Vec::new();
+    let mut has_added = false;
+    platform
+        .for_each_to_obtain_tree(&new_tree, |change| -> Result<std::ops::ControlFlow<()>> {
+            use gix::object::tree::diff::Change as DC;
+            match change {
+                DC::Addition { location, .. } => {
+                    has_added = true;
+                    paths.push(location.to_string());
+                }
+                DC::Deletion { location, .. } => {
+                    paths.push(location.to_string());
+                }
+                DC::Modification { location, .. } => {
+                    paths.push(location.to_string());
+                }
+                DC::Rewrite {
+                    source_location,
+                    location,
+                    ..
+                } => {
+                    // Without rewrite tracking, gix won't emit Rewrite, but
+                    // be safe in case future versions change defaults.
+                    paths.push(source_location.to_string());
+                    paths.push(location.to_string());
+                }
+            }
+            Ok(std::ops::ControlFlow::Continue(()))
+        })
+        .map_err(|e| Error::Git(format!("tree diff: {e}")))?;
+    Ok((paths, has_added))
+}
+
 pub(crate) fn name_status(
     repo: &gix::Repository,
     parent: &str,

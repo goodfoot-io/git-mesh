@@ -715,12 +715,19 @@ fn intent_to_add_path_zero_oid_treated_as_unstaged() -> Result<()> {
 #[test]
 fn rename_heavy_changeset_completes_with_note() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    seed_line_range_mesh(&repo, "m")?;
-    // Create 1100 files and then rename them all in one commit.
+    // Create 1100 files in a bulk add, anchor the mesh on one of them so
+    // the candidate-path filter classifies the rename commit as
+    // interesting (and therefore exercises the rename-budget code path).
     for i in 0..1100u32 {
         repo.write_file(&format!("bulk/a_{i}.txt"), "x\n")?;
     }
     repo.commit_all("bulk add")?;
+    // Mesh anchor on one of the bulk paths so it lives inside the
+    // candidate-path set and the bulk-rename commit can't be skipped.
+    let gix = repo.gix_repo()?;
+    git_mesh::append_add(&gix, "m", "bulk/a_0.txt", 1, 1, None)?;
+    git_mesh::set_why(&gix, "m", "seed")?;
+    git_mesh::commit_mesh(&gix, "m")?;
     for i in 0..1100u32 {
         repo.run_git(["mv", &format!("bulk/a_{i}.txt"), &format!("bulk/b_{i}.txt")])?;
     }

@@ -330,6 +330,35 @@ fn resolve_loaded_mesh_with_state(
 ) -> Result<MeshResolved> {
     let mut anchors = Vec::with_capacity(mesh.anchors_v2.len());
     let mut filtered_by_since: usize = 0;
+    // Prebuild the candidate-path union per anchor commit so each grouped
+    // walk skips commits that don't touch any path the mesh's anchors
+    // actually care about. Anchors filtered by `--since` are excluded
+    // from the union — they won't be resolved, so their paths shouldn't
+    // widen the walk.
+    {
+        let _perf = crate::perf::span("resolver.prepare-groups");
+        let mut by_anchor_sha: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+        for (_id, r) in &mesh.anchors_v2 {
+            if let Some(since_oid) = options.since
+                && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
+            {
+                continue;
+            }
+            by_anchor_sha
+                .entry(r.anchor_sha.clone())
+                .or_default()
+                .insert(r.path.clone());
+        }
+        for (anchor_sha, paths) in &by_anchor_sha {
+            state.session.prepare_group(
+                repo,
+                anchor_sha,
+                mesh.config.copy_detection,
+                paths,
+                &mut state.warnings,
+            )?;
+        }
+    }
     {
         let _perf = crate::perf::span("resolver.resolve-anchors");
         for (id, r) in mesh.anchors_v2 {
@@ -440,6 +469,8 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.ensure-calls", state.session.ensure_calls);
     crate::perf::counter("session.ensure-hits", state.session.ensure_hits);
     crate::perf::counter("session.walks-len", state.session.walks_len() as u64);
+    crate::perf::counter("session.interesting-commits", state.session.interesting_commits);
+    crate::perf::counter("session.skipped-commits", state.session.skipped_commits);
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_worst_first(&mut out);
