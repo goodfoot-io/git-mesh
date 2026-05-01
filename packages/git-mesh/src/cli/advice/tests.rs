@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use super::{run_advice_flush, run_advice_mark, run_advice_read};
+use super::{collect_touched_paths, run_advice_flush, run_advice_mark, run_advice_read};
 
 struct FixtureRepo {
     dir: tempfile::TempDir,
@@ -144,6 +144,71 @@ fn read_only_idle_session_produces_no_touches() -> Result<()> {
 
     let touches = touches_for(&repo.session_dir(&s));
     assert!(touches.is_empty(), "expected no touches: {touches:?}");
+    Ok(())
+}
+
+#[test]
+fn touched_lists_added_modified_deleted_dedup_first_seen_skipping_modechange() -> Result<()> {
+    use crate::advice::session::state::{TouchInterval, TouchKind};
+    let repo = FixtureRepo::new()?;
+    let s = FixtureRepo::sid("touched");
+    let gix = repo.gix_repo()?;
+
+    // Force the session directory into existence.
+    run_advice_mark(&gix, s.clone(), "seed".into())?;
+    run_advice_flush(&gix, s.clone(), "seed".into())?;
+
+    let session_dir = repo.session_dir(&s);
+    let touches_path = session_dir.join("touches.jsonl");
+    let entries = vec![
+        TouchInterval {
+            path: "a.rs".into(),
+            kind: TouchKind::Added,
+            id: "t1".into(),
+            ts: "t".into(),
+        },
+        TouchInterval {
+            path: "b.rs".into(),
+            kind: TouchKind::Modified,
+            id: "t1".into(),
+            ts: "t".into(),
+        },
+        TouchInterval {
+            path: "b.rs".into(),
+            kind: TouchKind::Modified,
+            id: "t2".into(),
+            ts: "t".into(),
+        },
+        TouchInterval {
+            path: "c.rs".into(),
+            kind: TouchKind::Deleted,
+            id: "t2".into(),
+            ts: "t".into(),
+        },
+        TouchInterval {
+            path: "script.sh".into(),
+            kind: TouchKind::ModeChange,
+            id: "t3".into(),
+            ts: "t".into(),
+        },
+    ];
+    let mut body = String::new();
+    for e in &entries {
+        body.push_str(&serde_json::to_string(e)?);
+        body.push('\n');
+    }
+    std::fs::write(&touches_path, body)?;
+
+    let paths = collect_touched_paths(&touches_path)?;
+    assert_eq!(paths, vec!["a.rs", "b.rs", "c.rs"]);
+    Ok(())
+}
+
+#[test]
+fn touched_returns_empty_when_no_touches_file() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let paths = collect_touched_paths(&dir.path().join("touches.jsonl"))?;
+    assert!(paths.is_empty());
     Ok(())
 }
 

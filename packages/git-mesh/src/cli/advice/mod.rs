@@ -49,6 +49,9 @@ pub enum AdviceCommand {
     },
     /// Corpus-wide debug/parity surface for the n-ary mesh suggester.
     Suggest,
+    /// List repo-relative paths created, updated, or deleted during this
+    /// session. Read-only: does not modify any session state.
+    Touched,
 }
 
 /// Top-level dispatch.
@@ -64,6 +67,7 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
         Some(AdviceCommand::Mark { id }) => run_advice_mark(repo, session_id, id),
         Some(AdviceCommand::Flush { id }) => run_advice_flush(repo, session_id, id),
         Some(AdviceCommand::Read { anchor, id }) => run_advice_read(repo, session_id, anchor, id),
+        Some(AdviceCommand::Touched) => run_advice_touched(repo, session_id),
         Some(AdviceCommand::Suggest) => unreachable!("handled above"),
         None => bail!(
             "git mesh advice: a subcommand is required; run `git mesh advice --help` for usage"
@@ -750,6 +754,67 @@ fn run_advice_read(
         store.append_mesh_candidates(&new_mesh_candidates)?;
     }
     Ok(0)
+}
+
+// ── touched ─────────────────────────────────────────────────────────────────
+
+fn run_advice_touched(repo: &gix::Repository, session_id: String) -> Result<i32> {
+    use crate::advice::session::SessionStore;
+    use std::io::Write;
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let store = SessionStore::open(wd, &gd, &session_id)?;
+
+    let paths = collect_touched_paths(&store.dir().join("touches.jsonl"))?;
+
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let result = (|| -> std::io::Result<()> {
+        for path in &paths {
+            handle.write_all(path.as_bytes())?;
+            handle.write_all(b"\n")?;
+        }
+        handle.flush()
+    })();
+    match result {
+        Ok(()) => {}
+        Err(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => return Err(anyhow::Error::from(e).context("write touched paths to stdout")),
+    }
+    Ok(0)
+}
+
+pub(crate) fn collect_touched_paths(touches_path: &std::path::Path) -> Result<Vec<String>> {
+    use crate::advice::session::state::{TouchInterval, TouchKind};
+    use std::io::BufRead;
+
+    let f = match std::fs::File::open(touches_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context(format!("open `{}`", touches_path.display())));
+        }
+    };
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut order: Vec<String> = Vec::new();
+    for (idx, line) in std::io::BufReader::new(f).lines().enumerate() {
+        let line = line.map_err(|e| anyhow::anyhow!("read `{}`: {e}", touches_path.display()))?;
+        if line.is_empty() {
+            continue;
+        }
+        let t: TouchInterval = serde_json::from_str(&line).map_err(|e| {
+            anyhow::anyhow!("parse `{}` line {}: {e}", touches_path.display(), idx + 1)
+        })?;
+        if matches!(t.kind, TouchKind::ModeChange) {
+            continue;
+        }
+        if seen.insert(t.path.clone()) {
+            order.push(t.path);
+        }
+    }
+    Ok(order)
 }
 
 // ── suggest (corpus-wide) ───────────────────────────────────────────────────
