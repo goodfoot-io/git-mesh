@@ -283,6 +283,26 @@ fn status_str(s: &AnchorStatus) -> &'static str {
     }
 }
 
+fn status_word(s: &AnchorStatus) -> &'static str {
+    match s {
+        AnchorStatus::Fresh => "Fresh",
+        AnchorStatus::Moved => "Moved",
+        AnchorStatus::Changed => "Changed",
+        AnchorStatus::Orphaned => "Orphaned",
+        AnchorStatus::MergeConflict => "Merge conflict",
+        AnchorStatus::Submodule => "Submodule",
+        AnchorStatus::ContentUnavailable(_) => "Content unavailable",
+    }
+}
+
+fn source_word(src: DriftSource) -> &'static str {
+    match src {
+        DriftSource::Head => "HEAD",
+        DriftSource::Index => "index",
+        DriftSource::Worktree => "worktree",
+    }
+}
+
 fn source_marker(src: Option<DriftSource>) -> &'static str {
     match src {
         Some(DriftSource::Head) => "H",
@@ -376,14 +396,15 @@ fn render_human(
             continue;
         }
 
-        let mesh_total = m.anchors.len();
+        let mesh_total = mesh_findings.len();
         let mesh_stale = mesh_findings
             .iter()
             .filter(|f| f.status != AnchorStatus::Fresh)
             .count();
-        println!("mesh {}", m.name);
-        println!();
-        println!("{mesh_stale} stale of {mesh_total} anchors:");
+        println!(
+            "Mesh {} has {} out of {} stale anchors:",
+            m.name, mesh_stale, mesh_total
+        );
         println!();
         if options.stat {
             for f in &mesh_findings {
@@ -399,20 +420,28 @@ fn render_human(
         }
         for f in &mesh_findings {
             let mut line = String::new();
-            if options.show_src {
-                line.push_str(source_marker(f.source));
-                line.push(' ');
-            }
-            line.push_str(status_str(&f.status));
-            line.push(' ');
+            line.push_str("- ");
             line.push_str(&render_path_extent_human(
                 &f.anchored.path,
                 f.anchored.extent,
             ));
-            if f.acknowledged_by.is_some() {
-                line.push_str("  (ack)");
+            if f.status == AnchorStatus::Fresh {
+                line.push_str(" (Fresh)");
+            } else {
+                let status_word = status_word(&f.status);
+                match (options.show_src, f.source) {
+                    (true, Some(src)) => {
+                        line.push_str(&format!(" ({} in {})", status_word, source_word(src)));
+                    }
+                    _ => {
+                        line.push_str(&format!(" ({})", status_word));
+                    }
+                }
             }
-            println!("  {line}");
+            if f.acknowledged_by.is_some() {
+                line.push_str(" (ack)");
+            }
+            println!("{line}");
             if options.patch {
                 let diff = render_patch(repo, f);
                 if !diff.trim().is_empty() {

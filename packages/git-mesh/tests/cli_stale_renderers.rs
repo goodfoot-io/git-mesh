@@ -193,9 +193,8 @@ fn human_layered_emits_src_marker() -> Result<()> {
     let text = String::from_utf8_lossy(&out.stdout);
     // Layered (default) renderer prefixes findings with the src marker.
     assert!(
-        text.lines()
-            .any(|l| l.trim_start().starts_with("H ") && l.contains("CHANGED")),
-        "expected src-marker prefix on finding line: {text}"
+        text.contains("(Changed in HEAD)"),
+        "expected src-marker on finding line: {text}"
     );
     Ok(())
 }
@@ -208,7 +207,7 @@ fn discovery_human_includes_staging_only_mesh() -> Result<()> {
     let out = repo.run_mesh(["stale"])?;
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("mesh new-mesh"), "stdout={text}");
+    assert!(text.contains("Mesh new-mesh"), "stdout={text}");
     assert!(text.contains("Pending mesh ops:"), "stdout={text}");
     assert!(text.contains("ADD    file1.txt#L1-L5"), "stdout={text}");
     Ok(())
@@ -314,7 +313,7 @@ fn named_stale_shows_pending_ops_for_new_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "new-mesh", "file1.txt#L1-L5"])?;
     let out = repo.mesh_stdout(["stale", "new-mesh", "--no-exit-code"])?;
-    assert!(out.contains("mesh new-mesh"), "stdout={out}");
+    assert!(out.contains("Mesh new-mesh"), "stdout={out}");
     assert!(out.contains("Pending mesh ops:"), "stdout={out}");
     assert!(out.contains("ADD    file1.txt#L1-L5"), "stdout={out}");
     Ok(())
