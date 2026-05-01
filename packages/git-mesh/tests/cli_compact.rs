@@ -132,13 +132,13 @@ fn test_compact_idempotent() -> Result<()> {
         "second run should be no-op: {stdout2}"
     );
 
-    // Commit message has exactly one git-mesh-compact: trailer.
+    // Compaction must not mutate the why message — no trailer should be added.
     let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
     let trailer_count = commit_msg
         .lines()
         .filter(|l| l.starts_with("git-mesh-compact:"))
         .count();
-    assert_eq!(trailer_count, 1, "exactly one trailer: {commit_msg}");
+    assert_eq!(trailer_count, 0, "compaction must not add a trailer: {commit_msg}");
     Ok(())
 }
 
@@ -368,8 +368,8 @@ fn test_compact_trailer_idempotent() -> Result<()> {
         .filter(|l| l.starts_with("git-mesh-compact:"))
         .count();
     assert_eq!(
-        trailer_count, 1,
-        "exactly one git-mesh-compact: trailer after three compactions: {commit_msg}"
+        trailer_count, 0,
+        "compaction must not add trailers across repeated runs: {commit_msg}"
     );
     Ok(())
 }
@@ -477,43 +477,33 @@ fn test_compact_json_conflict_invariant_fields_present() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// F2: Trailer stripper uses rsplit_once — preserves mid-body occurrences.
+// F2: Compaction must not mutate the why message.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_compact_trailer_preserves_mid_body_token() -> Result<()> {
-    // Seed a mesh with a why body that contains the trailer token mid-text.
+fn test_compact_preserves_why_verbatim() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
 
-    // Set why to a body that contains the trailer token as mid-text.
-    let why_with_token = "Why body that mentions git-mesh-compact: in the middle";
-    repo.mesh_stdout(["why", "m", "-m", why_with_token])?;
+    let why = "A multi-line why body.\n\nWith a second paragraph.";
+    repo.mesh_stdout(["why", "m", "-m", why])?;
     repo.mesh_stdout(["commit", "m"])?;
 
-    // Advance HEAD and compact.
     advance_head(&repo)?;
     let out = repo.run_mesh(["stale", "m", "--compact"])?;
     assert_eq!(out.status.code(), Some(0));
 
-    // The commit message should preserve the mid-body occurrence.
     let commit_msg = repo.git_stdout(["log", "-1", "--format=%B", "refs/meshes/v1/m"])?;
-    assert!(
-        commit_msg.contains("mentions git-mesh-compact: in the middle"),
-        "mid-body token should be preserved: {commit_msg}"
+    assert_eq!(
+        commit_msg.trim(),
+        why,
+        "why must be preserved verbatim: {commit_msg}"
     );
-    // There should be exactly one trailing trailer paragraph.
-    let trailer_count = commit_msg
-        .lines()
-        .filter(|l| l.starts_with("git-mesh-compact:"))
-        .count();
-    assert_eq!(trailer_count, 1, "exactly one trailer line: {commit_msg}");
     Ok(())
 }
 
 #[test]
-fn test_compact_trailer_doubled_normalizes() -> Result<()> {
-    // Seed, compact twice (each time advancing HEAD) — verify single trailer.
+fn test_compact_repeated_runs_do_not_add_trailers() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
 
@@ -530,8 +520,8 @@ fn test_compact_trailer_doubled_normalizes() -> Result<()> {
         .filter(|l| l.starts_with("git-mesh-compact:"))
         .count();
     assert_eq!(
-        trailer_count, 1,
-        "doubled trailer must normalize to one: {commit_msg}"
+        trailer_count, 0,
+        "compaction must never add trailers: {commit_msg}"
     );
     Ok(())
 }

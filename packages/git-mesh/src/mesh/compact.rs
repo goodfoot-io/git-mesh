@@ -487,18 +487,7 @@ fn apply_compact_attempt(
     let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
     let tree_oid = build_mesh_tree(repo, &anchors_v2_blob, &config_blob)?;
 
-    let why_body = mesh
-        .message
-        .trim()
-        .rsplit_once("\n\ngit-mesh-compact:")
-        .map(|(body, _)| body.trim())
-        .unwrap_or_else(|| mesh.message.trim());
-    let message = format!(
-        "{}\n\ngit-mesh-compact: advanced {} anchor(s) to {}",
-        why_body,
-        advanced,
-        &head_sha[..12],
-    );
+    let message = mesh.message.trim().to_string();
     let new_commit = create_commit(repo, &tree_oid, &message, &[current_tip.to_string()])?;
 
     let mut updates =
