@@ -543,8 +543,12 @@ fn render_human(
         for p in &info {
             match p {
                 PendingFinding::Why { body, .. } => {
+                    let trimmed_body = body.trim();
+                    if trimmed_body == trimmed_why {
+                        continue;
+                    }
                     println!();
-                    println!("{body}");
+                    println!("{trimmed_body}");
                 }
                 PendingFinding::ConfigChange { change, .. } => {
                     println!();
