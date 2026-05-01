@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use crate::cli::{StaleArgs, StaleFormat};
+use crate::mesh::follow::{FollowDecision, follow_moves};
 use crate::resolver::{build_pending_findings, resolve_mesh, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
@@ -17,6 +18,7 @@ use crate::types::{
 };
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     if args.compact {
@@ -166,8 +168,88 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         (findings, pending)
     };
 
+    // Auto-follow: for each mesh, compute FollowDecisions and rewrite the
+    // mesh if opt-in is active (--auto-follow flag or follow-moves=true in
+    // mesh config) and all guardrails hold.
+    //
+    // Exit-code accounting: we subtract followed anchor_ids from the stale
+    // count here (same run). Per spec the "next run reports Fresh" guarantee
+    // is what matters; within this run we subtract rather than re-resolve to
+    // keep the implementation simple and avoid a second round-trip.
+    let mut followed_ids: HashSet<String> = HashSet::new();
+    if args.auto_follow || meshes.iter().any(|m| effective_follow_moves(repo, &m.name)) {
+        let _perf = crate::perf::span("stale.auto-follow");
+        for m in &meshes {
+            // Resolve effective opt-in: --auto-follow flag OR mesh config
+            // (committed or staged).
+            if !args.auto_follow && !effective_follow_moves(repo, &m.name) {
+                continue;
+            }
+
+            // Guardrail: any Changed anchor in this mesh suppresses the
+            // entire mesh.
+            let has_changed_sibling = m
+                .anchors
+                .iter()
+                .any(|r| r.status == AnchorStatus::Changed);
+            if has_changed_sibling {
+                continue;
+            }
+
+            // Collect eligible Moved anchors.
+            // The resolver sets `Moved` iff the pinned span bytes are
+            // verbatim identical at the new location — that is the
+            // "zero byte change" guardrail. The file-level blob OIDs stored
+            // in `anchored.blob` and `current.blob` differ whenever lines are
+            // prepended/appended, so comparing them at the file level would
+            // always reject legitimate line-shift moves. We rely on `Moved`
+            // status as the byte-equality signal and use `current.blob` /
+            // `anchored.blob` only when both happen to be populated and the
+            // caller explicitly needs the OID (e.g., for the `FollowDecision`
+            // payload).
+            let mut decisions: Vec<FollowDecision> = Vec::new();
+            for r in &m.anchors {
+                if r.status != AnchorStatus::Moved {
+                    continue;
+                }
+                let Some(cur) = &r.current else { continue };
+                // Guardrail: path must not have been renamed.
+                if cur.path != r.anchored.path {
+                    continue;
+                }
+                // `Moved` status already guarantees byte-identical span
+                // content.
+                decisions.push(FollowDecision {
+                    anchor_id: r.anchor_id.clone(),
+                    new_path: cur.path.clone(),
+                    new_extent: cur.extent,
+                });
+            }
+
+            if decisions.is_empty() {
+                continue;
+            }
+
+            // Rewrite the mesh.
+            match follow_moves(repo, &m.name, &decisions) {
+                Ok(_commit) => {
+                    for d in &decisions {
+                        followed_ids.insert(d.anchor_id.clone());
+                    }
+                }
+                Err(e) => {
+                    // Rewrite failure is non-fatal: log to stderr and
+                    // continue. The anchor still renders as Moved.
+                    eprintln!("git mesh stale: auto-follow failed for {}: {e}", m.name);
+                }
+            }
+        }
+    }
+
     // Plan §B3: an acknowledged finding does not drive exit code; nor
     // does a `ContentUnavailable` finding under `--ignore-unavailable`.
+    // Followed Moved findings are also subtracted: we just rewrote them so
+    // they are logically Fresh for this invocation's exit code.
     let unacked_findings: usize = findings
         .iter()
         .filter(|f| {
@@ -175,6 +257,9 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                 return false;
             }
             if args.ignore_unavailable && matches!(f.status, AnchorStatus::ContentUnavailable(_)) {
+                return false;
+            }
+            if followed_ids.contains(&f.anchor_id) {
                 return false;
             }
             true
@@ -202,6 +287,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                 &meshes,
                 &findings,
                 &pending,
+                &followed_ids,
                 HumanRenderOptions {
                     oneline: args.oneline,
                     stat: args.stat,
@@ -216,7 +302,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         }
         StaleFormat::Json => {
             let _perf = crate::perf::span("stale.render-json");
-            render_json(&meshes, &findings, &pending)?;
+            render_json(&meshes, &findings, &pending, &followed_ids)?;
         }
         StaleFormat::Junit => {
             let _perf = crate::perf::span("stale.render-junit");
@@ -360,6 +446,7 @@ fn render_human(
     meshes: &[MeshResolved],
     findings: &[Finding],
     pending: &[PendingFinding],
+    followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
 ) -> Result<()> {
     let mesh_count = meshes.len();
@@ -476,12 +563,25 @@ fn render_human(
                     ));
                 }
                 let status_word = status_word(&f.status);
+                let auto_followed = followed_ids.contains(&f.anchor_id);
                 match (options.show_src, f.source) {
                     (true, Some(src)) => {
-                        line.push_str(&format!(" ({} in {})", status_word, source_word(src)));
+                        if auto_followed {
+                            line.push_str(&format!(
+                                " ({} in {}; anchor automatically updated)",
+                                status_word,
+                                source_word(src)
+                            ));
+                        } else {
+                            line.push_str(&format!(" ({} in {})", status_word, source_word(src)));
+                        }
                     }
                     _ => {
-                        line.push_str(&format!(" ({})", status_word));
+                        if auto_followed {
+                            line.push_str(&format!(" ({}; anchor automatically updated)", status_word));
+                        } else {
+                            line.push_str(&format!(" ({})", status_word));
+                        }
                     }
                 }
             }
@@ -752,6 +852,7 @@ fn render_json(
     meshes: &[MeshResolved],
     findings: &[Finding],
     pending: &[PendingFinding],
+    followed_ids: &HashSet<String>,
 ) -> Result<()> {
     if findings.is_empty() && pending.is_empty() {
         return Ok(());
@@ -759,7 +860,7 @@ fn render_json(
     let v = json!({
         "schema_version": 2,
         "mesh": meshes.first().map(|m| m.name.clone()).unwrap_or_default(),
-        "findings": findings.iter().map(finding_json).collect::<Vec<_>>(),
+        "findings": findings.iter().map(|f| finding_json(f, followed_ids)).collect::<Vec<_>>(),
         "pending": pending.iter().map(pending_json).collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -800,7 +901,7 @@ fn status_json(s: &AnchorStatus) -> Value {
     }
 }
 
-fn finding_json(f: &Finding) -> Value {
+fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
     let moved_to = if f.status == AnchorStatus::Moved {
         f.current.as_ref().map(|loc| {
             json!({
@@ -811,6 +912,7 @@ fn finding_json(f: &Finding) -> Value {
     } else {
         None
     };
+    let auto_followed = followed_ids.contains(&f.anchor_id);
     json!({
         "mesh": f.mesh,
         "status": status_json(&f.status),
@@ -822,6 +924,7 @@ fn finding_json(f: &Finding) -> Value {
         "anchored": location_json(&f.anchored),
         "current": f.current.as_ref().map(location_json),
         "moved_to": moved_to,
+        "auto_followed": if auto_followed { Value::Bool(true) } else { Value::Null },
         "acknowledged_by": f.acknowledged_by.as_ref().map(staged_op_ref_json),
         "culprit": f.culprit.as_ref().map(|c| json!({
             "commit": c.commit.to_string(),
@@ -1013,4 +1116,25 @@ pub(crate) fn format_relative(committer_time: i64) -> String {
 
 fn plural(n: i64) -> &'static str {
     if n == 1 { "" } else { "s" }
+}
+
+/// Resolve whether auto-follow is active for a mesh via its config.
+///
+/// Reads the committed mesh config and overlays any staged config so that
+/// `git mesh config <name> follow-moves true` (which only stages the change)
+/// is honoured without a separate `git mesh commit` step.
+fn effective_follow_moves(repo: &gix::Repository, mesh_name: &str) -> bool {
+    let committed_fm = crate::mesh::read::read_mesh(repo, mesh_name)
+        .map(|m| m.config.follow_moves)
+        .unwrap_or(false);
+    let staging = crate::staging::read_staging(repo, mesh_name).unwrap_or_default();
+    let (_, _, fm) = crate::staging::resolve_staged_config(
+        &staging,
+        (
+            crate::types::DEFAULT_COPY_DETECTION,
+            crate::types::DEFAULT_IGNORE_WHITESPACE,
+            committed_fm,
+        ),
+    );
+    fm
 }

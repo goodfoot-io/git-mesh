@@ -7,6 +7,7 @@
 
 pub mod commit;
 pub mod compact;
+pub mod follow;
 pub(crate) mod path_index;
 pub mod read;
 pub mod structural;
