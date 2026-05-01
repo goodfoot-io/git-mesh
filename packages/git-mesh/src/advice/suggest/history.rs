@@ -32,28 +32,39 @@ pub struct HistoryIndex {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Load and index git history for the given paths.
+/// Load and index git history for the given seed paths.
 ///
 /// Ports `loadGitHistory` from `docs/analyze-v4.mjs` line 493.
 ///
-/// Uses `git::git_log_name_only` — no subprocess.
+/// Uses `git::git_log_name_only_for_paths` — no subprocess. Only commits whose
+/// changed-path set intersects `seed_paths` are collected (up to
+/// `cfg.history_recency_commits` qualifying commits). After collecting, a
+/// one-hop expansion adds every co-changed neighbor path to `commits_by_path`
+/// so that scoring can surface relationships between seed paths and their
+/// frequent co-change partners.
+///
+/// Per-commit `mass_refactor_cap` (p90 auto-tune): qualifying commits whose
+/// total changed-path count exceeds the cap are excluded from the index but
+/// still count toward the `n`-qualifying-commit budget used during the walk.
 pub fn load_git_history(
     repo: &gix::Repository,
-    paths: &[String],
+    seed_paths: &[String],
     cfg: &SuggestConfig,
 ) -> Result<HistoryIndex> {
     let fallback = HistoryIndex::default();
-    if !cfg.history_enabled || paths.is_empty() {
+    if !cfg.history_enabled || seed_paths.is_empty() {
         return Ok(fallback);
     }
 
-    let commits = git::git_log_name_only(repo, cfg.history_recency_commits as usize)?;
+    // Walk only commits that touch at least one seed path.
+    let commits =
+        git::git_log_name_only_for_paths(repo, cfg.history_recency_commits as usize, seed_paths)?;
     if commits.is_empty() {
         return Ok(fallback);
     }
 
     // Auto-tune mass-refactor cap: max(default, min(p90, 20)).
-    // p90 = commits sorted by file count, index floor(n * 0.9).
+    // Computed from the qualifying-commits set (same semantics as before).
     let mut sizes: Vec<usize> = commits.iter().map(|c| c.changed_paths.len()).collect();
     sizes.sort_unstable();
     let p90_idx = (sizes.len() as f64 * 0.9).floor() as usize;
@@ -63,17 +74,14 @@ pub fn load_git_history(
         .unwrap_or(cfg.history_mass_refactor_default as usize);
     let mass_refactor_cap = (cfg.history_mass_refactor_default as usize).max(p90.min(20));
 
-    // Build wanted set for fast lookup.
-    let wanted: BTreeSet<&str> = paths.iter().map(|p| p.as_str()).collect();
-
-    // Initialize per-path commit sets.
-    let mut commits_by_path: BTreeMap<String, BTreeSet<String>> =
-        paths.iter().map(|p| (p.clone(), BTreeSet::new())).collect();
+    // Index 0 = most recent (git log order).
+    let mut commits_by_path: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut commit_weight: BTreeMap<String, f64> = BTreeMap::new();
     let mut total_kept = 0usize;
 
-    // Index 0 = most recent (git log order).
     for (i, commit) in commits.iter().enumerate() {
+        // Qualifying commits that exceed the cap are excluded from the index
+        // (they still counted toward the n-qualifying budget during the walk).
         if commit.changed_paths.len() > mass_refactor_cap {
             continue;
         }
@@ -83,13 +91,15 @@ pub fn load_git_history(
         let w = (-(i as f64) / cfg.history_half_life_commits as f64).exp();
         commit_weight.insert(commit.hash.clone(), w);
         total_kept += 1;
+
+        // One-hop expansion: record every path changed in this qualifying
+        // commit — not just seed paths. This lets scoring surface
+        // relationships between seed paths and their co-change neighbors.
         for path in &commit.changed_paths {
-            if wanted.contains(path.as_str()) {
-                commits_by_path
-                    .entry(path.clone())
-                    .or_default()
-                    .insert(commit.hash.clone());
-            }
+            commits_by_path
+                .entry(path.clone())
+                .or_default()
+                .insert(commit.hash.clone());
         }
     }
 

@@ -389,6 +389,154 @@ pub fn git_log_name_only(repo: &gix::Repository, n: usize) -> Result<Vec<CommitC
     Ok(out)
 }
 
+/// Walk HEAD's first-parent chain and return only commits whose changed-path
+/// set intersects `seed_paths`, up to `n` qualifying commits.
+///
+/// Equivalent to `git log --name-only --no-merges -- <seed_paths>` but
+/// implemented entirely via `gix`.  Unlike `git_log_name_only`, the walk
+/// stops as soon as `n` **qualifying** commits have been collected, so the
+/// caller receives at most `n` entries.
+///
+/// Results are in git-log order (most recent first). Merge commits are excluded.
+/// Rename tracking is disabled (same as `git_log_name_only`).
+pub fn git_log_name_only_for_paths(
+    repo: &gix::Repository,
+    n: usize,
+    seed_paths: &[String],
+) -> Result<Vec<CommitChanges>> {
+    if n == 0 || seed_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let seed_set: std::collections::BTreeSet<&str> =
+        seed_paths.iter().map(|p| p.as_str()).collect();
+
+    let head_id = repo
+        .head_id()
+        .map_err(|e| Error::Git(format!("resolve HEAD: {e}")))?
+        .detach();
+
+    let walk = repo
+        .rev_walk([head_id])
+        .sorting(gix::revision::walk::Sorting::ByCommitTime(
+            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+        ))
+        .all()
+        .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
+
+    let mut out: Vec<CommitChanges> = Vec::with_capacity(n.min(512));
+
+    for info in walk {
+        if out.len() >= n {
+            break;
+        }
+        let info = info.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
+        let commit = repo
+            .find_commit(info.id)
+            .map_err(|e| Error::Git(format!("find commit {}: {e}", info.id)))?;
+
+        // Skip merge commits (more than one parent) — matches `--no-merges`.
+        let parent_ids: Vec<_> = commit.parent_ids().map(|p| p.detach()).collect();
+        if parent_ids.len() > 1 {
+            continue;
+        }
+
+        let new_tree = commit
+            .tree()
+            .map_err(|e| Error::Git(format!("commit tree {}: {e}", info.id)))?;
+
+        let old_tree = match parent_ids.first() {
+            Some(pid) => match repo.find_commit(*pid) {
+                Ok(parent) => parent.tree().unwrap_or_else(|_| repo.empty_tree()),
+                Err(_) => repo.empty_tree(),
+            },
+            None => repo.empty_tree(),
+        };
+
+        let mut opts = gix::diff::Options::default();
+        opts.track_rewrites(None);
+
+        let changes = repo
+            .diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(opts))
+            .map_err(|e| Error::Git(format!("diff tree {}: {e}", info.id)))?;
+
+        let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for change in &changes {
+            use gix::object::tree::diff::ChangeDetached;
+            match change {
+                ChangeDetached::Addition {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | ChangeDetached::Deletion {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
+                    if !entry_mode.is_blob_or_symlink() {
+                        continue;
+                    }
+                    paths.insert(
+                        std::str::from_utf8(location.as_slice())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                ChangeDetached::Modification {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
+                    if !entry_mode.is_blob_or_symlink() {
+                        continue;
+                    }
+                    paths.insert(
+                        std::str::from_utf8(location.as_slice())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                ChangeDetached::Rewrite {
+                    source_location,
+                    source_entry_mode,
+                    location,
+                    entry_mode,
+                    ..
+                } => {
+                    if source_entry_mode.is_blob_or_symlink() {
+                        paths.insert(
+                            std::str::from_utf8(source_location.as_slice())
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                    }
+                    if entry_mode.is_blob_or_symlink() {
+                        paths.insert(
+                            std::str::from_utf8(location.as_slice())
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Qualify only if this commit's changed paths intersect the seed set.
+        let qualifies = paths.iter().any(|p| seed_set.contains(p.as_str()));
+        if !qualifies {
+            continue;
+        }
+
+        out.push(CommitChanges {
+            hash: info.id.to_string(),
+            changed_paths: paths.into_iter().collect(),
+        });
+    }
+
+    Ok(out)
+}
+
 /// Extracted commit metadata.
 #[derive(Clone, Debug)]
 pub(crate) struct CommitMeta {
