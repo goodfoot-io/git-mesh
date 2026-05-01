@@ -13,9 +13,8 @@ fn make_edge(a: usize, b: usize) -> Edge {
         canonical_b: b,
         score: 0.5,
         components: ComponentScores {
-            s_recurrence: 0.0,
-            s_confidence: 0.0,
-            s_lift: 0.0,
+            s_cofreq: 0.0,
+            s_codensity: 0.0,
             s_distance: 0.0,
             s_edit: 0.0,
             s_kind: 0.0,

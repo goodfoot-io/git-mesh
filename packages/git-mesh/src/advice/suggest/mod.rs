@@ -5,7 +5,6 @@
 //! The primary entry point for parity testing is `run_suggest_pipeline`,
 //! which accepts pre-loaded `SessionRecord`s and an optional git repo.
 
-pub mod apriori;
 pub(crate) mod history_cache;
 pub mod band;
 pub mod canonical;
@@ -20,7 +19,6 @@ pub mod locator;
 pub mod op_stream;
 pub mod participants;
 
-pub use apriori::{AprioriStats, AtomSessionIndex, apriori_stats, atom_marginals_resolved};
 pub use band::{confidence_band, viability_label};
 pub use canonical::{CanonicalIndex, CanonicalRange, build_canonical_ranges, range_iou};
 pub use cliques::{
@@ -211,21 +209,7 @@ pub fn run_suggest_pipeline(
         return Vec::new();
     }
 
-    // ── Stage 8: apriori atom marginals ──────────────────────────────────────
-    // Build the (canonical_id, session_sid) pairs from all participants.
-    let resolved: Vec<(usize, String)> = all_parts
-        .iter()
-        .filter_map(|p| {
-            let key = canonical::part_key(p);
-            canonical
-                .canonical_id_of
-                .get(&key)
-                .map(|&cid| (cid, p.session_sid.clone()))
-        })
-        .collect();
-    let atom_sessions = atom_marginals_resolved(&resolved);
-
-    // ── Stage 9: git history ──────────────────────────────────────────────────
+    // ── Stage 8: git history ──────────────────────────────────────────────────
     let mut effective_cfg = cfg.clone();
     let history = if cfg.history_enabled {
         if let Some(r) = repo {
@@ -254,9 +238,7 @@ pub fn run_suggest_pipeline(
     no_floor_cfg.edge_score_floor = 0.0;
     let mut edges = score_edges(
         &pairs,
-        &session_participants,
         &canonical,
-        &atom_sessions,
         &history,
         &no_floor_cfg,
     );

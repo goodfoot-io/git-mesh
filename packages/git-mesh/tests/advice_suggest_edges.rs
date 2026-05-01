@@ -1,9 +1,8 @@
 //! Integration tests for the edge-scoring stage.
 
-use git_mesh::advice::suggest::canonical::part_key;
 use git_mesh::advice::suggest::{
     HistoryIndex, Op, OpKind, Participant, ParticipantKind, SessionParticipants, SuggestConfig,
-    atom_marginals_resolved, build_canonical_ranges, build_pair_evidence, score_edges,
+    build_canonical_ranges, build_pair_evidence, score_edges,
 };
 
 fn cfg_zero_floor() -> SuggestConfig {
@@ -58,22 +57,6 @@ fn make_session(sid: &str, parts: Vec<Participant>) -> SessionParticipants {
     }
 }
 
-fn build_atom_index(
-    all_parts: &[Participant],
-    canonical: &git_mesh::advice::suggest::CanonicalIndex,
-) -> git_mesh::advice::suggest::AtomSessionIndex {
-    let resolved: Vec<(usize, String)> = all_parts
-        .iter()
-        .filter_map(|p| {
-            canonical
-                .canonical_id_of
-                .get(&part_key(p))
-                .map(|&id| (id, p.session_sid.clone()))
-        })
-        .collect();
-    atom_marginals_resolved(&resolved)
-}
-
 // ---------------------------------------------------------------------------
 // Score is bounded in [0, 1]
 // ---------------------------------------------------------------------------
@@ -84,18 +67,10 @@ fn edge_score_is_in_unit_interval() {
     let p_b = make_part("b.rs", 1, 20, "s1", 1);
     let all = vec![p_a.clone(), p_b.clone()];
     let canonical = build_canonical_ranges(&all, &cfg_zero_floor());
-    let atom_sessions = build_atom_index(&all, &canonical);
     let sessions = vec![make_session("s1", all)];
     let pairs = build_pair_evidence(&sessions, &canonical, &cfg_zero_floor());
     let history = HistoryIndex::default();
-    let edges = score_edges(
-        &pairs,
-        &sessions,
-        &canonical,
-        &atom_sessions,
-        &history,
-        &cfg_zero_floor(),
-    );
+    let edges = score_edges(&pairs, &canonical, &history, &cfg_zero_floor());
     for e in &edges {
         assert!(
             e.score >= 0.0 && e.score <= 1.0,
@@ -115,18 +90,10 @@ fn per_edge_cohesion_is_always_none() {
     let p_b = make_part("b.rs", 1, 20, "s1", 1);
     let all = vec![p_a.clone(), p_b.clone()];
     let canonical = build_canonical_ranges(&all, &cfg_zero_floor());
-    let atom_sessions = build_atom_index(&all, &canonical);
     let sessions = vec![make_session("s1", all)];
     let pairs = build_pair_evidence(&sessions, &canonical, &cfg_zero_floor());
     let history = HistoryIndex::default();
-    let edges = score_edges(
-        &pairs,
-        &sessions,
-        &canonical,
-        &atom_sessions,
-        &history,
-        &cfg_zero_floor(),
-    );
+    let edges = score_edges(&pairs, &canonical, &history, &cfg_zero_floor());
     assert!(!edges.is_empty());
     for e in &edges {
         assert!(
@@ -146,18 +113,10 @@ fn same_file_pairs_excluded() {
     let p_b = make_part("a.rs", 20, 30, "s1", 1); // same file, non-overlapping ranges
     let all = vec![p_a.clone(), p_b.clone()];
     let canonical = build_canonical_ranges(&all, &cfg_zero_floor());
-    let atom_sessions = build_atom_index(&all, &canonical);
     let sessions = vec![make_session("s1", all)];
     let pairs = build_pair_evidence(&sessions, &canonical, &cfg_zero_floor());
     let history = HistoryIndex::default();
-    let edges = score_edges(
-        &pairs,
-        &sessions,
-        &canonical,
-        &atom_sessions,
-        &history,
-        &cfg_zero_floor(),
-    );
+    let edges = score_edges(&pairs, &canonical, &history, &cfg_zero_floor());
     assert!(edges.is_empty(), "same-file pairs must not produce edges");
 }
 
@@ -171,7 +130,6 @@ fn high_floor_removes_low_scoring_edges() {
     let p_b = make_part("b.rs", 1, 20, "s1", 5); // max distance from window
     let all = vec![p_a.clone(), p_b.clone()];
     let canonical = build_canonical_ranges(&all, &SuggestConfig::default());
-    let atom_sessions = build_atom_index(&all, &canonical);
     let sessions = vec![make_session("s1", all)];
     let pairs = build_pair_evidence(&sessions, &canonical, &SuggestConfig::default());
     let history = HistoryIndex::default();
@@ -179,64 +137,36 @@ fn high_floor_removes_low_scoring_edges() {
         edge_score_floor: 0.99,
         ..SuggestConfig::default()
     };
-    let edges = score_edges(
-        &pairs,
-        &sessions,
-        &canonical,
-        &atom_sessions,
-        &history,
-        &high_cfg,
-    );
+    let edges = score_edges(&pairs, &canonical, &history, &high_cfg);
     assert!(edges.is_empty(), "nothing should pass a 0.99 floor");
 }
 
 // ---------------------------------------------------------------------------
-// Recurrence boosts score
+// Multi-session pair appears as shared_sessions > 1
 // ---------------------------------------------------------------------------
 
 #[test]
-fn multi_session_pair_scores_higher_than_single_session() {
+fn multi_session_pair_has_shared_sessions_count() {
     let mk = |sid: &str| {
         vec![
             make_part("a.rs", 1, 20, sid, 0),
             make_part("b.rs", 1, 20, sid, 1),
         ]
     };
-    let single_all = mk("s1");
     let multi_all: Vec<_> = [mk("s1"), mk("s2")].concat();
-
-    let single_canonical = build_canonical_ranges(&single_all, &cfg_zero_floor());
-    let single_atom = build_atom_index(&single_all, &single_canonical);
-    let single_sessions = vec![make_session("s1", single_all)];
-    let single_pairs = build_pair_evidence(&single_sessions, &single_canonical, &cfg_zero_floor());
-    let single_edges = score_edges(
-        &single_pairs,
-        &single_sessions,
-        &single_canonical,
-        &single_atom,
-        &HistoryIndex::default(),
-        &cfg_zero_floor(),
-    );
-
     let multi_canonical = build_canonical_ranges(&multi_all, &cfg_zero_floor());
-    let multi_atom = build_atom_index(&multi_all, &multi_canonical);
     let multi_sessions = vec![make_session("s1", mk("s1")), make_session("s2", mk("s2"))];
     let multi_pairs = build_pair_evidence(&multi_sessions, &multi_canonical, &cfg_zero_floor());
     let multi_edges = score_edges(
         &multi_pairs,
-        &multi_sessions,
         &multi_canonical,
-        &multi_atom,
         &HistoryIndex::default(),
         &cfg_zero_floor(),
     );
 
-    assert!(!single_edges.is_empty());
     assert!(!multi_edges.is_empty());
-    assert!(
-        multi_edges[0].score > single_edges[0].score,
-        "multi-session score {} must exceed single-session {}",
-        multi_edges[0].score,
-        single_edges[0].score
+    assert_eq!(
+        multi_edges[0].shared_sessions, 2,
+        "pair seen in two sessions should report shared_sessions=2"
     );
 }

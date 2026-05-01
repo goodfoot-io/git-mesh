@@ -1,13 +1,12 @@
 //! Edge scoring stage (Section 10 of analyze-v4.mjs).
 //!
 //! Assembles a composite score for each pair in the `PairEvidenceMap` using
-//! the apriori, history, and evidence channels. Per-edge cohesion is a `None`
+//! the history and evidence channels. Per-edge cohesion is a `None`
 //! seam — the cohesion module (Step 3c substep 9) fills it in.
 
 use crate::advice::suggest::SuggestConfig;
-use crate::advice::suggest::apriori::{AtomSessionIndex, apriori_stats};
 use crate::advice::suggest::canonical::CanonicalIndex;
-use crate::advice::suggest::evidence::{PairEvidenceMap, SessionParticipants, Technique};
+use crate::advice::suggest::evidence::{PairEvidenceMap, Technique};
 use crate::advice::suggest::history::{HistoryIndex, pair_history_score};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -15,9 +14,8 @@ use crate::advice::suggest::history::{HistoryIndex, pair_history_score};
 /// Component score breakdown (each in [0,1]).
 #[derive(Clone, Debug)]
 pub struct ComponentScores {
-    pub s_recurrence: f64,
-    pub s_confidence: f64,
-    pub s_lift: f64,
+    pub s_cofreq: f64,
+    pub s_codensity: f64,
     pub s_distance: f64,
     pub s_edit: f64,
     pub s_kind: f64,
@@ -58,13 +56,10 @@ pub struct Edge {
 /// Ports `scoreEdges` from `docs/analyze-v4.mjs` line 561.
 pub fn score_edges(
     pairs: &PairEvidenceMap,
-    sessions: &[SessionParticipants],
     canonical: &CanonicalIndex,
-    atom_sessions: &AtomSessionIndex,
     history: &HistoryIndex,
     cfg: &SuggestConfig,
 ) -> Vec<Edge> {
-    let total_sessions = sessions.len().max(1);
     let mut edges = Vec::new();
 
     for pair in pairs.values() {
@@ -81,8 +76,6 @@ pub fn score_edges(
         if a_range.path == b_range.path {
             continue;
         }
-
-        let apriori = apriori_stats(pair, atom_sessions, total_sessions);
 
         // Mean op distance from operation-window and locator-edit-context evidence.
         let op_distances: Vec<f64> = pair
@@ -105,9 +98,9 @@ pub fn score_edges(
 
         // Component scores in [0,1].
         let window_ops = cfg.window_ops as f64;
-        let s_recurrence = (apriori.shared_sessions as f64 / 2.0).min(1.0);
-        let s_confidence = apriori.confidence.min(1.0);
-        let s_lift = (apriori.lift.max(1.0).log2()).min(3.0) / 3.0;
+        let total_commits = history.total_commits.max(1);
+        let s_cofreq = (hist_count as f64 / total_commits as f64).min(1.0);
+        let s_codensity = (hist_weighted / (total_commits as f64 * 1.0)).min(1.0);
         let s_distance = 1.0 - (mean_distance.min(window_ops) / (window_ops + 1.0));
         let s_edit = (pair.edit_hits as f64 / 3.0).min(1.0);
         let s_kind = (pair.kinds.len() as f64 / 4.0).min(1.0);
@@ -118,13 +111,12 @@ pub fn score_edges(
         };
 
         // Weighted composite (weights sum to 0.88; 0.12 reserved for cohesion).
-        let score = 0.18 * s_recurrence
-            + 0.14 * s_confidence
-            + 0.10 * s_lift
+        let score = 0.18 * s_cofreq
+            + 0.14 * s_codensity
             + 0.14 * s_distance
             + 0.12 * s_edit
             + 0.10 * s_kind
-            + 0.10 * s_history;
+            + 0.20 * s_history;
 
         if score < cfg.edge_score_floor {
             continue;
@@ -146,20 +138,19 @@ pub fn score_edges(
             canonical_b: b,
             score,
             components: ComponentScores {
-                s_recurrence,
-                s_confidence,
-                s_lift,
+                s_cofreq,
+                s_codensity,
                 s_distance,
                 s_edit,
                 s_kind,
                 s_history,
             },
             per_edge_cohesion: None,
-            shared_sessions: apriori.shared_sessions,
+            shared_sessions: pair.sessions.len(),
             mean_op_distance: mean_distance,
-            lift: apriori.lift,
-            confidence: apriori.confidence,
-            support: apriori.support,
+            lift: 0.0,
+            confidence: 0.0,
+            support: 0.0,
             edit_hits: pair.edit_hits,
             weighted_hits: pair.weighted_hits,
             kinds: kinds_sorted,
@@ -177,7 +168,6 @@ pub fn score_edges(
 mod tests {
     use super::*;
     use crate::advice::suggest::SuggestConfig;
-    use crate::advice::suggest::apriori::atom_marginals_resolved;
     use crate::advice::suggest::canonical::build_canonical_ranges;
     use crate::advice::suggest::evidence::{SessionParticipants, build_pair_evidence};
     use crate::advice::suggest::history::HistoryIndex;
@@ -244,28 +234,13 @@ mod tests {
         let all_parts = vec![p_a.clone(), p_b.clone()];
         let canonical = build_canonical_ranges(&all_parts, &cfg());
 
-        // Build atom session index from participants.
-        let resolved: Vec<(usize, String)> = all_parts
-            .iter()
-            .filter_map(|p| {
-                let key = crate::advice::suggest::canonical::part_key(p);
-                canonical
-                    .canonical_id_of
-                    .get(&key)
-                    .map(|&id| (id, p.session_sid.clone()))
-            })
-            .collect();
-        let atom_sessions = atom_marginals_resolved(&resolved);
-
         let sessions = vec![make_session("s1", all_parts)];
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
         let history = HistoryIndex::default();
 
         let edges = score_edges(
             &pairs,
-            &sessions,
             &canonical,
-            &atom_sessions,
             &history,
             &cfg(),
         );
@@ -285,27 +260,13 @@ mod tests {
         let all_parts = vec![p_a.clone(), p_b.clone()];
         let canonical = build_canonical_ranges(&all_parts, &cfg());
 
-        let resolved: Vec<(usize, String)> = all_parts
-            .iter()
-            .filter_map(|p| {
-                let key = crate::advice::suggest::canonical::part_key(p);
-                canonical
-                    .canonical_id_of
-                    .get(&key)
-                    .map(|&id| (id, p.session_sid.clone()))
-            })
-            .collect();
-        let atom_sessions = atom_marginals_resolved(&resolved);
-
         let sessions = vec![make_session("s1", all_parts)];
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
         let history = HistoryIndex::default();
 
         let edges = score_edges(
             &pairs,
-            &sessions,
             &canonical,
-            &atom_sessions,
             &history,
             &cfg(),
         );
@@ -319,17 +280,6 @@ mod tests {
         let all_parts = vec![p_a.clone(), p_b.clone()];
         let canonical = build_canonical_ranges(&all_parts, &cfg());
 
-        let resolved: Vec<(usize, String)> = all_parts
-            .iter()
-            .filter_map(|p| {
-                let key = crate::advice::suggest::canonical::part_key(p);
-                canonical
-                    .canonical_id_of
-                    .get(&key)
-                    .map(|&id| (id, p.session_sid.clone()))
-            })
-            .collect();
-        let atom_sessions = atom_marginals_resolved(&resolved);
         let sessions = vec![make_session("s1", all_parts)];
         let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
         let history = HistoryIndex::default();
@@ -341,9 +291,7 @@ mod tests {
         };
         let edges = score_edges(
             &pairs,
-            &sessions,
             &canonical,
-            &atom_sessions,
             &history,
             &high_floor_cfg,
         );
