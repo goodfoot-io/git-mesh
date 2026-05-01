@@ -12,7 +12,7 @@
 //! runs — the session lives only for the duration of one engine call and
 //! is dropped when it returns.
 //!
-//! ## Candidate-path filtering
+//! ## Candidate-path filtering (Pass 1 + Pass 2)
 //!
 //! The expensive per-commit work is `name_status` with rewrite tracking
 //! enabled. Most commits in `anchor..HEAD` don't touch any path the
@@ -41,7 +41,6 @@ use crate::git;
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
 use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
 
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
 /// name_status_entries)`. Entries are produced with rewrite tracking
@@ -74,6 +73,13 @@ pub(crate) struct GroupedWalk {
     /// have been paired as a rename but weren't.
     #[allow(dead_code)]
     pub(crate) renames_disabled: bool,
+    /// Pass 1's closed rename-trail set: every historical name any
+    /// candidate path has had in the in-range history. Cached on the
+    /// walk so a future cross-invocation cache (Route C) can persist it
+    /// without restructuring. `None` when no candidate seed was provided
+    /// (single-anchor / test fallback path that runs without Pass 1).
+    #[allow(dead_code)]
+    pub(crate) closed_paths: Option<HashSet<String>>,
 }
 
 /// Engine-wide shared state: one entry per distinct anchor commit.
@@ -87,6 +93,9 @@ pub(crate) struct ResolveSession {
     /// Counter: how many commits across all walks ran the full
     /// rewrite-aware `name_status`.
     pub(crate) interesting_commits: u64,
+    /// Counter: total wall-clock milliseconds spent in Pass 1 (rename-trail
+    /// closure via `git log --name-status` subprocesses) across all walks.
+    pub(crate) pass1_ms: u64,
 }
 
 impl ResolveSession {
@@ -97,6 +106,7 @@ impl ResolveSession {
             ensure_hits: 0,
             skipped_commits: 0,
             interesting_commits: 0,
+            pass1_ms: 0,
         }
     }
 
@@ -128,6 +138,7 @@ impl ResolveSession {
             warnings,
             &mut self.skipped_commits,
             &mut self.interesting_commits,
+            &mut self.pass1_ms,
         )?;
         self.walks.insert(key, walk);
         Ok(())
@@ -166,6 +177,7 @@ impl ResolveSession {
                 warnings,
                 &mut self.skipped_commits,
                 &mut self.interesting_commits,
+                &mut self.pass1_ms,
             )?;
             self.walks.insert(key.clone(), walk);
         } else {
@@ -182,6 +194,7 @@ impl ResolveSession {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_grouped_walk(
     repo: &gix::Repository,
     anchor_sha: &str,
@@ -190,111 +203,43 @@ fn build_grouped_walk(
     warnings: &mut Vec<String>,
     skipped_counter: &mut u64,
     interesting_counter: &mut u64,
+    pass1_ms_counter: &mut u64,
 ) -> Result<GroupedWalk> {
     let head_sha = git::head_oid(repo)?;
     let mut commits =
         git::rev_walk_excluding(repo, &[&head_sha], &[anchor_sha], None).unwrap_or_default();
     commits.reverse(); // oldest-first
 
+    // Pass 1: rename-trail closure. Caller-supplied seed + iterative
+    // `git log --name-status` queries until the path set stops growing.
+    // When no seed is provided (single-anchor / test fallback) the gate
+    // is bypassed and every commit is treated as interesting.
+    let (closed_paths, interesting_set, pass1_fell_back) = match candidate_paths {
+        Some(seed) => {
+            let t0 = std::time::Instant::now();
+            let result = compute_rename_trail(repo, anchor_sha, seed, copy_detection, warnings)?;
+            *pass1_ms_counter += t0.elapsed().as_millis() as u64;
+            (Some(result.0), Some(result.1), result.2)
+        }
+        None => (None, None, false),
+    };
+
     let mut deltas: Vec<CommitDelta> = Vec::with_capacity(commits.len());
     let mut parent = anchor_sha.to_string();
     let prior_warning_count = warnings.len();
 
-    // SameCommit copy detection only pairs an added file with a parent-tree
-    // path that was *also modified* in the same commit — so the source
-    // already shows up in the cheap-pass changed-path list and the
-    // intersection check catches it. AnyFileInCommit / AnyFileInRepo widen
-    // copy sources to unmodified files, so any added path could pull in a
-    // candidate as its copy source — for those modes we have to widen the
-    // interesting-commit trigger to "any added path".
-    let copies_widen_to_added = matches!(
-        copy_detection,
-        CopyDetection::AnyFileInCommit | CopyDetection::AnyFileInRepo
-    );
-    let mut tracked: Option<HashSet<String>> = candidate_paths.cloned();
-
-    // Pre-compute the blob OID of each candidate path at every commit in
-    // the walk (plus the anchor commit itself). Walking each candidate
-    // path top-down once across the whole walk and reusing subtree
-    // lookups via a per-tree_oid cache keeps the cheap-pass cost down to
-    // a handful of ms per walk in practice — the overhead per *skipped*
-    // commit is dominated by `repo.find_object` (small) rather than a
-    // full tree traversal per candidate per commit.
-    //
-    // Only useful when copy detection isn't widening every added-path
-    // commit into "interesting"; otherwise the cheap pass needs the
-    // no-rewrites tree-diff anyway and these blob lookups would be wasted.
-    let cheap_blobs: HashMap<(String, String), Option<String>> =
-        if !copies_widen_to_added && let Some(set) = tracked.as_ref() {
-            let mut all_commits: Vec<&str> = Vec::with_capacity(commits.len() + 1);
-            all_commits.push(anchor_sha);
-            for c in &commits {
-                all_commits.push(c);
-            }
-            precompute_candidate_blobs(repo, &all_commits, set)
-        } else {
-            HashMap::new()
-        };
-
     for commit in &commits {
-        let interesting = match tracked.as_ref() {
-            None => true, // no filter → keep every commit
-            Some(set) if copies_widen_to_added => {
-                // Copy detection can pull in candidates from unmodified
-                // sources, so a commit with any added path is potentially
-                // interesting. Need the no-rewrites tree-diff to know.
-                let (paths, has_added) =
-                    walker::changed_paths_no_rewrites(repo, &parent, commit)?;
-                has_added || paths.iter().any(|p| set.contains(p))
-            }
-            Some(set) => {
-                // SameCommit / Off: a commit can only affect a candidate
-                // if it changes the candidate's blob OID at the candidate
-                // path (deletion / modification / rename source). The
-                // pre-computed `cheap_blobs` map answers each lookup in
-                // O(1) for the seed candidate set; for paths added to
-                // the set mid-walk (rename targets discovered by an
-                // earlier interesting commit) we fall back to a live
-                // `path_blob_at` lookup so renamed paths still get the
-                // correct interesting-commit classification.
-                let mut touches = false;
-                for p in set {
-                    let pkey = (parent.clone(), p.clone());
-                    let ckey = (commit.clone(), p.clone());
-                    let p_blob = match cheap_blobs.get(&pkey) {
-                        Some(v) => v.clone(),
-                        None => git::path_blob_at(repo, &parent, p).ok(),
-                    };
-                    let c_blob = match cheap_blobs.get(&ckey) {
-                        Some(v) => v.clone(),
-                        None => git::path_blob_at(repo, commit, p).ok(),
-                    };
-                    if p_blob != c_blob {
-                        touches = true;
-                        break;
-                    }
-                }
-                touches
-            }
+        let interesting = match interesting_set.as_ref() {
+            // No seed → no filter → keep every commit.
+            None => true,
+            // Pass 1 hit the rename budget → fall back to "every commit
+            // interesting" rather than silently shrink the trail.
+            Some(_) if pass1_fell_back => true,
+            Some(set) => set.contains(commit),
         };
         let entries = if interesting {
             *interesting_counter += 1;
-            let entries = walker::name_status(repo, &parent, commit, copy_detection, warnings)?;
-            // Update candidate set with discovered renames/copies so future
-            // commits that touch the new path are also marked interesting.
-            if let Some(set) = tracked.as_mut() {
-                for e in &entries {
-                    match e {
-                        NS::Renamed { from, to } | NS::Copied { from, to }
-                            if set.contains(from) =>
-                        {
-                            set.insert(to.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            entries
+            walker::name_status(repo, &parent, commit, copy_detection, warnings)?
         } else {
             *skipped_counter += 1;
             Vec::new()
@@ -306,102 +251,193 @@ fn build_grouped_walk(
         });
         parent = commit.clone();
     }
-    let renames_disabled = warnings.len() > prior_warning_count;
+    let renames_disabled = pass1_fell_back || warnings.len() > prior_warning_count;
 
     Ok(GroupedWalk {
         anchor_sha: anchor_sha.to_string(),
         head_sha,
         commits: deltas,
         renames_disabled,
+        closed_paths,
     })
 }
 
-/// Pre-compute `(commit_oid, candidate_path) -> Option<blob_oid>` for
-/// every commit in the walk in one pass. Two layers of memoization keep
-/// this fast even when adjacent commits in `anchor_sha..HEAD` share most
-/// of their tree:
+/// Pass 1: discover every historical name any seed path has had in
+/// `anchor_sha..HEAD` and the set of commits whose `--name-status` rows
+/// touch any of those names.
 ///
-/// - `commit_oid -> tree_oid` (cheap: just reads the commit header).
-/// - `(tree_oid, path) -> Option<blob_oid>` (skipped when an earlier
-///   commit with the same `tree_oid` already resolved this path).
+/// Implementation note on pathspec: git applies `-- <pathspec>` *before*
+/// rename detection, so `git log -M -- foo.rs` clips the `R foo.rs
+/// bar.rs` row down to `D foo.rs` (the destination side falls outside
+/// the pathspec). Running `-M` over the full range (no pathspec) is
+/// correct but pays the rename-detection cost on every commit — too
+/// expensive on long histories.
 ///
-/// Failures (bad OIDs, missing commits / trees) silently record `None`
-/// so the caller's `parent != commit` blob comparison classifies the
-/// commit as interesting (fail-closed: when in doubt, run the full
-/// rewrite-aware pass).
-fn precompute_candidate_blobs(
+/// The hybrid used here keeps both halves cheap:
+///
+/// 1. **Cheap pass (pathspec, no rename detection) via `git log`.**
+///    `git log --no-renames -- closed_paths` enumerates every commit
+///    that touches any closed path. git's pathspec engine prunes whole
+///    subtrees and skips rename detection entirely.
+/// 2. **Per-commit rename detection in-process via gix.** For each
+///    touched commit, [`walker::name_status`] is called against the
+///    commit's first parent (no subprocess overhead). New rename/copy
+///    pairs that intersect the trail grow `closed_paths`; the loop
+///    iterates to fixed point.
+/// 3. **Phase B for `AnyFileInCommit`.** Copies whose source was *not*
+///    modified in the commit can't be detected from the cheap pass at
+///    all; a single full-range `-C -C` `git log` scan completes the
+///    trail. Skipped for `Off` and `SameCommit` (where the source is
+///    always among the pass-1 touched commits).
+///
+/// `AnyFileInRepo` widens copy sources to any blob reachable from any
+/// ref — outside the per-range scope a single `git log` invocation can
+/// express. Falling back to "every commit interesting" preserves the
+/// walker's whole-ref widening (`widen_copies_any_ref`) in Pass 2.
+///
+/// Returns `(closed_paths, interesting_commits, fell_back)`. On
+/// `fell_back == true`, `interesting_commits` is empty and the caller
+/// must treat every commit as interesting.
+fn compute_rename_trail(
     repo: &gix::Repository,
-    commits: &[&str],
-    tracked: &HashSet<String>,
-) -> HashMap<(String, String), Option<String>> {
-    let mut tree_path_cache: HashMap<(String, String), Option<String>> = HashMap::new();
-    let mut commit_to_tree: HashMap<String, Option<String>> = HashMap::new();
-    let mut out: HashMap<(String, String), Option<String>> =
-        HashMap::with_capacity(commits.len() * tracked.len());
+    anchor_sha: &str,
+    seed: &HashSet<String>,
+    copy_detection: CopyDetection,
+    warnings: &mut Vec<String>,
+) -> Result<(HashSet<String>, HashSet<String>, bool)> {
+    let range = format!("{anchor_sha}..HEAD");
+    let budget = walker::rename_budget();
 
-    for commit in commits {
-        let tree_oid = match commit_to_tree.get(*commit) {
-            Some(v) => v.clone(),
-            None => {
-                let v = (|| -> Option<String> {
-                    let oid = gix::ObjectId::from_str(commit).ok()?;
-                    let commit_obj = repo.find_commit(oid).ok()?;
-                    commit_obj.tree_id().ok().map(|id| id.detach().to_string())
-                })();
-                commit_to_tree.insert((*commit).to_string(), v.clone());
-                v
+    if matches!(copy_detection, CopyDetection::AnyFileInRepo) {
+        return Ok((seed.clone(), HashSet::new(), true));
+    }
+
+    let mut closed: HashSet<String> = seed.clone();
+    let mut interesting: HashSet<String> = HashSet::new();
+    // Commits already passed through per-commit rename detection. Avoids
+    // re-running gix `name_status` on the same commit across iterations.
+    let mut inspected: HashSet<String> = HashSet::new();
+
+    loop {
+        let paths: Vec<String> = closed.iter().cloned().collect();
+        let (rows, _) = git::git_log_name_status(
+            repo,
+            &range,
+            git::RenameDetect::None,
+            budget,
+            &paths,
+        )?;
+        // (--no-renames means "renames disabled" is meaningless here; the
+        // budget warning fires only with -M / -C.)
+
+        let mut grew = false;
+        for row in rows {
+            interesting.insert(row.commit.clone());
+            if !inspected.insert(row.commit.clone()) {
+                continue;
             }
-        };
-
-        let Some(tree_oid) = tree_oid else {
-            // Couldn't resolve the tree — record `None` for every
-            // candidate so the comparison flags this commit as
-            // interesting and the full rewrite pass takes over.
-            for path in tracked {
-                out.insert(((*commit).to_string(), path.clone()), None);
-            }
-            continue;
-        };
-
-        // Resolve any candidate paths not yet in `tree_path_cache` by
-        // walking this tree once. Subsequent commits with the same
-        // tree_oid hit the cache without any object I/O.
-        let need_lookup: Vec<&String> = tracked
-            .iter()
-            .filter(|p| !tree_path_cache.contains_key(&(tree_oid.clone(), (*p).clone())))
-            .collect();
-
-        if !need_lookup.is_empty() {
-            let tree = (|| -> Option<gix::Tree<'_>> {
-                let id = gix::ObjectId::from_str(&tree_oid).ok()?;
-                let obj = repo.find_object(id).ok()?;
-                obj.peel_to_tree().ok()
-            })();
-            for path in need_lookup {
-                let blob = match tree.as_ref() {
-                    None => None,
-                    Some(tree) => {
-                        let mut tree = tree.clone();
-                        tree.peel_to_entry_by_path(std::path::Path::new(path))
-                            .ok()
-                            .flatten()
-                            .map(|e| e.object_id().to_string())
-                    }
+            // Pathspec clipping can hide a rename/copy pair when only one
+            // side matches `closed`. Per-commit rename detection runs
+            // in-process via gix (no subprocess overhead) against the
+            // commit's first parent.
+            let Some(parent) = first_parent_oid(repo, &row.commit) else {
+                continue;
+            };
+            let entries =
+                walker::name_status(repo, &parent, &row.commit, copy_detection, warnings)?;
+            for e in &entries {
+                let pair = match e {
+                    NS::Renamed { from, to } | NS::Copied { from, to } => Some((from, to)),
+                    _ => None,
                 };
-                tree_path_cache.insert((tree_oid.clone(), path.clone()), blob);
+                if let Some((from, to)) = pair
+                    && (closed.contains(from) || closed.contains(to))
+                {
+                    if closed.insert(from.clone()) {
+                        grew = true;
+                    }
+                    if closed.insert(to.clone()) {
+                        grew = true;
+                    }
+                }
             }
         }
-
-        for path in tracked {
-            let blob = tree_path_cache
-                .get(&(tree_oid.clone(), path.clone()))
-                .cloned()
-                .unwrap_or(None);
-            out.insert(((*commit).to_string(), path.clone()), blob);
+        if !grew {
+            break;
         }
     }
 
-    out
+    // Phase B — only for AnyFileInCommit. SameCommit copies always have a
+    // modified source side, which the cheap pass already captures; Off
+    // skips copy detection entirely.
+    if matches!(copy_detection, CopyDetection::AnyFileInCommit) {
+        let (rows, disabled) = git::git_log_name_status(
+            repo,
+            &range,
+            git::RenameDetect::CopiesHarder,
+            budget,
+            &[],
+        )?;
+        if disabled {
+            warnings.push(format!(
+                "warning: copy detection disabled for trail closure {}..HEAD; falling back to all-commits-interesting",
+                short_sha(anchor_sha),
+            ));
+            return Ok((closed, HashSet::new(), true));
+        }
+        // Fixed-point loop in memory across the full-range C rows.
+        loop {
+            let mut grew = false;
+            for row in &rows {
+                let mut commit_relevant = interesting.contains(&row.commit);
+                for (from, to) in &row.copies {
+                    if closed.contains(from) || closed.contains(to) {
+                        commit_relevant = true;
+                        if closed.insert(from.clone()) {
+                            grew = true;
+                        }
+                        if closed.insert(to.clone()) {
+                            grew = true;
+                        }
+                    }
+                }
+                for (from, to) in &row.renames {
+                    if closed.contains(from) || closed.contains(to) {
+                        commit_relevant = true;
+                        if closed.insert(from.clone()) {
+                            grew = true;
+                        }
+                        if closed.insert(to.clone()) {
+                            grew = true;
+                        }
+                    }
+                }
+                if commit_relevant {
+                    interesting.insert(row.commit.clone());
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+    }
+
+    Ok((closed, interesting, false))
+}
+
+fn short_sha(sha: &str) -> &str {
+    &sha[..sha.len().min(8)]
+}
+
+/// First-parent OID for `commit`, or `None` for root commits / unresolvable
+/// IDs. Used by Pass 1 to compute per-commit rename detection against the
+/// canonical parent rather than the walk-order predecessor.
+fn first_parent_oid(repo: &gix::Repository, commit: &str) -> Option<String> {
+    use std::str::FromStr;
+    let oid = gix::ObjectId::from_str(commit).ok()?;
+    let c = repo.find_commit(oid).ok()?;
+    let parent = c.parent_ids().next()?;
+    Some(parent.detach().to_string())
 }
 
 /// Shared replacement for `walker::resolve_at_head`. Consumes deltas from
@@ -612,9 +648,11 @@ mod candidate_filter_tests {
     }
 
     /// (c) AnyFileInCommit copy detection: a copy that lands on a path
-    /// makes its commit interesting (because we conservatively mark
-    /// every commit with an added path as interesting when copy
-    /// detection is on).
+    /// derived from a candidate is reachable via Pass 1's `-C` phase
+    /// (the candidate becomes the source of the `C<score>` row), so the
+    /// copy commit is marked interesting. Unrelated added-file commits
+    /// in the same range are *not* widened in (Route A is precise where
+    /// the prior cheap-pass widener was conservative).
     #[test]
     fn copy_detection_widens_to_added_paths() {
         let td = init_repo();
@@ -643,14 +681,86 @@ mod candidate_filter_tests {
                 &mut warnings,
             )
             .unwrap();
-        // The "noise" commit added a file — copy detection forces it
-        // interesting. The "copy" commit also added a file. So both are
-        // interesting. (Over-inclusion is allowed; correctness > speed.)
+        // Pass 1's `-C` phase pairs dst.txt with the candidate src.txt
+        // and marks the copy commit interesting; the unrelated noise
+        // commit (no rename/copy row touching the trail) is skipped.
+        assert_eq!(
+            session.interesting_commits, 1,
+            "only the copy commit is interesting under Route A"
+        );
+        assert_eq!(
+            session.skipped_commits, 1,
+            "the unrelated added-file commit is skipped"
+        );
+    }
+
+    /// Route A's central correctness fix: a rename chain `foo → bar →
+    /// baz` where the *first* hop's `to` (`bar`) is not yet in the
+    /// candidate set must still be discovered. Pass 1 closes the trail
+    /// to `{foo, bar, baz}` before any per-commit interesting-or-not
+    /// classification, so `follow_path_to_head_shared` sees both rename
+    /// rows and the anchor reports `Moved` to `baz`, not `Orphaned`.
+    #[test]
+    fn rename_chain_intermediate_name_is_closed_in_pass1() {
+        let td = init_repo();
+        let dir = td.path();
+        // Make the file content long enough that gix's default rename
+        // similarity threshold matches across hops.
+        let content: String = (1..=30).map(|i| format!("line_{i}\n")).collect();
+        commit_file(dir, "foo.rs", &content, "init foo");
+        let anchor_sha = rev_parse(dir, "HEAD");
+        // Unrelated noise.
+        commit_file(dir, "noise_a.txt", "x\n", "noise a");
+        // Rename foo.rs → bar.rs.
+        std::fs::rename(dir.join("foo.rs"), dir.join("bar.rs")).unwrap();
+        run_git(dir, &["add", "-A"]);
+        run_git(dir, &["commit", "-m", "rename foo to bar"]);
+        // Unrelated noise.
+        commit_file(dir, "noise_b.txt", "x\n", "noise b");
+        // Rename bar.rs → baz.rs.
+        std::fs::rename(dir.join("bar.rs"), dir.join("baz.rs")).unwrap();
+        run_git(dir, &["add", "-A"]);
+        run_git(dir, &["commit", "-m", "rename bar to baz"]);
+        // Trailing noise.
+        commit_file(dir, "noise_c.txt", "x\n", "noise c");
+
+        let repo = gix::open(dir).unwrap();
+        let mut session = ResolveSession::new();
+        let mut candidate = HashSet::new();
+        candidate.insert("foo.rs".to_string());
+        let mut warnings = Vec::new();
+        session
+            .prepare_group(
+                &repo,
+                &anchor_sha,
+                CopyDetection::Off,
+                &candidate,
+                &mut warnings,
+            )
+            .unwrap();
+
+        // Both rename commits are interesting; the three noise commits
+        // are skipped — Pass 1's iterated `-M` query closed the trail
+        // to {foo.rs, bar.rs, baz.rs} before classification.
         assert_eq!(
             session.interesting_commits, 2,
-            "both add commits run rewrites under AnyFileInCommit"
+            "both rename commits must be classified interesting"
         );
-        assert_eq!(session.skipped_commits, 0);
+        assert_eq!(
+            session.skipped_commits, 3,
+            "three unrelated noise commits must be skipped"
+        );
+
+        // Anchor reports `Moved` to baz.rs, not `Orphaned`.
+        let new_path = follow_path_to_head_shared(
+            &repo,
+            &mut session,
+            &anchor_sha,
+            "foo.rs",
+            CopyDetection::Off,
+            &mut warnings,
+        );
+        assert_eq!(new_path.as_deref(), Some("baz.rs"));
     }
 
     /// (d) Two anchors share a walk via the same candidate-path union.

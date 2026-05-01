@@ -935,6 +935,150 @@ pub fn update_ref_cas(
     apply_ref_transaction(wd, &updates)
 }
 
+// ---------------------------------------------------------------------------
+// `git log --name-status` subprocess for the resolver's Pass 1 rename-trail
+// closure. Shells out to `git` because gix 0.81's diff API exposes no
+// pathspec restriction — we need the C-side pathspec engine to skip whole
+// subtrees during the walk.
+// ---------------------------------------------------------------------------
+
+/// Which kind of similarity detection to ask `git log` for.
+#[derive(Clone, Copy)]
+pub(crate) enum RenameDetect {
+    /// `--no-renames` — split renames into add/delete pairs (cheap).
+    None,
+    /// `-C -C` (`--find-copies-harder`) — pair renames and copies
+    /// including copies from files that were *not* modified in the same
+    /// commit. Required for `CopyDetection::AnyFileInCommit`.
+    CopiesHarder,
+}
+
+/// One commit's parsed `--name-status` rows.
+pub(crate) struct GitLogCommitRows {
+    pub commit: String,
+    /// `R<score>` pairs.
+    pub renames: Vec<(String, String)>,
+    /// `C<score>` pairs.
+    pub copies: Vec<(String, String)>,
+    /// Single-path rows (`M`/`A`/`D`/`T`). Used to detect that a commit
+    /// touches a path already in the rename trail without growing the
+    /// trail itself.
+    pub touched: Vec<String>,
+}
+
+/// Run `git -c diff.renameLimit=N log <range> --name-status [-M|-C|--no-renames]
+/// --no-color --format=__GMC__%H -- <paths>` and parse the output.
+///
+/// Returns `(rows, renames_disabled)` where `renames_disabled` is true if
+/// git emitted the literal warning `warning: exhaustive rename detection
+/// was skipped due to too many files.` on stderr — caller is expected to
+/// fall back rather than silently shrink the trail.
+pub(crate) fn git_log_name_status(
+    repo: &gix::Repository,
+    range: &str,
+    detect: RenameDetect,
+    rename_limit: usize,
+    paths: &[String],
+) -> Result<(Vec<GitLogCommitRows>, bool)> {
+    use std::process::Command;
+    let wd = work_dir(repo)?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(wd);
+    cmd.args([
+        "-c",
+        &format!("diff.renameLimit={rename_limit}"),
+        "-c",
+        "core.quotePath=false",
+        "log",
+        "--name-status",
+        "--no-color",
+        "--format=__GMC__%H",
+        range,
+    ]);
+    match detect {
+        RenameDetect::None => {
+            cmd.arg("--no-renames");
+        }
+        RenameDetect::CopiesHarder => {
+            cmd.args(["-C", "-C"]);
+        }
+    }
+    if !paths.is_empty() {
+        cmd.arg("--");
+        for p in paths {
+            cmd.arg(p);
+        }
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| Error::Git(format!("git log: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "git log {range} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim(),
+        )));
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let renames_disabled = stderr
+        .contains("warning: exhaustive rename detection was skipped due to too many files.");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let mut rows: Vec<GitLogCommitRows> = Vec::new();
+    let mut current: Option<GitLogCommitRows> = None;
+    for line in stdout.lines() {
+        if let Some(sha) = line.strip_prefix("__GMC__") {
+            if let Some(c) = current.take() {
+                rows.push(c);
+            }
+            current = Some(GitLogCommitRows {
+                commit: sha.to_string(),
+                renames: Vec::new(),
+                copies: Vec::new(),
+                touched: Vec::new(),
+            });
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let Some(status) = parts.next() else { continue };
+        // R<score>, C<score> rows have two paths; M/A/D/T have one and don't
+        // grow the trail.
+        let first_byte = status.as_bytes().first().copied();
+        match first_byte {
+            Some(b'R') => {
+                let from = parts.next();
+                let to = parts.next();
+                if let (Some(from), Some(to), Some(c)) = (from, to, current.as_mut()) {
+                    c.renames.push((from.to_string(), to.to_string()));
+                }
+            }
+            Some(b'C') => {
+                let from = parts.next();
+                let to = parts.next();
+                if let (Some(from), Some(to), Some(c)) = (from, to, current.as_mut()) {
+                    c.copies.push((from.to_string(), to.to_string()));
+                }
+            }
+            // M, A, D, T (single-path rows). Record the path so the
+            // caller can detect commits that touch the rename trail
+            // without contributing rename/copy pairings.
+            Some(_) => {
+                let Some(path) = parts.next() else { continue };
+                if let Some(c) = current.as_mut() {
+                    c.touched.push(path.to_string());
+                }
+            }
+            None => {}
+        }
+    }
+    if let Some(c) = current.take() {
+        rows.push(c);
+    }
+    Ok((rows, renames_disabled))
+}
+
 pub fn delete_ref(repo: &gix::Repository, ref_name: &str) -> Result<()> {
     let wd = work_dir(repo)?;
     let current = resolve_ref_oid_optional(wd, ref_name)?
