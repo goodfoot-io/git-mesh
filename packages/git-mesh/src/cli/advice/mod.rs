@@ -122,12 +122,31 @@ pub(crate) fn canonicalize_repo_relative_path(wd: &std::path::Path, raw: &str) -
     let joined = wd.join(stripped);
 
     // Attempt real canonicalization when the file exists so symlinks are
-    // resolved. Fall back to lexical normalization when it doesn't.
+    // resolved. When it doesn't exist, canonicalize the deepest existing
+    // ancestor and reattach the missing tail so symlinks in the wd prefix
+    // (e.g. /var → /private/var on macOS) are still resolved symmetrically
+    // with the canonical_wd computed below.
     let canonical = if joined.exists() {
         std::fs::canonicalize(&joined)
             .unwrap_or_else(|_| lexical_normalize(&joined))
     } else {
-        lexical_normalize(&joined)
+        // Walk up until we find an ancestor that exists on disk, then
+        // canonicalize it and reattach the unresolved tail.
+        let mut ancestor: &std::path::Path = &joined;
+        loop {
+            match ancestor.parent() {
+                Some(p) => {
+                    ancestor = p;
+                    if ancestor.exists() {
+                        let tail = joined.strip_prefix(ancestor).unwrap_or(&joined);
+                        let canonical_ancestor = std::fs::canonicalize(ancestor)
+                            .unwrap_or_else(|_| ancestor.to_path_buf());
+                        break lexical_normalize(&canonical_ancestor.join(tail));
+                    }
+                }
+                None => break lexical_normalize(&joined),
+            }
+        }
     };
 
     // Also canonicalize wd so the prefix strip is symmetric.
@@ -258,6 +277,9 @@ fn run_advice_mark(repo: &gix::Repository, session_id: String, id: String) -> Re
     // Opportunistic orphan sweep (30 minute threshold) so a `mark` without
     // its `flush` doesn't accumulate forever.
     let _ = store.sweep_orphan_snapshots(std::time::Duration::from_secs(30 * 60));
+    // Sweep pending touches on the same cycle so long sessions don't grow
+    // pending_touches.jsonl unboundedly.
+    let _ = store.sweep_pending_touches(std::time::Duration::from_secs(30 * 60));
 
     let index_src = gd.join("index");
     let index_dst = store.snapshot_index_path(&id);
@@ -405,9 +427,7 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
             parked.push(t);
         }
     }
-    for t in &parked {
-        store.append_pending_touch(t)?;
-    }
+    store.append_pending_touches(&parked)?;
     if matched.is_empty() {
         store.discard_snapshot(&id);
         return Ok(0);

@@ -769,6 +769,38 @@ fn canonicalize_escape_returns_err() {
     );
 }
 
+// ── symlinked-wd canonicalization tests ──────────────────────────────────────
+
+/// On a symlinked workspace root both existing and non-existing paths under
+/// that root must canonicalize to the same repo-relative form.
+#[cfg(unix)]
+#[test]
+fn canonicalize_symmetric_under_symlinked_wd() -> Result<()> {
+    use super::canonicalize_repo_relative_path;
+
+    let real_dir = tempfile::tempdir()?;
+    let real_path = real_dir.path();
+
+    // Create an existing file.
+    std::fs::write(real_path.join("existing.txt"), "hello")?;
+
+    // Create a symlinked alias of the tempdir.
+    let link_dir = tempfile::tempdir()?;
+    let link_path = link_dir.path().join("symlinked-wd");
+    std::os::unix::fs::symlink(real_path, &link_path)?;
+
+    // Use the symlinked alias as the working directory.
+    let wd = &link_path;
+
+    // Both calls must succeed.
+    let existing = canonicalize_repo_relative_path(wd, "existing.txt")?;
+    let missing = canonicalize_repo_relative_path(wd, "nonexistent.rs")?;
+
+    assert_eq!(existing, "existing.txt");
+    assert_eq!(missing, "nonexistent.rs");
+    Ok(())
+}
+
 // ── end tests ────────────────────────────────────────────────────────────────
 
 #[test]

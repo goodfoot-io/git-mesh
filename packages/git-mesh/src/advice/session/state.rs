@@ -24,7 +24,7 @@ pub struct ReadRecord {
 }
 
 /// Kind of working-tree change attributed to a single tool call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TouchKind {
     Modified,
     Added,

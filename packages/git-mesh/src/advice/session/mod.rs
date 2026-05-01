@@ -260,17 +260,45 @@ impl SessionStore {
     /// Append a single [`TouchInterval`] row to `pending_touches.jsonl`.
     /// Idempotent: if a row with the same `(path, kind, start, end)` already
     /// exists, the append is skipped so the file does not grow unboundedly.
+    ///
+    /// Prefer [`append_pending_touches`] when appending multiple rows at once
+    /// to avoid O(N²) reads.
     pub fn append_pending_touch(&self, t: &TouchInterval) -> Result<()> {
-        let pending_path = self.dir.join("pending_touches.jsonl");
-        let existing: Vec<TouchInterval> = read_jsonl_lines(&pending_path)?;
-        let already_present = existing.iter().any(|e| {
-            e.path == t.path && e.kind == t.kind && e.start == t.start && e.end == t.end
-        });
-        if already_present {
+        self.append_pending_touches(std::slice::from_ref(t))
+    }
+
+    /// Append multiple [`TouchInterval`] rows to `pending_touches.jsonl` in a
+    /// single pass. Reads the existing file once, deduplicates the incoming
+    /// batch against existing rows and against itself (by `(path, kind, start,
+    /// end)`), then appends the survivors in one write.
+    pub fn append_pending_touches(&self, ts: &[TouchInterval]) -> Result<()> {
+        if ts.is_empty() {
             return Ok(());
         }
-        let line = serde_json::to_string(t).with_context(|| "serialize TouchInterval (pending)")?;
-        store::append_jsonl_line(&pending_path, &self.lock, &line)
+        let pending_path = self.dir.join("pending_touches.jsonl");
+        let existing: Vec<TouchInterval> = read_jsonl_lines(&pending_path)?;
+
+        // Build a key set from existing rows so we can dedup in O(1).
+        type Key = (String, crate::advice::session::state::TouchKind, Option<u32>, Option<u32>);
+        let mut seen: std::collections::HashSet<Key> = existing
+            .iter()
+            .map(|e| (e.path.clone(), e.kind, e.start, e.end))
+            .collect();
+
+        let mut lines_to_append = Vec::new();
+        for t in ts {
+            let key = (t.path.clone(), t.kind, t.start, t.end);
+            if seen.insert(key) {
+                let line = serde_json::to_string(t)
+                    .with_context(|| "serialize TouchInterval (pending)")?;
+                lines_to_append.push(line);
+            }
+        }
+
+        for line in lines_to_append {
+            store::append_jsonl_line(&pending_path, &self.lock, &line)?;
+        }
+        Ok(())
     }
 
     /// Remove pending touch entries older than `max_age`. Rewrites the file
