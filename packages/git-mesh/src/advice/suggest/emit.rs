@@ -159,6 +159,11 @@ fn candidate_to_suggestion(
         composite: c.composite,
     };
 
+    use crate::advice::suggest::participants::{WHOLE_FILE_END, WHOLE_FILE_START};
+    let is_whole = |r: &crate::advice::suggest::canonical::CanonicalRange| {
+        r.start == WHOLE_FILE_START && r.end == WHOLE_FILE_END
+    };
+
     let participants: Vec<MeshAnchor> = c
         .canon_ids
         .iter()
@@ -167,19 +172,26 @@ fn candidate_to_suggestion(
             name: String::new(),
             why: String::new(),
             path: PathBuf::from(&r.path),
-            start: r.start,
-            end: r.end,
-            whole: false,
+            start: if is_whole(r) { 0 } else { r.start },
+            end: if is_whole(r) { 0 } else { r.end },
+            whole: is_whole(r),
             status: MeshAnchorStatus::Stable,
         })
         .collect();
 
-    // Label: join paths for transparency.
+    // Label: join paths for transparency. Whole-file participants surface as
+    // bare paths; ranged participants use the `path#L<start>-L<end>` form.
     let label = c
         .canon_ids
         .iter()
         .filter_map(|&id| canonical.ranges.get(id))
-        .map(|r| format!("{}#L{}-L{}", r.path, r.start, r.end))
+        .map(|r| {
+            if is_whole(r) {
+                r.path.clone()
+            } else {
+                format!("{}#L{}-L{}", r.path, r.start, r.end)
+            }
+        })
         .collect::<Vec<_>>()
         .join(" + ");
 

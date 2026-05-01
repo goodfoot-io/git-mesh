@@ -191,7 +191,6 @@ mod tests {
             score: 0.5,
             components: ComponentScores {
                 s_cofreq: 0.0,
-                s_codensity: 0.0,
                 s_distance: 0.0,
                 s_edit: 0.0,
                 s_kind: 0.0,

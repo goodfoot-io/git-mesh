@@ -34,6 +34,12 @@ fn advice(
         .env("GIT_MESH_ADVICE_DIR", advice_dir)
         .args(["advice", sid, subcmd])
         .args(extra);
+    if std::env::var("GIT_MESH_ADVICE_DEBUG").is_ok() {
+        cmd.env(
+            "GIT_MESH_ADVICE_DEBUG",
+            std::env::var("GIT_MESH_ADVICE_DEBUG").unwrap(),
+        );
+    }
     cmd.output().expect("spawn git-mesh")
 }
 
@@ -47,12 +53,15 @@ fn advice_flush(repo_dir: &Path, advice_dir: &Path, sid: &str, id: &str) -> std:
     advice(repo_dir, advice_dir, sid, "flush", &[id])
 }
 
-/// A minimal git repo with two files that share co-change history.
+/// A git repo with two files that share co-change history and a shared
+/// identifier so the trigram cohesion gate accepts the pair.
 ///
 /// Layout after construction:
-/// - `a.rs` and `b.rs` co-changed in commit 1 (`fn a() {}` / `fn b() {}`)
-/// - `a.rs` changed again alone in commit 2
-/// - working tree: `a.rs` is present and unchanged (commit 2 state)
+/// - `a.rs` and `b.rs` co-changed in 8 successive commits
+/// - each revision tweaks both files but always preserves the shared token
+///   `shared_helper_compute`, so the trigram cohesion gate (>= 0.10) passes
+/// - one trailing commit changes `a.rs` alone, so the seed-only path also
+///   has at least one commit that does not touch `b.rs`
 struct CochangeRepo {
     dir: tempfile::TempDir,
     advice_dir: tempfile::TempDir,
@@ -83,14 +92,33 @@ impl CochangeRepo {
         git(p, &["config", "user.name", "T"]);
         git(p, &["config", "commit.gpgsign", "false"]);
 
-        // commit 1: a.rs + b.rs together
-        std::fs::write(p.join("a.rs"), "fn a() {}\n")?;
-        std::fs::write(p.join("b.rs"), "fn b() {}\n")?;
-        git(p, &["add", "."]);
-        git(p, &["commit", "-m", "co-change a and b"]);
+        // 8 co-change commits that always touch both files and always carry
+        // identical shared identifiers (`shared_helper_compute`,
+        // `billing_invoice_total`, `customer_record_id`) so the trigram
+        // cohesion gate (>= 0.10) is met.
+        for i in 0..8 {
+            std::fs::write(
+                p.join("a.rs"),
+                format!(
+                    "fn a_v{i}() {{}}\nfn shared_helper_compute() {{}}\nfn billing_invoice_total() {{}}\nfn customer_record_id() {{}}\nstatic A_VERSION: u32 = {i};\n"
+                ),
+            )?;
+            std::fs::write(
+                p.join("b.rs"),
+                format!(
+                    "fn b_v{i}() {{}}\nfn shared_helper_compute() {{}}\nfn billing_invoice_total() {{}}\nfn customer_record_id() {{}}\nstatic B_VERSION: u32 = {i};\n"
+                ),
+            )?;
+            git(p, &["add", "."]);
+            git(p, &["commit", "-m", &format!("co-change a and b v{i}")]);
+        }
 
-        // commit 2: a.rs alone
-        std::fs::write(p.join("a.rs"), "fn a2() {}\n")?;
+        // Trailing commit: a.rs alone (so the history is not a perfect
+        // co-edit lockstep).
+        std::fs::write(
+            p.join("a.rs"),
+            "fn a_final() {}\nfn shared_helper_compute() {}\nfn billing_invoice_total() {}\nfn customer_record_id() {}\n",
+        )?;
         git(p, &["add", "a.rs"]);
         git(p, &["commit", "-m", "update a only"]);
 
@@ -134,13 +162,11 @@ fn flush_existing_files_emits_suggestion() -> Result<()> {
     let repo = CochangeRepo::build()?;
     let sid = CochangeRepo::sid("sig1");
 
-    // Record a read of a.rs (session seed).
-    let out = advice(repo.path(), repo.advice_dir(), &sid, "read", &["a.rs"]);
-    assert!(
-        out.status.success(),
-        "read failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // Record reads of both files (session seed for trigram cohesion).
+    let r1 = advice(repo.path(), repo.advice_dir(), &sid, "read", &["a.rs"]);
+    assert!(r1.status.success(), "read a.rs failed: {}", String::from_utf8_lossy(&r1.stderr));
+    let r2 = advice(repo.path(), repo.advice_dir(), &sid, "read", &["b.rs"]);
+    assert!(r2.status.success(), "read b.rs failed: {}", String::from_utf8_lossy(&r2.stderr));
 
     // Mark → touch a.rs (modify) → flush
     let mark_out = advice_mark(repo.path(), repo.advice_dir(), &sid, "t1");
@@ -149,7 +175,10 @@ fn flush_existing_files_emits_suggestion() -> Result<()> {
         "mark failed: {}",
         String::from_utf8_lossy(&mark_out.stderr)
     );
-    std::fs::write(repo.path().join("a.rs"), "fn a3() {}\n")?;
+    std::fs::write(
+        repo.path().join("a.rs"),
+        "fn a_modified() {}\nfn shared_helper_compute() {}\nfn billing_invoice_total() {}\nfn customer_record_id() {}\n",
+    )?;
     let flush_out = advice_flush(repo.path(), repo.advice_dir(), &sid, "t1");
     assert_eq!(
         flush_out.status.code(),
@@ -157,8 +186,22 @@ fn flush_existing_files_emits_suggestion() -> Result<()> {
         "flush exited non-zero: {}",
         String::from_utf8_lossy(&flush_out.stderr)
     );
-    // No hard assertion on suggestion text — the pipeline may or may not
-    // reach High band with 2 sparse files. Exit 0 is the Signal 1 contract.
+
+    let stdout = String::from_utf8_lossy(&flush_out.stdout);
+    let stderr = String::from_utf8_lossy(&flush_out.stderr);
+
+    // Strong assertion: the modified-only flush on a co-edit fixture must
+    // emit a per-anchor `If \`<anchor>\` ...` line and a creation-instructions
+    // block. Prior implementations bailed early when canonical.ranges was
+    // empty (no ranged participants from a whole-file Modified touch).
+    assert!(
+        stdout.contains("has implicit semantic dependencies, document with `git mesh`"),
+        "expected per-anchor 'If <anchor> has implicit semantic dependencies' line in flush stdout.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("Use `git mesh` to document implicit semantic dependencies."),
+        "expected creation_instructions block in flush stdout. Got:\n{stdout}"
+    );
     Ok(())
 }
 
@@ -205,45 +248,47 @@ fn flush_empty_history_no_suggestion() -> Result<()> {
 
 // ── Signal 3: flush_same_head_cache_reuse ────────────────────────────────────
 
-/// Two calls to `load_git_history` at the same HEAD SHA → the second call
-/// reads `history_cache.json` rather than re-walking. We assert via the public
-/// `load_git_history` API (which writes the cache on a complete walk) that
-/// the cache file is created after the first call, and that both calls return
-/// identical `total_commits` values.
+/// Two CLI flushes at the same HEAD: after the first, `history_cache.json`
+/// exists in the session dir; after the second flush at the same HEAD, the
+/// file's mtime is unchanged (the cache was reused, not rewritten).
 #[test]
 fn flush_same_head_cache_reuse() -> Result<()> {
     let repo = CochangeRepo::build()?;
-    let session_dir = tempfile::tempdir()?;
+    let sid = CochangeRepo::sid("sig3");
 
-    let gix_repo = gix::open(repo.path())?;
-    let cfg = git_mesh::advice::suggest::SuggestConfig::default();
-    let seed = vec!["a.rs".to_string(), "b.rs".to_string()];
+    // Seed reads so the suggester has participants.
+    advice(repo.path(), repo.advice_dir(), &sid, "read", &["a.rs"]);
+    advice(repo.path(), repo.advice_dir(), &sid, "read", &["b.rs"]);
 
-    // First call — triggers a full walk and writes the cache.
-    let h1 = git_mesh::advice::suggest::load_git_history(
-        &gix_repo,
-        &seed,
-        &cfg,
-        Some(session_dir.path()),
+    // First flush — full walk; writes history_cache.json.
+    advice_mark(repo.path(), repo.advice_dir(), &sid, "t1");
+    std::fs::write(
+        repo.path().join("a.rs"),
+        "fn a_cached1() {}\nfn shared_helper_compute_caller_a_c1() {}\n",
     )?;
-    assert!(h1.available, "history should be available for a 2-commit repo");
+    let f1 = advice_flush(repo.path(), repo.advice_dir(), &sid, "t1");
+    assert_eq!(f1.status.code(), Some(0), "first flush must exit 0");
 
-    let cache_path = session_dir.path().join("history_cache.json");
-    assert!(
-        cache_path.exists(),
-        "history_cache.json must be written after the first call"
-    );
+    let cache_path = find_file(repo.advice_dir(), "history_cache.json")
+        .expect("history_cache.json must exist after the first CLI flush");
+    let mtime1 = std::fs::metadata(&cache_path)?.modified()?;
 
-    // Second call at the same HEAD — must hit the cache.
-    let h2 = git_mesh::advice::suggest::load_git_history(
-        &gix_repo,
-        &seed,
-        &cfg,
-        Some(session_dir.path()),
+    // Sleep enough to make any rewrite detectable by mtime.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    // Second flush at the same HEAD — cache must be reused (same mtime).
+    advice_mark(repo.path(), repo.advice_dir(), &sid, "t2");
+    std::fs::write(
+        repo.path().join("a.rs"),
+        "fn a_cached2() {}\nfn shared_helper_compute_caller_a_c2() {}\n",
     )?;
+    let f2 = advice_flush(repo.path(), repo.advice_dir(), &sid, "t2");
+    assert_eq!(f2.status.code(), Some(0), "second flush must exit 0");
+
+    let mtime2 = std::fs::metadata(&cache_path)?.modified()?;
     assert_eq!(
-        h1.total_commits, h2.total_commits,
-        "cached history must have the same total_commits as the fresh walk"
+        mtime1, mtime2,
+        "history_cache.json mtime must be stable across same-HEAD flushes"
     );
     Ok(())
 }
@@ -269,66 +314,54 @@ fn walkdir_find(root: &Path, name: &str) -> bool {
 
 // ── Signal 4: flush_after_commit_rebuilds_cache ──────────────────────────────
 
-/// `load_git_history` → new git commit → `load_git_history` again: the cache
-/// is rebuilt because `head_sha` changed.
-///
-/// We call `load_git_history` twice with the same session directory but
-/// different HEAD SHAs and assert that the returned histories differ in
-/// `total_commits` (the new commit adds one qualifying commit that touches
-/// `a.rs`, which is in the seed set).
+/// CLI flush → `git commit` → CLI flush at new HEAD: the second flush
+/// rebuilds the cache because `head_sha` changed.
 #[test]
 fn flush_after_commit_rebuilds_cache() -> Result<()> {
     let repo = CochangeRepo::build()?;
-    let session_dir = tempfile::tempdir()?;
+    let sid = CochangeRepo::sid("sig4");
 
-    let cfg = git_mesh::advice::suggest::SuggestConfig::default();
-    let seed = vec!["a.rs".to_string(), "b.rs".to_string()];
+    advice(repo.path(), repo.advice_dir(), &sid, "read", &["a.rs"]);
+    advice(repo.path(), repo.advice_dir(), &sid, "read", &["b.rs"]);
 
-    // First call at original HEAD.
-    let gix1 = gix::open(repo.path())?;
-    let h1 = git_mesh::advice::suggest::load_git_history(
-        &gix1,
-        &seed,
-        &cfg,
-        Some(session_dir.path()),
+    // First flush — writes the cache at the original HEAD.
+    advice_mark(repo.path(), repo.advice_dir(), &sid, "t1");
+    std::fs::write(
+        repo.path().join("a.rs"),
+        "fn a_pre_commit() {}\nfn shared_helper_compute_caller_a_pc() {}\n",
     )?;
+    let f1 = advice_flush(repo.path(), repo.advice_dir(), &sid, "t1");
+    assert_eq!(f1.status.code(), Some(0));
 
-    // Read the cached head_sha.
-    let cache_path = session_dir.path().join("history_cache.json");
-    let cache_bytes1 = std::fs::read(&cache_path)?;
-    let cache1: serde_json::Value = serde_json::from_slice(&cache_bytes1)?;
+    let cache_path = find_file(repo.advice_dir(), "history_cache.json")
+        .expect("history_cache.json must exist after first flush");
+    let cache1: serde_json::Value = serde_json::from_slice(&std::fs::read(&cache_path)?)?;
     let head1 = cache1["head_sha"].as_str().unwrap_or("").to_string();
+    assert!(!head1.is_empty(), "head_sha must be present in the first cache");
 
-    // Create a new commit that changes a.rs.
+    // Make a new commit (the staged a.rs from the flush still differs from HEAD).
     fn git(p: &Path, args: &[&str]) {
         let s = Command::new("git").current_dir(p).args(args).output().unwrap();
         assert!(s.status.success(), "git {:?} failed", args);
     }
-    std::fs::write(repo.path().join("a.rs"), "fn a_sig4_new() {}\n")?;
     git(repo.path(), &["add", "-A"]);
     git(repo.path(), &["commit", "-m", "sig4 new commit"]);
 
-    // Second call at new HEAD — must invalidate and rebuild.
-    let gix2 = gix::open(repo.path())?;
-    let h2 = git_mesh::advice::suggest::load_git_history(
-        &gix2,
-        &seed,
-        &cfg,
-        Some(session_dir.path()),
+    // Second flush at the new HEAD.
+    advice_mark(repo.path(), repo.advice_dir(), &sid, "t2");
+    std::fs::write(
+        repo.path().join("a.rs"),
+        "fn a_post_commit() {}\nfn shared_helper_compute_caller_a_postc() {}\n",
     )?;
+    let f2 = advice_flush(repo.path(), repo.advice_dir(), &sid, "t2");
+    assert_eq!(f2.status.code(), Some(0));
 
-    // Read the updated cache head_sha.
-    let cache_bytes2 = std::fs::read(&cache_path)?;
-    let cache2: serde_json::Value = serde_json::from_slice(&cache_bytes2)?;
+    let cache2: serde_json::Value = serde_json::from_slice(&std::fs::read(&cache_path)?)?;
     let head2 = cache2["head_sha"].as_str().unwrap_or("").to_string();
 
-    assert_ne!(head1, head2, "cache head_sha must change after a new commit");
-    // The new commit adds a path change to a.rs; total_commits should increase.
-    assert!(
-        h2.total_commits >= h1.total_commits,
-        "new HEAD should have at least as many commits: h1={} h2={}",
-        h1.total_commits,
-        h2.total_commits
+    assert_ne!(
+        head1, head2,
+        "cache head_sha must change after a new commit"
     );
     Ok(())
 }

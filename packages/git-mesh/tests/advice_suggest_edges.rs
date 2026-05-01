@@ -141,31 +141,47 @@ fn high_floor_removes_low_scoring_edges() {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-session pair — shared_sessions is 0 (field reserved for diagnostics)
+// Pair shared_sessions is 1 — under single-session input there is exactly one
+// observed session contributing to every edge. Hardcoding 0 silently zeroed
+// the composite's `0.10 * sessions/3` term.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn multi_session_pair_shared_sessions_is_zero() {
-    let mk = |sid: &str| {
-        vec![
-            make_part("a.rs", 1, 20, sid, 0),
-            make_part("b.rs", 1, 20, sid, 1),
-        ]
-    };
-    let multi_all: Vec<_> = [mk("s1"), mk("s2")].concat();
-    let multi_canonical = build_canonical_ranges(&multi_all, &cfg_zero_floor());
-    let multi_sessions = vec![make_session("s1", mk("s1")), make_session("s2", mk("s2"))];
-    let multi_pairs = build_pair_evidence(&multi_sessions, &multi_canonical, &cfg_zero_floor());
-    let multi_edges = score_edges(
-        &multi_pairs,
-        &multi_canonical,
-        &HistoryIndex::default(),
-        &cfg_zero_floor(),
-    );
+fn pair_shared_sessions_is_one() {
+    let p_a = make_part("a.rs", 1, 20, "s1", 0);
+    let p_b = make_part("b.rs", 1, 20, "s1", 1);
+    let all = vec![p_a.clone(), p_b.clone()];
+    let canonical = build_canonical_ranges(&all, &cfg_zero_floor());
+    let sessions = vec![make_session("s1", all)];
+    let pairs = build_pair_evidence(&sessions, &canonical, &cfg_zero_floor());
+    let edges = score_edges(&pairs, &canonical, &HistoryIndex::default(), &cfg_zero_floor());
 
-    assert!(!multi_edges.is_empty());
+    assert!(!edges.is_empty());
     assert_eq!(
-        multi_edges[0].shared_sessions, 0,
-        "shared_sessions is always 0 after SessionRecurrence removal"
+        edges[0].shared_sessions, 1,
+        "single-session input must report shared_sessions = 1"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Component breakdown no longer carries `s_codensity` — the redundant term
+// was dropped from the composite and its weight redistributed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn component_scores_have_no_codensity_field() {
+    let parts = vec![
+        make_part("a.rs", 1, 20, "s1", 0),
+        make_part("b.rs", 1, 20, "s1", 1),
+    ];
+    let canonical = build_canonical_ranges(&parts, &cfg_zero_floor());
+    let sessions = vec![make_session("s1", parts)];
+    let pairs = build_pair_evidence(&sessions, &canonical, &cfg_zero_floor());
+    let edges = score_edges(&pairs, &canonical, &HistoryIndex::default(), &cfg_zero_floor());
+    assert!(!edges.is_empty());
+    let c = &edges[0].components;
+    // All five surviving fields must be in [0,1].
+    for v in [c.s_cofreq, c.s_distance, c.s_edit, c.s_kind, c.s_history] {
+        assert!((0.0..=1.0).contains(&v));
+    }
 }

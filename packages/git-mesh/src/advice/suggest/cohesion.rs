@@ -286,7 +286,13 @@ pub fn per_edge_cohesion(
         .map(|t| *idf.get(t).unwrap_or(&0.0))
         .collect();
     let weight_sum: f64 = inter.iter().sum();
-    (weight_sum / shared_id_saturation as f64).min(1.0)
+    let idf_weighted = (weight_sum / shared_id_saturation as f64).min(1.0);
+
+    // IDF degenerates to zero in tiny corpora (every token appears in every
+    // range → df == n → ln(1) == 0). Fall back to trigram jaccard so the
+    // cohesion gate has a meaningful signal under single-session input.
+    let trigram_jaccard = jaccard(&tokens_a.trigrams, &tokens_b.trigrams);
+    idf_weighted.max(trigram_jaccard)
 }
 
 /// Build a `RangeTokens` from raw text (used to populate a `SourceCache`).

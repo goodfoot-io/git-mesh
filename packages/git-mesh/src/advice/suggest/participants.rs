@@ -43,12 +43,21 @@ pub enum ParticipantKind {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Sentinel start/end for whole-file participants: a participant with
+/// `m_start == WHOLE_FILE_START && m_end == WHOLE_FILE_END` represents a
+/// whole-file touch or read with no specific line anchor.
+pub const WHOLE_FILE_START: u32 = 1;
+pub const WHOLE_FILE_END: u32 = u32::MAX;
+
 /// Build a flat list of participants from the op-stream.
 ///
 /// Ports `participants` from `docs/analyze-v4.mjs` line 258.
 ///
-/// Only ranged ops contribute.  Whole-file edit ops without locator anchor
-/// are dropped.
+/// Ranged reads/edits contribute their anchor; whole-file reads and unanchored
+/// whole-file edits emit a sentinel whole-file participant
+/// (`m_start = WHOLE_FILE_START`, `m_end = WHOLE_FILE_END`) so a Modified-only
+/// turn still surfaces participants — the suggester downstream can then walk
+/// history and produce co-change suggestions even without ranged anchors.
 pub fn participants(ops: &[Op]) -> Vec<Participant> {
     let mut out = Vec::new();
     for op in ops {
@@ -76,6 +85,27 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
                     locator_forward: None,
                 });
             }
+            OpKind::Read | OpKind::TouchRead => {
+                // Whole-file read (no line range) — emit a sentinel whole-file
+                // participant so co-change history can still surface a pair.
+                let pk = if op.kind == OpKind::Read {
+                    ParticipantKind::Read
+                } else {
+                    ParticipantKind::TouchRead
+                };
+                out.push(Participant {
+                    path: op.path.clone(),
+                    start: WHOLE_FILE_START,
+                    end: WHOLE_FILE_END,
+                    op_index: op.op_index,
+                    kind: pk,
+                    m_start: WHOLE_FILE_START,
+                    m_end: WHOLE_FILE_END,
+                    anchored: false,
+                    locator_distance: None,
+                    locator_forward: None,
+                });
+            }
             OpKind::Edit => {
                 if let (Some(inf_s), Some(inf_e)) = (op.inferred_start, op.inferred_end) {
                     out.push(Participant {
@@ -90,10 +120,24 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
                         locator_distance: op.locator_distance,
                         locator_forward: op.locator_forward,
                     });
+                } else {
+                    // Whole-file Modified touch with no inferable anchor.
+                    // Emit a sentinel whole-file Edit participant so the file
+                    // appears as a participant in this turn.
+                    out.push(Participant {
+                        path: op.path.clone(),
+                        start: WHOLE_FILE_START,
+                        end: WHOLE_FILE_END,
+                        op_index: op.op_index,
+                        kind: ParticipantKind::Edit,
+                        m_start: WHOLE_FILE_START,
+                        m_end: WHOLE_FILE_END,
+                        anchored: false,
+                        locator_distance: None,
+                        locator_forward: None,
+                    });
                 }
-                // Unanchored edits are dropped (no inferred anchor).
             }
-            _ => {}
         }
     }
     out
@@ -216,10 +260,16 @@ mod tests {
     }
 
     #[test]
-    fn unanchored_edits_excluded() {
+    fn unanchored_edits_become_whole_file_participants() {
+        // A whole-file Modified touch with no inferable anchor surfaces as a
+        // sentinel whole-file Edit participant so its file still shows up as
+        // a co-change candidate downstream.
         let ops = vec![make_edit_op("foo.rs", None, None, 0)];
         let parts = participants(&ops);
-        assert!(parts.is_empty());
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].kind, ParticipantKind::Edit);
+        assert_eq!(parts[0].m_start, WHOLE_FILE_START);
+        assert_eq!(parts[0].m_end, WHOLE_FILE_END);
     }
 
     #[test]

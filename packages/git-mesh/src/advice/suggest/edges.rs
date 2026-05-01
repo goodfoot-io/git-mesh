@@ -15,7 +15,6 @@ use crate::advice::suggest::history::{HistoryIndex, pair_history_score};
 #[derive(Clone, Debug)]
 pub struct ComponentScores {
     pub s_cofreq: f64,
-    pub s_codensity: f64,
     pub s_distance: f64,
     pub s_edit: f64,
     pub s_kind: f64,
@@ -100,7 +99,6 @@ pub fn score_edges(
         let window_ops = cfg.window_ops as f64;
         let total_commits = history.total_commits.max(1);
         let s_cofreq = (hist_count as f64 / total_commits as f64).min(1.0);
-        let s_codensity = (hist_weighted / (total_commits as f64 * 1.0)).min(1.0);
         let s_distance = 1.0 - (mean_distance.min(window_ops) / (window_ops + 1.0));
         let s_edit = (pair.edit_hits as f64 / 3.0).min(1.0);
         let s_kind = (pair.kinds.len() as f64 / 4.0).min(1.0);
@@ -111,12 +109,18 @@ pub fn score_edges(
         };
 
         // Weighted composite (weights sum to 0.88; 0.12 reserved for cohesion).
+        // Compared to the original analyze-v4.mjs port, `s_codensity` is removed
+        // (it was a duplicate `hist_weighted / total_commits` term that
+        // triple-counted history alongside `s_cofreq` and `s_history`). Its
+        // 0.14 weight is redistributed: +0.08 to `s_history` (recency-weighted
+        // density is the better history signal) and +0.02 each to
+        // `s_distance`/`s_edit`/`s_kind`. Sum: 0.18 + 0.16 + 0.14 + 0.12 + 0.28
+        // = 0.88, matching the original envelope.
         let score = 0.18 * s_cofreq
-            + 0.14 * s_codensity
-            + 0.14 * s_distance
-            + 0.12 * s_edit
-            + 0.10 * s_kind
-            + 0.20 * s_history;
+            + 0.16 * s_distance
+            + 0.14 * s_edit
+            + 0.12 * s_kind
+            + 0.28 * s_history;
 
         if score < cfg.edge_score_floor {
             continue;
@@ -130,6 +134,12 @@ pub fn score_edges(
                 Technique::LocatorEditContext => "locator-edit-context".to_string(),
             })
             .collect();
+        // Historical co-change is the seam channel — surface it in the edge's
+        // techniques so the band/channel-count cap counts it as a distinct
+        // signal alongside the in-session evidence kinds.
+        if hist_count > 0 {
+            kinds_sorted.push("historical-cochange".to_string());
+        }
         kinds_sorted.sort();
 
         edges.push(Edge {
@@ -138,14 +148,16 @@ pub fn score_edges(
             score,
             components: ComponentScores {
                 s_cofreq,
-                s_codensity,
                 s_distance,
                 s_edit,
                 s_kind,
                 s_history,
             },
             per_edge_cohesion: None,
-            shared_sessions: 0,
+            // Single-session input: one observed session contributes to every
+            // edge by definition. Hardcoding 0 silently zeroed the
+            // `0.10 * sessions/3` composite term and demoted real suggestions.
+            shared_sessions: 1,
             mean_op_distance: mean_distance,
             lift: 0.0,
             confidence: 0.0,

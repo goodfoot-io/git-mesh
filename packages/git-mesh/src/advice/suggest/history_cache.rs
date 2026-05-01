@@ -9,7 +9,12 @@
 //! - `schema_version != 1`
 //! - `head_sha` mismatch with the current HEAD commit
 //! - `cfg_fingerprint` mismatch (any change to the four history config knobs)
-//! - current `seed_paths` is **not a subset** of cached `seed_paths`
+//! - current `seed_paths` set is **not exactly equal to** cached `seed_paths`
+//!   (after sort+dedup) — subset-as-hit was an optimization that drifted
+//!   `total_commits` between cached and fresh walks, so `s_cofreq` /
+//!   `s_codensity` produced different scores for the same `(a,b)` pair
+//!   depending on cache state. Exact equality buys score determinism at the
+//!   cost of one rebuild whenever the seed set narrows.
 //! - `complete == false`
 //!
 //! Cache read errors (missing file, truncated JSON, any I/O error) silently
@@ -80,9 +85,12 @@ pub(super) fn try_load(
     if cached.cfg_fingerprint != cfg_fingerprint(cfg) {
         return None;
     }
-    // seed_paths must be a subset of cached seed_paths.
+    // seed_paths must be **exactly equal** to cached seed_paths (sort+dedup).
+    // Subset-as-hit reused a superset cache for narrower walks but
+    // `total_commits` then reflected the superset, drifting `s_cofreq` etc.
     let cached_set: BTreeSet<&str> = cached.seed_paths.iter().map(String::as_str).collect();
-    if !seed_paths.iter().all(|p| cached_set.contains(p.as_str())) {
+    let current_set: BTreeSet<&str> = seed_paths.iter().map(String::as_str).collect();
+    if cached_set != current_set {
         return None;
     }
     if !cached.complete {
@@ -209,17 +217,34 @@ mod tests {
     }
 
     #[test]
-    fn hit_when_seed_is_subset() {
+    fn miss_when_seed_is_narrower_than_cached() {
+        // Cache hit now requires exact set equality. A narrower seed must miss
+        // because the cached `total_commits` reflects the superset walk and
+        // would drift downstream scores.
         let dir = tempfile::tempdir().unwrap();
         let cfg = default_cfg();
-        // Write with two paths.
         let seed = vec!["a.rs".to_string(), "b.rs".to_string()];
         let index = make_index();
 
         try_write(dir.path(), "head1", &seed, &cfg, &index);
-        // Load with subset of those paths — should hit.
         let subset = vec!["a.rs".to_string()];
-        assert!(try_load(dir.path(), "head1", &subset, &cfg).is_some());
+        assert!(
+            try_load(dir.path(), "head1", &subset, &cfg).is_none(),
+            "narrower seed must miss the wider cached entry"
+        );
+    }
+
+    #[test]
+    fn hit_on_exact_seed_equality_regardless_of_order() {
+        // Sort/dedup means `["b.rs","a.rs"]` and `["a.rs","b.rs"]` match.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = default_cfg();
+        let seed = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let index = make_index();
+
+        try_write(dir.path(), "head1", &seed, &cfg, &index);
+        let reordered = vec!["b.rs".to_string(), "a.rs".to_string()];
+        assert!(try_load(dir.path(), "head1", &reordered, &cfg).is_some());
     }
 
     #[test]

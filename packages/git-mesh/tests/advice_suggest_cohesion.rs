@@ -161,7 +161,11 @@ fn trigram_cohesion_disjoint_ranges_returns_zero() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn per_edge_cohesion_disjoint_ranges_returns_zero() {
+fn per_edge_cohesion_disjoint_identifiers_falls_back_to_trigram_jaccard() {
+    // Disjoint identifiers produce 0 IDF-weighted shared signal, but the
+    // trigram-jaccard fallback (added so the cohesion gate has a meaningful
+    // signal under tiny single-session corpora) still surfaces character-
+    // level similarity between the joined identifier streams.
     let mut map: BTreeMap<CanonicalId, Vec<String>> = BTreeMap::new();
     map.insert(0, vec!["alpha".to_string()]);
     map.insert(1, vec!["delta".to_string()]);
@@ -169,7 +173,9 @@ fn per_edge_cohesion_disjoint_ranges_returns_zero() {
 
     let a = range_tokens_of("alpha beta gamma");
     let b = range_tokens_of("delta epsilon zeta");
-    assert_eq!(per_edge_cohesion(&a, &b, &idf, 6), 0.0);
+    let cohesion = per_edge_cohesion(&a, &b, &idf, 6);
+    // Disjoint identifiers → IDF-weighted is 0, jaccard is the residual.
+    assert!((0.0..0.20).contains(&cohesion));
 }
 
 #[test]
