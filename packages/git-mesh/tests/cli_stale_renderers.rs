@@ -193,7 +193,7 @@ fn human_layered_emits_src_marker() -> Result<()> {
     let text = String::from_utf8_lossy(&out.stdout);
     // Layered (default) renderer prefixes findings with the src marker.
     assert!(
-        text.contains("(Changed in HEAD)"),
+        text.contains("(Changed in worktree)"),
         "expected src-marker on finding line: {text}"
     );
     Ok(())

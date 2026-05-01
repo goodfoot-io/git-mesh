@@ -53,6 +53,7 @@
     "claude-code-hooks@goodfoot": true,
     "last30days@last30days-skill": true,
     "git-mesh@git-mesh": true,
+    "wiki@goodfoot-wiki": true,
     "cards@cards.management": true
   },
   "extraKnownMarketplaces": {
@@ -78,6 +79,12 @@
       "source": {
         "source": "github",
         "repo": "goodfoot-io/marketplace"
+      }
+    },
+    "goodfoot-wiki": {
+      "source": {
+        "source": "github",
+        "repo": "goodfoot-io/wiki"
       }
     },
     "claude-plugins-official": {

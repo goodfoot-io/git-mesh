@@ -384,11 +384,20 @@ fn render_human(
                         culprit: None,
                     }]
                 } else {
-                    findings
+                    // Collapse per-layer expansions to a single row per
+                    // anchor, picking the deepest drifting source
+                    // (Worktree > Index > HEAD).
+                    let deepest = findings
                         .iter()
                         .filter(|f| f.mesh == m.name && f.anchor_id == r.anchor_id)
-                        .cloned()
-                        .collect()
+                        .max_by_key(|f| match f.source {
+                            Some(DriftSource::Worktree) => 3,
+                            Some(DriftSource::Index) => 2,
+                            Some(DriftSource::Head) => 1,
+                            None => 0,
+                        })
+                        .cloned();
+                    deepest.into_iter().collect()
                 }
             })
             .collect();
