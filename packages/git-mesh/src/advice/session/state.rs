@@ -36,8 +36,7 @@ fn default_touch_kind() -> TouchKind {
     TouchKind::Modified
 }
 
-/// One entry in `touches.jsonl`. Whole-file granularity — line-range
-/// information lives on `reads.jsonl` entries and on mesh anchors.
+/// One entry in `touches.jsonl`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TouchInterval {
     /// Repo-relative path.
@@ -51,6 +50,12 @@ pub struct TouchInterval {
     pub id: String,
     /// RFC-3339 timestamp.
     pub ts: String,
+    /// Inclusive 1-based start line of the edited hunk, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u32>,
+    /// Inclusive 1-based end line of the edited hunk, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<u32>,
 }
 
 /// Per-session print-gate flags persisted at `<session>/flags.state`.

@@ -155,6 +155,17 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Remove every entry under `snapshots/` unconditionally.
+    pub fn sweep_all_snapshots(&self) {
+        let dir = self.dir.join(SNAPSHOTS_SUBDIR);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+
     /// Read `flags.state`. Returns `SessionFlags::default()` when absent.
     pub fn read_flags(&self) -> Result<SessionFlags> {
         let path = self.dir.join("flags.state");

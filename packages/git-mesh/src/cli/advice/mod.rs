@@ -47,11 +47,31 @@ pub enum AdviceCommand {
         /// `mark`/`flush` pair.
         id: Option<String>,
     },
+    /// Record a single payload-driven touch from an Edit/Write/MultiEdit call,
+    /// bypassing the snapshot path.
+    Touch {
+        /// Caller-chosen opaque id (typically `tool_use_id`).
+        id: String,
+        /// Anchor: either `<path>` (whole-file) or `<path>#L<start>-L<end>`.
+        anchor: String,
+        /// Kind of change: `added` or `modified`.
+        kind: TouchKindArg,
+    },
+    /// Remove the session directory and all snapshot artefacts. Best-effort
+    /// and idempotent — missing directory is not an error.
+    End,
     /// Corpus-wide debug/parity surface for the n-ary mesh suggester.
     Suggest,
     /// List repo-relative paths created, updated, or deleted during this
     /// session. Read-only: does not modify any session state.
     Touched,
+}
+
+/// Clap-derive enum for the `touch` verb's `kind` argument.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum TouchKindArg {
+    Added,
+    Modified,
 }
 
 /// Top-level dispatch.
@@ -67,6 +87,10 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
         Some(AdviceCommand::Mark { id }) => run_advice_mark(repo, session_id, id),
         Some(AdviceCommand::Flush { id }) => run_advice_flush(repo, session_id, id),
         Some(AdviceCommand::Read { anchor, id }) => run_advice_read(repo, session_id, anchor, id),
+        Some(AdviceCommand::Touch { id, anchor, kind }) => {
+            run_advice_touch(repo, session_id, id, anchor, kind)
+        }
+        Some(AdviceCommand::End) => run_advice_end(repo, session_id),
         Some(AdviceCommand::Touched) => run_advice_touched(repo, session_id),
         Some(AdviceCommand::Suggest) => unreachable!("handled above"),
         None => bail!(
@@ -256,11 +280,7 @@ fn ls_files_untracked(wd: &std::path::Path) -> Result<Vec<String>> {
 
 fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> Result<i32> {
     use crate::advice::session::SessionStore;
-    use crate::advice::session::state::{TouchInterval, TouchKind, UntrackedSnapshotEntry};
-    use crate::advice::structured::{
-        Action, BasicOutput, Status, creation_instructions, edit_overlaps, format_anchor_resolved,
-        mesh_is_stale, reconciliation_instructions,
-    };
+    use crate::advice::session::state::{TouchInterval, UntrackedSnapshotEntry};
 
     if id.is_empty() {
         bail!("git mesh advice <sid> flush <id>: id must not be empty");
@@ -290,8 +310,31 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
             kind: *kind,
             id: id.clone(),
             ts: touch_ts.clone(),
+            start: None,
+            end: None,
         })
         .collect();
+
+    process_touches(repo, &store, &id, touches)
+}
+
+/// Shared mesh-resolution and emission pipeline. Called by both `flush`
+/// (snapshot-derived touches) and `touch` (payload-driven touches).
+/// Always calls `store.discard_snapshot(id)` at the end — this is a no-op
+/// when no snapshot was taken (the snapshot files do not exist).
+fn process_touches(
+    repo: &gix::Repository,
+    store: &crate::advice::session::SessionStore,
+    id: &str,
+    touches: Vec<crate::advice::session::state::TouchInterval>,
+) -> Result<i32> {
+    use crate::advice::session::state::TouchKind;
+    use crate::advice::structured::{
+        Action, BasicOutput, Status, creation_instructions, edit_overlaps, format_anchor_resolved,
+        mesh_is_stale, reconciliation_instructions,
+    };
+
+    let wd = work_dir(repo)?;
 
     let meshes = {
         let _perf = crate::perf::span("advice.flush.resolve-candidates");
@@ -300,7 +343,13 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
             touches
                 .iter()
                 .filter(|t| !matches!(t.kind, TouchKind::Added | TouchKind::Deleted))
-                .map(|t| (t.path.as_str(), None)),
+                .map(|t| {
+                    let range = match (t.start, t.end) {
+                        (Some(s), Some(e)) => Some((s, e)),
+                        _ => None,
+                    };
+                    (t.path.as_str(), range)
+                }),
         );
         let resolved =
             crate::resolver::resolve_named_meshes(repo, &candidate_names, default_engine_options())
@@ -342,8 +391,16 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         if matches!(t.kind, TouchKind::Added | TouchKind::Deleted) {
             continue;
         }
-        let action = Action::WholeFile {
-            path: t.path.clone(),
+        let action = if let (Some(start), Some(end)) = (t.start, t.end) {
+            Action::Range {
+                path: t.path.clone(),
+                start,
+                end,
+            }
+        } else {
+            Action::WholeFile {
+                path: t.path.clone(),
+            }
         };
         for (mesh, anchor_index) in meshes.iter().zip(mesh_anchor_index.iter()) {
             if emitted_meshes_this_call.contains(&mesh.name) {
@@ -499,7 +556,140 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         store.append_advice_seen(&emitted_fps)?;
     }
     store.write_flags(&flags)?;
-    store.discard_snapshot(&id);
+    store.discard_snapshot(id);
+    Ok(0)
+}
+
+// ── touch ───────────────────────────────────────────────────────────────────
+
+fn run_advice_touch(
+    repo: &gix::Repository,
+    session_id: String,
+    id: String,
+    anchor: String,
+    kind: TouchKindArg,
+) -> Result<i32> {
+    use crate::advice::session::SessionStore;
+    use crate::advice::session::state::{TouchInterval, TouchKind};
+
+    if id.is_empty() {
+        bail!("git mesh advice <sid> touch <id>: id must not be empty");
+    }
+    if anchor.is_empty() {
+        bail!("git mesh advice <sid> touch: anchor must not be empty");
+    }
+
+    // Validate the anchor. For Added, skip the EOF check since the file may
+    // be brand new. For Modified, reuse validate_read_spec which checks EOF.
+    match kind {
+        TouchKindArg::Modified => validate_read_spec(repo, &anchor)?,
+        TouchKindArg::Added => validate_touch_anchor_added(repo, &anchor)?,
+    }
+
+    let wd = work_dir(repo)?;
+    let gd = repo.git_dir().to_path_buf();
+    let store = SessionStore::open(wd, &gd, &session_id)?;
+    store.ensure_initialized()?;
+
+    // Parse anchor into (path, Option<(start, end)>).
+    let (path_str, line_anchor) = match anchor.split_once("#L") {
+        Some((p, frag)) => {
+            let (s, e) = frag.split_once("-L").unwrap();
+            (
+                p.to_string(),
+                Some((s.parse::<u32>().unwrap(), e.parse::<u32>().unwrap())),
+            )
+        }
+        None => (anchor.clone(), None),
+    };
+
+    let touch_kind = match kind {
+        TouchKindArg::Added => TouchKind::Added,
+        TouchKindArg::Modified => TouchKind::Modified,
+    };
+
+    let touches = vec![TouchInterval {
+        path: path_str,
+        kind: touch_kind,
+        id,
+        ts: chrono::Utc::now().to_rfc3339(),
+        start: line_anchor.map(|(s, _)| s),
+        end: line_anchor.map(|(_, e)| e),
+    }];
+
+    process_touches(repo, &store, "", touches)
+}
+
+/// Validate an anchor for the `touch added` case. Same as `validate_read_spec`
+/// but skips the EOF check because the file content may be brand new.
+fn validate_touch_anchor_added(repo: &gix::Repository, spec: &str) -> Result<()> {
+    if spec.is_empty() {
+        bail!("invalid spec: path must not be empty");
+    }
+    let (path_str, anchor) = match spec.split_once("#L") {
+        Some((p, frag)) => {
+            let (s, e) = frag.split_once("-L").ok_or_else(|| {
+                anyhow::anyhow!("invalid anchor `{spec}`; expected <path>#L<start>-L<end>")
+            })?;
+            let start: u32 = s
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid anchor start in `{spec}`"))?;
+            let end: u32 = e
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid anchor end in `{spec}`"))?;
+            if start < 1 {
+                bail!("invalid anchor `{spec}`: start must be at least 1");
+            }
+            if end < start {
+                bail!("invalid anchor `{spec}`: end ({end}) is before start ({start})");
+            }
+            (p, Some((start, end)))
+        }
+        None => (spec, None),
+    };
+    if path_str.is_empty() {
+        bail!("invalid spec `{spec}`: path must not be empty");
+    }
+    let wd = work_dir(repo)?;
+    let abs = wd.join(path_str);
+    if !abs.exists() {
+        bail!("path not found in worktree: `{path_str}`");
+    }
+    let _ = anchor;
+    Ok(())
+}
+
+// ── end ─────────────────────────────────────────────────────────────────────
+
+fn run_advice_end(repo: &gix::Repository, session_id: String) -> Result<i32> {
+    use crate::advice::session::store::{advice_base_dir, repo_key};
+
+    // Resolve session dir without opening/locking it. We can't use
+    // SessionStore::open because that creates the dir and takes a lock —
+    // both inappropriate for an idempotent cleanup.
+    let wd = match repo.workdir() {
+        Some(p) => p.to_path_buf(),
+        None => return Ok(0),
+    };
+    let git_dir = repo.git_dir().to_path_buf();
+    let session_dir = advice_base_dir()
+        .join(repo_key(&wd, &git_dir))
+        .join(&session_id);
+
+    if !session_dir.exists() {
+        return Ok(0);
+    }
+
+    // Sweep all snapshots unconditionally before removing the directory.
+    // We do this manually to avoid needing a SessionStore (which would lock).
+    let snapshots_dir = session_dir.join("snapshots");
+    if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&session_dir);
     Ok(0)
 }
 

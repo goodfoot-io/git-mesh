@@ -25,6 +25,8 @@ fn touch(path: &str, _start: u32, _end: u32, ts: &str) -> TouchInterval {
         kind: TouchKind::Modified,
         id: "test".to_string(),
         ts: ts.to_string(),
+        start: None,
+        end: None,
     }
 }
 

@@ -368,6 +368,8 @@ mod tests {
             kind: TouchKind::Modified,
             id: "test".to_string(),
             ts: ts.to_string(),
+            start: None,
+            end: None,
         }
     }
 

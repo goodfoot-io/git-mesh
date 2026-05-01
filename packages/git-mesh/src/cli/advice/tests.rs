@@ -4,7 +4,10 @@
 
 use anyhow::Result;
 
-use super::{collect_touched_paths, run_advice_flush, run_advice_mark, run_advice_read};
+use super::{
+    TouchKindArg, collect_touched_paths, run_advice_end, run_advice_flush, run_advice_mark,
+    run_advice_read, run_advice_touch,
+};
 
 struct FixtureRepo {
     dir: tempfile::TempDir,
@@ -166,30 +169,40 @@ fn touched_lists_added_modified_deleted_dedup_first_seen_skipping_modechange() -
             kind: TouchKind::Added,
             id: "t1".into(),
             ts: "t".into(),
+            start: None,
+            end: None,
         },
         TouchInterval {
             path: "b.rs".into(),
             kind: TouchKind::Modified,
             id: "t1".into(),
             ts: "t".into(),
+            start: None,
+            end: None,
         },
         TouchInterval {
             path: "b.rs".into(),
             kind: TouchKind::Modified,
             id: "t2".into(),
             ts: "t".into(),
+            start: None,
+            end: None,
         },
         TouchInterval {
             path: "c.rs".into(),
             kind: TouchKind::Deleted,
             id: "t2".into(),
             ts: "t".into(),
+            start: None,
+            end: None,
         },
         TouchInterval {
             path: "script.sh".into(),
             kind: TouchKind::ModeChange,
             id: "t3".into(),
             ts: "t".into(),
+            start: None,
+            end: None,
         },
     ];
     let mut body = String::new();
@@ -233,5 +246,184 @@ fn read_records_optional_id_correlation() -> Result<()> {
     assert_eq!(rec.start_line, Some(1));
     assert_eq!(rec.end_line, Some(5));
     assert_eq!(rec.id.as_deref(), Some("read-tool"));
+    Ok(())
+}
+
+// ── touch tests ──────────────────────────────────────────────────────────────
+
+#[test]
+fn touch_line_anchored_modified_appends_touch_with_range() -> Result<()> {
+    let repo = FixtureRepo::new()?;
+    let s = FixtureRepo::sid("touch-mod");
+    let gix = repo.gix_repo()?;
+
+    run_advice_touch(
+        &gix,
+        s.clone(),
+        "tuid-1".into(),
+        "file1.txt#L2-L5".into(),
+        TouchKindArg::Modified,
+    )?;
+
+    let touches = touches_for(&repo.session_dir(&s));
+    assert_eq!(touches.len(), 1, "expected one touch: {touches:?}");
+    let t = &touches[0];
+    assert_eq!(t.path, "file1.txt");
+    assert_eq!(t.id, "tuid-1");
+    assert!(matches!(
+        t.kind,
+        crate::advice::session::state::TouchKind::Modified
+    ));
+    assert_eq!(t.start, Some(2));
+    assert_eq!(t.end, Some(5));
+    Ok(())
+}
+
+#[test]
+fn touch_whole_file_added_appends_touch_with_no_range() -> Result<()> {
+    let repo = FixtureRepo::new()?;
+    let s = FixtureRepo::sid("touch-add");
+    let gix = repo.gix_repo()?;
+
+    run_advice_touch(
+        &gix,
+        s.clone(),
+        "tuid-2".into(),
+        "file1.txt".into(),
+        TouchKindArg::Added,
+    )?;
+
+    let touches = touches_for(&repo.session_dir(&s));
+    assert_eq!(touches.len(), 1, "expected one touch: {touches:?}");
+    let t = &touches[0];
+    assert_eq!(t.path, "file1.txt");
+    assert_eq!(t.id, "tuid-2");
+    assert!(matches!(
+        t.kind,
+        crate::advice::session::state::TouchKind::Added
+    ));
+    assert_eq!(t.start, None);
+    assert_eq!(t.end, None);
+    Ok(())
+}
+
+/// Verify that a line-anchored touch records the correct range in touches.jsonl.
+/// Mesh emission is an integration-level concern; here we confirm start/end
+/// routing through process_touches is correct.
+#[test]
+fn touch_line_anchored_range_routing() -> Result<()> {
+    let repo = FixtureRepo::new()?;
+    let gix = repo.gix_repo()?;
+
+    // Overlapping touch within file bounds (file has 10 lines).
+    let s_overlap = FixtureRepo::sid("touch-route-overlap");
+    run_advice_touch(
+        &gix,
+        s_overlap.clone(),
+        "tuid-route".into(),
+        "file1.txt#L5-L10".into(),
+        TouchKindArg::Modified,
+    )?;
+    let touches = touches_for(&repo.session_dir(&s_overlap));
+    assert_eq!(touches.len(), 1);
+    assert_eq!(touches[0].start, Some(5));
+    assert_eq!(touches[0].end, Some(10));
+
+    // Non-overlapping touch in a different range.
+    let s_no_overlap = FixtureRepo::sid("touch-route-no-overlap");
+    let gix2 = repo.gix_repo()?;
+    run_advice_touch(
+        &gix2,
+        s_no_overlap.clone(),
+        "tuid-no-route".into(),
+        "file1.txt#L1-L4".into(),
+        TouchKindArg::Modified,
+    )?;
+    let touches2 = touches_for(&repo.session_dir(&s_no_overlap));
+    assert_eq!(touches2.len(), 1);
+    assert_eq!(touches2[0].start, Some(1));
+    assert_eq!(touches2[0].end, Some(4));
+
+    Ok(())
+}
+
+#[test]
+fn touch_does_not_create_snapshot_files() -> Result<()> {
+    let repo = FixtureRepo::new()?;
+    let s = FixtureRepo::sid("touch-no-snap");
+    let gix = repo.gix_repo()?;
+
+    run_advice_touch(
+        &gix,
+        s.clone(),
+        "tuid-snap".into(),
+        "file1.txt#L1-L3".into(),
+        TouchKindArg::Modified,
+    )?;
+
+    let session_dir = repo.session_dir(&s);
+    let snapshots_dir = session_dir.join("snapshots");
+    if snapshots_dir.exists() {
+        let entries: Vec<_> = std::fs::read_dir(&snapshots_dir)?
+            .flatten()
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "snapshots dir should be empty after touch, found: {entries:?}"
+        );
+    }
+    // If snapshots dir doesn't exist, that's also fine.
+    Ok(())
+}
+
+// ── end tests ────────────────────────────────────────────────────────────────
+
+#[test]
+fn end_removes_session_dir_and_is_idempotent() -> Result<()> {
+    let repo = FixtureRepo::new()?;
+    let s = FixtureRepo::sid("end-test");
+    let gix = repo.gix_repo()?;
+
+    // Create a session with a touch so the dir exists.
+    run_advice_touch(
+        &gix,
+        s.clone(),
+        "tuid-end".into(),
+        "file1.txt".into(),
+        TouchKindArg::Added,
+    )?;
+    let session_dir = repo.session_dir(&s);
+    assert!(session_dir.exists(), "session dir should exist after touch");
+
+    let code = run_advice_end(&gix, s.clone())?;
+    assert_eq!(code, 0);
+    assert!(
+        !session_dir.exists(),
+        "session dir should be removed after end"
+    );
+
+    // Second call is a no-op (idempotent).
+    let code2 = run_advice_end(&gix, s.clone())?;
+    assert_eq!(code2, 0);
+    Ok(())
+}
+
+#[test]
+fn end_sweeps_leftover_snapshots() -> Result<()> {
+    let repo = FixtureRepo::new()?;
+    let s = FixtureRepo::sid("end-snap");
+    let gix = repo.gix_repo()?;
+
+    // Create a mark (which creates a snapshot) but don't flush.
+    run_advice_mark(&gix, s.clone(), "orphan-snap".into())?;
+    let session_dir = repo.session_dir(&s);
+    let snapshots_dir = session_dir.join("snapshots");
+    assert!(snapshots_dir.exists(), "snapshots dir should exist after mark");
+    let snap_count = std::fs::read_dir(&snapshots_dir)?.count();
+    assert!(snap_count > 0, "should have at least one snapshot file");
+
+    let code = run_advice_end(&gix, s.clone())?;
+    assert_eq!(code, 0);
+    assert!(!session_dir.exists(), "session dir should be gone after end");
     Ok(())
 }
