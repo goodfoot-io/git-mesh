@@ -555,15 +555,34 @@ fn process_touches(
         }
     }
 
-    let added_paths: Vec<String> = touches
+    let deleted_paths: std::collections::HashSet<String> = touches
         .iter()
-        .filter(|t| matches!(t.kind, TouchKind::Added))
+        .filter(|t| matches!(t.kind, TouchKind::Deleted))
         .map(|t| t.path.clone())
         .collect();
+    let turn_reads: Vec<String> = store
+        .load_reads()?
+        .into_iter()
+        .filter(|r| r.id.as_deref() == Some(id))
+        .map(|r| r.path)
+        .collect();
+    let gate_seed: Vec<String> = {
+        let mut s: Vec<String> = touches
+            .iter()
+            .filter(|t| !matches!(t.kind, TouchKind::Deleted))
+            .map(|t| t.path.clone())
+            .collect();
+        for p in &turn_reads {
+            if !s.contains(p) {
+                s.push(p.clone());
+            }
+        }
+        s
+    };
     let mut emitted_fps: Vec<String> = Vec::new();
     let mut any_creation_emission = false;
 
-    if !added_paths.is_empty() {
+    if !gate_seed.is_empty() {
         use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
         let advice_dir = match std::env::var("GIT_MESH_ADVICE_DIR") {
             Ok(s) if !s.is_empty() => std::path::PathBuf::from(s),
@@ -606,12 +625,10 @@ fn process_touches(
                 if advice_seen.contains(&fp) || emitted_fps.contains(&fp) {
                     continue;
                 }
-                let has_added_participant = sug.participants.iter().any(|p| {
-                    added_paths
-                        .iter()
-                        .any(|ap| p.path.to_string_lossy().as_ref() == ap.as_str())
+                let has_deleted_participant = sug.participants.iter().any(|p| {
+                    deleted_paths.contains(p.path.to_string_lossy().as_ref())
                 });
-                if !has_added_participant {
+                if has_deleted_participant {
                     continue;
                 }
                 for p in &sug.participants {
