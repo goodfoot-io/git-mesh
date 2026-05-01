@@ -1,2 +1,15 @@
 #!/bin/sh
-git mesh commit
+
+# --- Wiki + mesh validation (informational) ---
+WIKI_BIN=$(command -v wiki || true)
+if [ -n "$WIKI_BIN" ]; then
+  COMMITTED_MD=$(git diff-tree --no-commit-id --name-only -r HEAD --diff-filter=d | grep '\.md$' || true)
+  if [ -n "$COMMITTED_MD" ]; then
+    echo "Running wiki check (informational)..."
+    "$WIKI_BIN" check --no-exit-code
+  fi
+fi
+if command -v git-mesh >/dev/null 2>&1; then
+  echo "Running git mesh stale --compact (informational)..."
+  git mesh stale --compact --no-exit-code
+fi
