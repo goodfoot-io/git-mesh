@@ -6,7 +6,7 @@ if [ -n "$WIKI_BIN" ]; then
   COMMITTED_MD=$(git diff-tree --no-commit-id --name-only -r HEAD --diff-filter=d | grep '\.md$' || true)
   if [ -n "$COMMITTED_MD" ]; then
     echo "Running wiki check (informational)..."
-    "$WIKI_BIN" check --no-exit-code
+    "$WIKI_BIN" check --no-exit-code --no-mesh
   fi
 fi
 if command -v git-mesh >/dev/null 2>&1; then
