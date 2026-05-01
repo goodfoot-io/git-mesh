@@ -302,7 +302,7 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
     let internal_path_prefixes = active_advice_store_prefixes(wd, store.dir());
     let touch_ts = chrono::Utc::now().to_rfc3339();
 
-    let touches: Vec<TouchInterval> = entries
+    let all_touches: Vec<TouchInterval> = entries
         .iter()
         .filter(|(p, _)| !advice_path_is_internal(p, &internal_path_prefixes))
         .map(|(path, kind)| TouchInterval {
@@ -315,7 +315,24 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         })
         .collect();
 
-    process_touches(repo, &store, &id, touches)
+    let reads_seen = store.reads_seen_paths()?;
+    let mut matched = Vec::new();
+    let mut parked = Vec::new();
+    for t in all_touches {
+        if reads_seen.contains(&t.path) {
+            matched.push(t);
+        } else {
+            parked.push(t);
+        }
+    }
+    for t in &parked {
+        store.append_pending_touch(t)?;
+    }
+    if matched.is_empty() {
+        store.discard_snapshot(&id);
+        return Ok(0);
+    }
+    process_touches(repo, &store, &id, matched)
 }
 
 /// Shared mesh-resolution and emission pipeline. Called by both `flush`
@@ -853,6 +870,12 @@ fn run_advice_read(
         &rec,
         LockTimeout::Bounded(std::time::Duration::from_secs(30)),
     )?;
+
+    // Replay any pending touches that were parked waiting for this read.
+    let drained = store.drain_pending_touches_for_path(&rec.path)?;
+    if !drained.is_empty() {
+        process_touches(repo, &store, "", drained)?;
+    }
 
     let action = action_from_spec(&anchor).ok_or_else(|| {
         anyhow::anyhow!("internal: action_from_spec returned None for `{anchor}`")

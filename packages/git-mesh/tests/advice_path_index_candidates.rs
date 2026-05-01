@@ -62,6 +62,10 @@ fn flush_uses_path_index_candidates_not_all_meshes() -> Result<()> {
 
     let s = sid("flush");
 
+    // Record a read of file1.txt so the flush gate passes for that path.
+    let read_out = repo.run_mesh(["advice", &s, "read", "file1.txt#L1-L5"])?;
+    assert_eq!(read_out.status.code(), Some(0));
+
     // Mark a tool-use, edit only file1.txt, then flush with perf on.
     let mark = repo.run_mesh(["advice", &s, "mark", "tool-1"])?;
     assert_eq!(mark.status.code(), Some(0));

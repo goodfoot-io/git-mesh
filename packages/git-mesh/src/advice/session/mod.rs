@@ -50,6 +50,7 @@ const JSONL_FILES: &[&str] = &[
     "docs-seen.jsonl",
     "meshes-seen.jsonl",
     "mesh-candidates.jsonl",
+    "pending_touches.jsonl",
 ];
 
 const SNAPSHOTS_SUBDIR: &str = "snapshots";
@@ -254,6 +255,48 @@ impl SessionStore {
 
     pub fn docs_seen_set(&self) -> Result<std::collections::HashSet<String>> {
         load_string_set(&self.dir.join("docs-seen.jsonl"))
+    }
+
+    /// Append a single [`TouchInterval`] row to `pending_touches.jsonl`.
+    pub fn append_pending_touch(&self, t: &TouchInterval) -> Result<()> {
+        let line = serde_json::to_string(t).with_context(|| "serialize TouchInterval (pending)")?;
+        store::append_jsonl_line(&self.dir.join("pending_touches.jsonl"), &self.lock, &line)
+    }
+
+    /// Collect the distinct `path` values from `reads.jsonl`.
+    pub fn reads_seen_paths(&self) -> Result<std::collections::HashSet<String>> {
+        let reads: Vec<state::ReadRecord> = read_jsonl_lines(&self.dir.join("reads.jsonl"))?;
+        Ok(reads.into_iter().map(|r| r.path).collect())
+    }
+
+    /// Read `pending_touches.jsonl`, extract rows matching `path`, atomically
+    /// rewrite the file with the remaining rows, and return the drained rows.
+    /// The session lock held by `open()` makes this read-modify-write race-free.
+    pub fn drain_pending_touches_for_path(&self, path: &str) -> Result<Vec<TouchInterval>> {
+        let pending_path = self.dir.join("pending_touches.jsonl");
+        let all: Vec<TouchInterval> = read_jsonl_lines(&pending_path)?;
+        let mut drained = Vec::new();
+        let mut survivors = Vec::new();
+        for t in all {
+            if t.path == path {
+                drained.push(t);
+            } else {
+                survivors.push(t);
+            }
+        }
+        if drained.is_empty() {
+            return Ok(drained);
+        }
+        // Atomically rewrite the file with the survivors.
+        let mut bytes = Vec::new();
+        for t in &survivors {
+            let line = serde_json::to_string(t)
+                .with_context(|| "serialize TouchInterval (pending rewrite)")?;
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+        }
+        store::atomic_write(&pending_path, &bytes)?;
+        Ok(drained)
     }
 }
 

@@ -168,6 +168,11 @@ assert_stdout_empty "SessionEnd(idempotent)"
 log "Test 2: PreToolUse mark + edit + PostToolUse flush surfaces meshed partner"
 REPO2="$(make_repo repo2)"
 SID2="sess-two"
+# Record a read of a.txt before marking so flush can pass the gate.
+READ2="$(jq -nc --arg s "$SID2" --arg c "$REPO2" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t2r", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$READ2"
+assert_rc_zero "PreToolUse(read a.txt)"
 PRE2="$(jq -nc --arg s "$SID2" --arg c "$REPO2" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t2", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE2"
@@ -241,6 +246,11 @@ assert_stdout_contains "PostToolUse(no mark)" "demo mesh"
 log "Test 10: PreToolUse mark + edit + PostToolUse flush against cwd"
 REPO10="$(make_repo repo10)"
 SID10="sess-ten"
+# Record a read of a.txt before marking so flush can pass the gate.
+READ10="$(jq -nc --arg s "$SID10" --arg c "$REPO10" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t10r", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$READ10"
+assert_rc_zero "Test10: read a.txt"
 PRE10="$(jq -nc --arg s "$SID10" --arg c "$REPO10" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t10", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE10"
@@ -259,6 +269,11 @@ assert_stdout_contains "PostToolUse(Bash cwd)" "b.txt"
 log "Test 11: PreToolUse mark + edit + PostToolUse flush for mcp__ tool"
 REPO11="$(make_repo repo11)"
 SID11="sess-eleven"
+# Record a read of a.txt before marking so flush can pass the gate.
+READ11="$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t11r", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$READ11"
+assert_rc_zero "Test11: read a.txt"
 PRE11="$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"mcp__filesystem__write_file", tool_input:{}, tool_use_id:"t11", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE11"
