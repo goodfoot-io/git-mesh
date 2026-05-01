@@ -128,7 +128,6 @@ pub fn score_edges(
             .map(|k| match k {
                 Technique::OperationWindow => "operation-window".to_string(),
                 Technique::LocatorEditContext => "locator-edit-context".to_string(),
-                Technique::SessionRecurrence => "session-recurrence".to_string(),
             })
             .collect();
         kinds_sorted.sort();
@@ -146,7 +145,7 @@ pub fn score_edges(
                 s_history,
             },
             per_edge_cohesion: None,
-            shared_sessions: pair.sessions.len(),
+            shared_sessions: 0,
             mean_op_distance: mean_distance,
             lift: 0.0,
             confidence: 0.0,
@@ -199,7 +198,7 @@ mod tests {
         }
     }
 
-    fn make_part(path: &str, start: u32, end: u32, sid: &str, op_index: usize) -> Participant {
+    fn make_part(path: &str, start: u32, end: u32, _sid: &str, op_index: usize) -> Participant {
         Participant {
             path: path.to_string(),
             start,
@@ -211,7 +210,6 @@ mod tests {
             anchored: false,
             locator_distance: None,
             locator_forward: None,
-            session_sid: sid.to_string(),
         }
     }
 

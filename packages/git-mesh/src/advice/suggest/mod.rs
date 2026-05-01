@@ -187,7 +187,7 @@ pub fn run_suggest_pipeline(
     for rec in sessions {
         let mut ops = build_op_stream(rec, cfg);
         attach_locators(&mut ops, cfg);
-        let raw_parts = build_participants(&ops, &rec.sid);
+        let raw_parts = build_participants(&ops);
         let merged = merge_ranges_per_file(&raw_parts, cfg);
         all_parts.extend(merged.clone());
         session_participants.push(SessionParticipants {

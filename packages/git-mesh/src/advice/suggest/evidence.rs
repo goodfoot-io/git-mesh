@@ -8,7 +8,7 @@
 //!
 //! Channel 5 (import-graph) remains a stub per plan scope.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::advice::suggest::canonical::{CanonicalIndex, part_key};
 use crate::advice::suggest::locator::prior_context_atoms;
@@ -23,14 +23,13 @@ use crate::advice::suggest::{Op, SuggestConfig};
 pub enum Technique {
     OperationWindow,
     LocatorEditContext,
-    SessionRecurrence,
 }
 
 /// One evidence record for a pair.
 #[derive(Clone, Debug)]
 pub struct EvidenceRecord {
     pub technique: Technique,
-    /// Session id ("*recur*" for synthetic recurrence rows).
+    /// Session id.
     pub sid: String,
     pub op_distance: u32,
     pub edit_anchored: u8,
@@ -43,13 +42,11 @@ pub struct PairState {
     /// Canonical ids, sorted (lo, hi).
     pub canon_ids: (usize, usize),
     pub evidence: Vec<EvidenceRecord>,
-    /// Sessions in which this pair appears (excludes synthetic rows).
-    pub sessions: BTreeSet<String>,
     /// Count of `locator-edit-context` evidence hits.
     pub edit_hits: u32,
     pub weighted_hits: f64,
     /// Distinct technique kinds seen.
-    pub kinds: BTreeSet<Technique>,
+    pub kinds: std::collections::BTreeSet<Technique>,
 }
 
 /// Map keyed by `(canonical_a, canonical_b)` with `a < b`.
@@ -75,15 +72,11 @@ fn record(pairs: &mut PairEvidenceMap, a: usize, b: usize, ev: EvidenceRecord) {
     let entry = pairs.entry(key).or_insert_with(|| PairState {
         canon_ids: (lo, hi),
         evidence: Vec::new(),
-        sessions: BTreeSet::new(),
         edit_hits: 0,
         weighted_hits: 0.0,
-        kinds: BTreeSet::new(),
+        kinds: std::collections::BTreeSet::new(),
     });
     entry.kinds.insert(ev.technique.clone());
-    if ev.sid != "*recur*" {
-        entry.sessions.insert(ev.sid.clone());
-    }
     entry.weighted_hits += ev.weight;
     if ev.technique == Technique::LocatorEditContext {
         entry.edit_hits += 1;
@@ -213,24 +206,6 @@ pub fn build_pair_evidence(
         }
     }
 
-    // Channel 3: session-recurrence — synthetic evidence per extra session.
-    for state in pairs.values_mut() {
-        if state.sessions.len() >= 2 {
-            let extra = state.sessions.len() - 1;
-            for _ in 0..extra {
-                state.evidence.push(EvidenceRecord {
-                    technique: Technique::SessionRecurrence,
-                    sid: "*recur*".to_string(),
-                    op_distance: 0,
-                    edit_anchored: 0,
-                    weight: 1.0,
-                });
-                state.kinds.insert(Technique::SessionRecurrence);
-                // weighted_hits already accumulated above; recurrence is synthetic
-            }
-        }
-    }
-
     pairs
 }
 
@@ -265,7 +240,7 @@ mod tests {
         }
     }
 
-    fn make_part(path: &str, start: u32, end: u32, sid: &str, op_index: usize) -> Participant {
+    fn make_part(path: &str, start: u32, end: u32, _sid: &str, op_index: usize) -> Participant {
         Participant {
             path: path.to_string(),
             start,
@@ -277,7 +252,6 @@ mod tests {
             anchored: false,
             locator_distance: None,
             locator_forward: None,
-            session_sid: sid.to_string(),
         }
     }
 
@@ -310,31 +284,6 @@ mod tests {
                 .iter()
                 .any(|e| e.technique == Technique::OperationWindow),
             "evidence should contain operation-window"
-        );
-    }
-
-    #[test]
-    fn same_pair_two_sessions_produces_recurrence() {
-        let p_a1 = make_part("a.rs", 1, 20, "s1", 0);
-        let p_b1 = make_part("b.rs", 1, 20, "s1", 1);
-        let p_a2 = make_part("a.rs", 1, 20, "s2", 0);
-        let p_b2 = make_part("b.rs", 1, 20, "s2", 1);
-        let all_parts = vec![p_a1.clone(), p_b1.clone(), p_a2.clone(), p_b2.clone()];
-        let canonical = build_canonical_ranges(&all_parts, &cfg());
-        let sessions = vec![
-            make_session("s1", vec![p_a1, p_b1]),
-            make_session("s2", vec![p_a2, p_b2]),
-        ];
-        let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
-        assert_eq!(pairs.len(), 1);
-        let state = pairs.values().next().unwrap();
-        assert_eq!(state.sessions.len(), 2);
-        assert!(
-            state
-                .evidence
-                .iter()
-                .any(|e| e.technique == Technique::SessionRecurrence),
-            "two sessions must produce session-recurrence evidence"
         );
     }
 

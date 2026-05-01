@@ -29,7 +29,7 @@ fn make_read_op(path: &str, start: u32, end: u32, idx: usize) -> Op {
     }
 }
 
-fn make_part(path: &str, start: u32, end: u32, sid: &str, op_index: usize) -> Participant {
+fn make_part(path: &str, start: u32, end: u32, _sid: &str, op_index: usize) -> Participant {
     Participant {
         path: path.to_string(),
         start,
@@ -41,7 +41,6 @@ fn make_part(path: &str, start: u32, end: u32, sid: &str, op_index: usize) -> Pa
         anchored: false,
         locator_distance: None,
         locator_forward: None,
-        session_sid: sid.to_string(),
     }
 }
 
@@ -142,11 +141,11 @@ fn high_floor_removes_low_scoring_edges() {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-session pair appears as shared_sessions > 1
+// Multi-session pair — shared_sessions is 0 (field reserved for diagnostics)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn multi_session_pair_has_shared_sessions_count() {
+fn multi_session_pair_shared_sessions_is_zero() {
     let mk = |sid: &str| {
         vec![
             make_part("a.rs", 1, 20, sid, 0),
@@ -166,7 +165,7 @@ fn multi_session_pair_has_shared_sessions_count() {
 
     assert!(!multi_edges.is_empty());
     assert_eq!(
-        multi_edges[0].shared_sessions, 2,
-        "pair seen in two sessions should report shared_sessions=2"
+        multi_edges[0].shared_sessions, 0,
+        "shared_sessions is always 0 after SessionRecurrence removal"
     );
 }

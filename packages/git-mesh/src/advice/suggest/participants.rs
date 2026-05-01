@@ -32,8 +32,6 @@ pub struct Participant {
     pub anchored: bool,
     pub locator_distance: Option<u32>,
     pub locator_forward: Option<bool>,
-    /// Session id for canonical stage key.
-    pub session_sid: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,8 +48,8 @@ pub enum ParticipantKind {
 /// Ports `participants` from `docs/analyze-v4.mjs` line 258.
 ///
 /// Only ranged ops contribute.  Whole-file edit ops without locator anchor
-/// are dropped.  The `session_sid` is set from the caller.
-pub fn participants(ops: &[Op], session_sid: &str) -> Vec<Participant> {
+/// are dropped.
+pub fn participants(ops: &[Op]) -> Vec<Participant> {
     let mut out = Vec::new();
     for op in ops {
         match op.kind {
@@ -76,7 +74,6 @@ pub fn participants(ops: &[Op], session_sid: &str) -> Vec<Participant> {
                     anchored: false,
                     locator_distance: None,
                     locator_forward: None,
-                    session_sid: session_sid.to_string(),
                 });
             }
             OpKind::Edit => {
@@ -92,7 +89,6 @@ pub fn participants(ops: &[Op], session_sid: &str) -> Vec<Participant> {
                         anchored: true,
                         locator_distance: op.locator_distance,
                         locator_forward: op.locator_forward,
-                        session_sid: session_sid.to_string(),
                     });
                 }
                 // Unanchored edits are dropped (no inferred anchor).
@@ -213,7 +209,7 @@ mod tests {
     #[test]
     fn ranged_reads_become_participants() {
         let ops = vec![make_read_op("foo.rs", 1, 10, 0)];
-        let parts = participants(&ops, "s1");
+        let parts = participants(&ops);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].start, 1);
         assert_eq!(parts[0].end, 10);
@@ -222,14 +218,14 @@ mod tests {
     #[test]
     fn unanchored_edits_excluded() {
         let ops = vec![make_edit_op("foo.rs", None, None, 0)];
-        let parts = participants(&ops, "s1");
+        let parts = participants(&ops);
         assert!(parts.is_empty());
     }
 
     #[test]
     fn anchored_edits_included() {
         let ops = vec![make_edit_op("foo.rs", Some(5), Some(15), 0)];
-        let parts = participants(&ops, "s1");
+        let parts = participants(&ops);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].kind, ParticipantKind::Edit);
         assert_eq!(parts[0].start, 5);
@@ -243,7 +239,7 @@ mod tests {
             make_read_op("foo.rs", 1, 20, 0),
             make_read_op("foo.rs", 15, 35, 1),
         ];
-        let parts = participants(&ops, "s1");
+        let parts = participants(&ops);
         let merged = merge_ranges_per_file(&parts, &cfg());
         assert!(merged.iter().all(|p| p.m_start == 1 && p.m_end == 35));
     }
@@ -255,7 +251,7 @@ mod tests {
             make_read_op("foo.rs", 1, 10, 0),
             make_read_op("foo.rs", 15, 25, 1),
         ];
-        let parts = participants(&ops, "s1");
+        let parts = participants(&ops);
         let merged = merge_ranges_per_file(&parts, &cfg());
         assert!(merged.iter().all(|p| p.m_start == 1 && p.m_end == 25));
     }
@@ -267,7 +263,7 @@ mod tests {
             make_read_op("foo.rs", 1, 10, 0),
             make_read_op("foo.rs", 20, 30, 1),
         ];
-        let parts = participants(&ops, "s1");
+        let parts = participants(&ops);
         let merged = merge_ranges_per_file(&parts, &cfg());
         assert_eq!(merged[0].m_start, 1);
         assert_eq!(merged[0].m_end, 10);
@@ -281,7 +277,7 @@ mod tests {
             make_read_op("a.rs", 1, 10, 0),
             make_read_op("b.rs", 5, 15, 1),
         ];
-        let parts = participants(&ops, "s1");
+        let parts = participants(&ops);
         let merged = merge_ranges_per_file(&parts, &cfg());
         let a = merged.iter().find(|p| p.path == "a.rs").unwrap();
         let b = merged.iter().find(|p| p.path == "b.rs").unwrap();

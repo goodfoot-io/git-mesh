@@ -26,7 +26,7 @@ fn make_read_op(path: &str, start: u32, end: u32, idx: usize) -> Op {
     }
 }
 
-fn make_part(path: &str, start: u32, end: u32, sid: &str, op_index: usize) -> Participant {
+fn make_part(path: &str, start: u32, end: u32, _sid: &str, op_index: usize) -> Participant {
     Participant {
         path: path.to_string(),
         start,
@@ -38,7 +38,6 @@ fn make_part(path: &str, start: u32, end: u32, sid: &str, op_index: usize) -> Pa
         anchored: false,
         locator_distance: None,
         locator_forward: None,
-        session_sid: sid.to_string(),
     }
 }
 
@@ -97,62 +96,6 @@ fn op_window_pair_beyond_window_excluded() {
     let sessions = vec![make_session("s1", all_parts)];
     let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
     assert!(pairs.is_empty(), "distance > window must be excluded");
-}
-
-// ---------------------------------------------------------------------------
-// session-recurrence channel
-// ---------------------------------------------------------------------------
-
-#[test]
-fn two_sessions_same_pair_produces_recurrence_evidence() {
-    let p_a1 = make_part("a.rs", 1, 20, "s1", 0);
-    let p_b1 = make_part("b.rs", 1, 20, "s1", 1);
-    let p_a2 = make_part("a.rs", 1, 20, "s2", 0);
-    let p_b2 = make_part("b.rs", 1, 20, "s2", 1);
-    let all_parts = vec![p_a1.clone(), p_b1.clone(), p_a2.clone(), p_b2.clone()];
-    let canonical = build_canonical_ranges(&all_parts, &cfg());
-    let sessions = vec![
-        make_session("s1", vec![p_a1, p_b1]),
-        make_session("s2", vec![p_a2, p_b2]),
-    ];
-    let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
-    assert_eq!(pairs.len(), 1);
-    let state = pairs.values().next().unwrap();
-    assert_eq!(state.sessions.len(), 2);
-    let recur_count = state
-        .evidence
-        .iter()
-        .filter(|e| e.technique == Technique::SessionRecurrence)
-        .count();
-    assert_eq!(recur_count, 1, "one extra session → one recurrence row");
-}
-
-#[test]
-fn three_sessions_produce_two_recurrence_rows() {
-    let mk = |sid: &str| {
-        vec![
-            make_part("a.rs", 1, 10, sid, 0),
-            make_part("b.rs", 1, 10, sid, 1),
-        ]
-    };
-    let s1 = mk("s1");
-    let s2 = mk("s2");
-    let s3 = mk("s3");
-    let all_parts: Vec<_> = [s1.clone(), s2.clone(), s3.clone()].concat();
-    let canonical = build_canonical_ranges(&all_parts, &cfg());
-    let sessions = vec![
-        make_session("s1", s1),
-        make_session("s2", s2),
-        make_session("s3", s3),
-    ];
-    let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
-    let state = pairs.values().next().unwrap();
-    let recur_count = state
-        .evidence
-        .iter()
-        .filter(|e| e.technique == Technique::SessionRecurrence)
-        .count();
-    assert_eq!(recur_count, 2, "three sessions → two recurrence rows");
 }
 
 // ---------------------------------------------------------------------------

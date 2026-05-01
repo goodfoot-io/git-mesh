@@ -417,22 +417,7 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
         })
         .collect();
 
-    let reads_seen = store.reads_seen_paths()?;
-    let mut matched = Vec::new();
-    let mut parked = Vec::new();
-    for t in all_touches {
-        if reads_seen.contains(&t.path) {
-            matched.push(t);
-        } else {
-            parked.push(t);
-        }
-    }
-    store.append_pending_touches(&parked)?;
-    if matched.is_empty() {
-        store.discard_snapshot(&id);
-        return Ok(0);
-    }
-    process_touches(repo, &store, &id, matched)
+    process_touches(repo, &store, &session_id, &id, all_touches)
 }
 
 /// Shared mesh-resolution and emission pipeline. Called by both `flush`
@@ -442,6 +427,7 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
 fn process_touches(
     repo: &gix::Repository,
     store: &crate::advice::session::SessionStore,
+    session_id: &str,
     id: &str,
     touches: Vec<crate::advice::session::state::TouchInterval>,
 ) -> Result<i32> {
@@ -587,14 +573,29 @@ fn process_touches(
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default(),
         };
-        let sessions = if advice_dir.as_os_str().is_empty() {
-            Vec::new()
+        let session_record = if advice_dir.as_os_str().is_empty() {
+            None
         } else {
-            load_all_sessions(&advice_dir).unwrap_or_default()
+            use crate::advice::suggest::SessionRecord;
+            match (store.load_reads(), store.load_touches()) {
+                (Ok(reads), Ok(touches)) => Some(SessionRecord {
+                    sid: session_id.to_string(),
+                    reads,
+                    touches,
+                }),
+                _ => None,
+            }
+        };
+        let sessions_buf;
+        let sessions: &[_] = if let Some(ref rec) = session_record {
+            sessions_buf = std::slice::from_ref(rec);
+            sessions_buf
+        } else {
+            &[]
         };
         if !sessions.is_empty() {
             let cfg = SuggestConfig::from_env();
-            let suggestions = run_suggest_pipeline(&sessions, Some(repo), wd, &cfg, Some(store.dir()));
+            let suggestions = run_suggest_pipeline(sessions, Some(repo), wd, &cfg, Some(store.dir()));
             let advice_seen = store.advice_seen_set()?;
             for sug in &suggestions {
                 use crate::advice::suggestion::ConfidenceBand;
@@ -729,7 +730,7 @@ fn run_advice_touch(
         end: line_anchor.map(|(_, e)| e),
     }];
 
-    process_touches(repo, &store, "", touches)
+    process_touches(repo, &store, &session_id, "", touches)
 }
 
 /// Validate an anchor for the `touch added` case. Same as `validate_read_spec`

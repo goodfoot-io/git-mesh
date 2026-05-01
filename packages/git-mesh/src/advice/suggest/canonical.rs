@@ -22,7 +22,7 @@ pub struct CanonicalRange {
 /// Maps each participant's key to a canonical anchor id (index into
 /// `CanonicalIndex::ranges`).
 ///
-/// The key is `partKey(p)` = `"{path}#{m_start}-{m_end}#{session_sid}#{op_index}"`.
+/// The key is `partKey(p)` = `"{path}#{m_start}-{m_end}#{op_index}"`.
 pub struct CanonicalIndex {
     pub ranges: Vec<CanonicalRange>,
     /// Map from `part_key(p)` → index into `ranges`.
@@ -33,10 +33,7 @@ pub struct CanonicalIndex {
 
 /// Stable key for a participant, mirroring JS `partKey`.
 pub fn part_key(p: &Participant) -> String {
-    format!(
-        "{}#{}-{}#{}#{}",
-        p.path, p.m_start, p.m_end, p.session_sid, p.op_index
-    )
+    format!("{}#{}-{}#{}", p.path, p.m_start, p.m_end, p.op_index)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -159,7 +156,7 @@ mod tests {
         SuggestConfig::default()
     }
 
-    fn make_part(path: &str, start: u32, end: u32, sid: &str, op_index: usize) -> Participant {
+    fn make_part(path: &str, start: u32, end: u32, _sid: &str, op_index: usize) -> Participant {
         Participant {
             path: path.to_string(),
             start,
@@ -171,7 +168,6 @@ mod tests {
             anchored: false,
             locator_distance: None,
             locator_forward: None,
-            session_sid: sid.to_string(),
         }
     }
 

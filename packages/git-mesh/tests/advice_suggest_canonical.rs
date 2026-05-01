@@ -30,10 +30,10 @@ fn parts_for(
     path: &str,
     start: u32,
     end: u32,
-    sid: &str,
+    _sid: &str,
 ) -> git_mesh::advice::suggest::Participant {
     let ops = vec![make_read_op(path, start, end, 0)];
-    build_participants(&ops, sid).into_iter().next().unwrap()
+    build_participants(&ops).into_iter().next().unwrap()
 }
 
 // ---------------------------------------------------------------------------

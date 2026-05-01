@@ -196,6 +196,16 @@ impl SessionStore {
         read_jsonl_lines(&self.dir.join("reads.jsonl"))
     }
 
+    /// Load all read records for building a `SessionRecord` at flush time.
+    pub fn load_reads(&self) -> Result<Vec<ReadRecord>> {
+        read_jsonl_lines(&self.dir.join("reads.jsonl"))
+    }
+
+    /// Load all touch intervals for building a `SessionRecord` at flush time.
+    pub fn load_touches(&self) -> Result<Vec<TouchInterval>> {
+        read_jsonl_lines(&self.dir.join("touches.jsonl"))
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }
