@@ -99,6 +99,81 @@ pub fn run_advice(repo: &gix::Repository, args: AdviceArgs) -> Result<i32> {
     }
 }
 
+// ── Path normalization ────────────────────────────────────────────────────────
+
+/// Normalize a raw repo-relative path string to a canonical form suitable for
+/// consistent comparison across `reads.jsonl` and `pending_touches.jsonl`.
+///
+/// Steps:
+/// 1. Strip a leading `./` prefix (produced by some callers defensively).
+/// 2. Join against the working directory and call `fs::canonicalize` if the
+///    path exists; otherwise apply lexical normalization (resolve `..`
+///    components without touching the filesystem).
+/// 3. Strip the canonical working-directory prefix to produce a clean
+///    repo-relative path in forward-slash form.
+/// 4. On case-insensitive targets (macOS, Windows), lowercase the result so
+///    reads and touches always agree regardless of case.
+///
+/// Returns `Err` only when the resulting path escapes the working directory.
+pub(crate) fn canonicalize_repo_relative_path(wd: &std::path::Path, raw: &str) -> Result<String> {
+    // Strip leading `./`.
+    let stripped = raw.strip_prefix("./").unwrap_or(raw);
+
+    let joined = wd.join(stripped);
+
+    // Attempt real canonicalization when the file exists so symlinks are
+    // resolved. Fall back to lexical normalization when it doesn't.
+    let canonical = if joined.exists() {
+        std::fs::canonicalize(&joined)
+            .unwrap_or_else(|_| lexical_normalize(&joined))
+    } else {
+        lexical_normalize(&joined)
+    };
+
+    // Also canonicalize wd so the prefix strip is symmetric.
+    let canonical_wd = std::fs::canonicalize(wd).unwrap_or_else(|_| wd.to_path_buf());
+
+    let rel = canonical
+        .strip_prefix(&canonical_wd)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "path `{raw}` resolves outside the working directory `{}`",
+                wd.display()
+            )
+        })?;
+
+    let result = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    // Case-fold on case-insensitive targets.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let result = result.to_lowercase();
+
+    Ok(result)
+}
+
+/// Lexically normalize `path` by resolving `.` and `..` components without
+/// calling `fs::canonicalize` (which requires the path to exist).
+fn lexical_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut stack: Vec<std::ffi::OsString> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                stack.pop();
+            }
+            other => {
+                stack.push(other.as_os_str().to_owned());
+            }
+        }
+    }
+    stack.iter().collect()
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn advice_path_is_internal(path: &str, internal_path_prefixes: &[String]) -> bool {
@@ -305,13 +380,18 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
     let all_touches: Vec<TouchInterval> = entries
         .iter()
         .filter(|(p, _)| !advice_path_is_internal(p, &internal_path_prefixes))
-        .map(|(path, kind)| TouchInterval {
-            path: path.clone(),
-            kind: *kind,
-            id: id.clone(),
-            ts: touch_ts.clone(),
-            start: None,
-            end: None,
+        .filter_map(|(path, kind)| {
+            // Canonicalize so flush paths agree with read paths on all
+            // case/symlink/leading-./ variants. Skip entries that escape wd.
+            let canonical_path = canonicalize_repo_relative_path(wd, path).ok()?;
+            Some(TouchInterval {
+                path: canonical_path,
+                kind: *kind,
+                id: id.clone(),
+                ts: touch_ts.clone(),
+                start: None,
+                end: None,
+            })
         })
         .collect();
 
@@ -849,7 +929,7 @@ fn run_advice_read(
     validate_read_spec(repo, &anchor)?;
 
     let now = chrono::Utc::now().to_rfc3339();
-    let (path_str, line_anchor) = match anchor.split_once("#L") {
+    let (path_raw, line_anchor) = match anchor.split_once("#L") {
         Some((p, frag)) => {
             let (s, e) = frag.split_once("-L").unwrap();
             (
@@ -859,6 +939,7 @@ fn run_advice_read(
         }
         None => (anchor.clone(), None),
     };
+    let path_str = canonicalize_repo_relative_path(wd, &path_raw)?;
     let rec = ReadRecord {
         path: path_str,
         start_line: line_anchor.map(|(s, _)| s),
@@ -872,9 +953,12 @@ fn run_advice_read(
     )?;
 
     // Replay any pending touches that were parked waiting for this read.
-    let drained = store.drain_pending_touches_for_path(&rec.path)?;
-    if !drained.is_empty() {
-        process_touches(repo, &store, "", drained)?;
+    // Peek first so that if process_touches returns Err the rows remain on disk.
+    let pending = store.peek_pending_touches_for_path(&rec.path)?;
+    if !pending.is_empty() {
+        process_touches(repo, &store, "", pending)?;
+        // Drain only after successful processing so rows are never silently lost.
+        store.commit_drain_pending_touches_for_path(&rec.path)?;
     }
 
     let action = action_from_spec(&anchor).ok_or_else(|| {

@@ -258,15 +258,88 @@ impl SessionStore {
     }
 
     /// Append a single [`TouchInterval`] row to `pending_touches.jsonl`.
+    /// Idempotent: if a row with the same `(path, kind, start, end)` already
+    /// exists, the append is skipped so the file does not grow unboundedly.
     pub fn append_pending_touch(&self, t: &TouchInterval) -> Result<()> {
+        let pending_path = self.dir.join("pending_touches.jsonl");
+        let existing: Vec<TouchInterval> = read_jsonl_lines(&pending_path)?;
+        let already_present = existing.iter().any(|e| {
+            e.path == t.path && e.kind == t.kind && e.start == t.start && e.end == t.end
+        });
+        if already_present {
+            return Ok(());
+        }
         let line = serde_json::to_string(t).with_context(|| "serialize TouchInterval (pending)")?;
-        store::append_jsonl_line(&self.dir.join("pending_touches.jsonl"), &self.lock, &line)
+        store::append_jsonl_line(&pending_path, &self.lock, &line)
+    }
+
+    /// Remove pending touch entries older than `max_age`. Rewrites the file
+    /// in-place; a missing file is silently ignored.
+    pub fn sweep_pending_touches(&self, max_age: Duration) -> Result<()> {
+        let pending_path = self.dir.join("pending_touches.jsonl");
+        let all: Vec<TouchInterval> = match read_jsonl_lines(&pending_path) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
+        if all.is_empty() {
+            return Ok(());
+        }
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(max_age).unwrap_or_default();
+        let survivors: Vec<&TouchInterval> = all
+            .iter()
+            .filter(|t| {
+                chrono::DateTime::parse_from_rfc3339(&t.ts)
+                    .map(|dt| dt > cutoff)
+                    .unwrap_or(true) // keep rows we can't parse to avoid data loss
+            })
+            .collect();
+        if survivors.len() == all.len() {
+            return Ok(());
+        }
+        let mut bytes = Vec::new();
+        for t in survivors {
+            let line = serde_json::to_string(t)
+                .with_context(|| "serialize TouchInterval (pending sweep)")?;
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+        }
+        store::atomic_write(&pending_path, &bytes)
     }
 
     /// Collect the distinct `path` values from `reads.jsonl`.
     pub fn reads_seen_paths(&self) -> Result<std::collections::HashSet<String>> {
         let reads: Vec<state::ReadRecord> = read_jsonl_lines(&self.dir.join("reads.jsonl"))?;
         Ok(reads.into_iter().map(|r| r.path).collect())
+    }
+
+    /// Read `pending_touches.jsonl` and return the rows matching `path` without
+    /// modifying the file. Use this to inspect pending rows before committing
+    /// to a drain so that a subsequent error does not lose them.
+    pub fn peek_pending_touches_for_path(&self, path: &str) -> Result<Vec<TouchInterval>> {
+        let pending_path = self.dir.join("pending_touches.jsonl");
+        let all: Vec<TouchInterval> = read_jsonl_lines(&pending_path)?;
+        Ok(all.into_iter().filter(|t| t.path == path).collect())
+    }
+
+    /// Remove all rows matching `path` from `pending_touches.jsonl` in one
+    /// atomic rewrite. Call only after `process_touches` has succeeded so
+    /// rows are never silently dropped on error.
+    pub fn commit_drain_pending_touches_for_path(&self, path: &str) -> Result<()> {
+        let pending_path = self.dir.join("pending_touches.jsonl");
+        let all: Vec<TouchInterval> = read_jsonl_lines(&pending_path)?;
+        let survivors: Vec<&TouchInterval> = all.iter().filter(|t| t.path != path).collect();
+        if survivors.len() == all.len() {
+            // Nothing to remove.
+            return Ok(());
+        }
+        let mut bytes = Vec::new();
+        for t in survivors {
+            let line = serde_json::to_string(t)
+                .with_context(|| "serialize TouchInterval (pending drain)")?;
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+        }
+        store::atomic_write(&pending_path, &bytes)
     }
 
     /// Read `pending_touches.jsonl`, extract rows matching `path`, atomically
