@@ -69,8 +69,8 @@ fn human_output_has_summary_line() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("stale anchors:"),
-        "summary 'Mesh <name> has N out of M stale anchors:'"
+        stdout.contains("are stale:"),
+        "summary 'All anchors in <name> are stale:' or 'N out of M anchors in mesh <name> are stale:'"
     );
     Ok(())
 }
@@ -193,12 +193,12 @@ fn named_lookup_returns_clean_mesh() -> Result<()> {
     let out = repo.run_mesh(["stale", "quiet"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Mesh quiet"),
+        stdout.contains("quiet"),
         "named clean mesh must still render: {stdout}"
     );
     assert!(
-        stdout.contains("(Fresh)"),
-        "named clean mesh must include its fresh anchor: {stdout}"
+        stdout.contains("No anchors in quiet are stale"),
+        "clean mesh must say so: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())

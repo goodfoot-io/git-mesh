@@ -40,8 +40,12 @@ fn whole_pin_human_renders_whole() -> Result<()> {
     let out = repo.run_mesh(["stale", "m"])?;
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("hero.png  (whole)"),
-        "expected `hero.png  (whole)`, got:\n{text}"
+        text.contains("hero.png "),
+        "expected bare `hero.png` bullet, got:\n{text}"
+    );
+    assert!(
+        !text.contains("(whole)"),
+        "human listing should drop `(whole)` decoration:\n{text}"
     );
     assert!(
         !text.contains("#L0-L0"),

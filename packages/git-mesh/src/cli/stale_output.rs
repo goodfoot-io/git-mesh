@@ -323,6 +323,18 @@ fn render_path_extent_human(path: &std::path::Path, extent: AnchorExtent) -> Str
     }
 }
 
+/// Plain `(path, extent)` render for the bullet listing — whole-file
+/// pins drop the `(whole)` decoration since the bare path already
+/// communicates "this entire file" in context.
+fn render_path_extent_plain(path: &std::path::Path, extent: AnchorExtent) -> String {
+    match extent {
+        AnchorExtent::WholeFile => format!("{}", path.display()),
+        AnchorExtent::LineRange { start, end } => {
+            format!("{}#L{}-L{}", path.display(), start, end)
+        }
+    }
+}
+
 fn render_pending_range_id(anchor_id: &str) -> String {
     if anchor_id.is_empty() {
         String::new()
@@ -350,7 +362,8 @@ fn render_human(
     pending: &[PendingFinding],
     options: HumanRenderOptions,
 ) -> Result<()> {
-    for m in meshes {
+    let mesh_count = meshes.len();
+    for (mesh_idx, m) in meshes.iter().enumerate() {
         // Include every tracked anchor — Fresh ones synthesized as
         // `Finding`s so default/oneline/stat/patch all list the full
         // mesh. Order follows the mesh's stored anchor order, with
@@ -408,19 +421,22 @@ fn render_human(
         if mesh_total == 0 {
             if pending_adds > 0 {
                 println!(
-                    "Mesh {} has no committed anchors yet ({} pending):",
+                    "Mesh {} has {} pending anchors:",
                     m.name, pending_adds
                 );
             } else {
                 println!("Mesh {} has no anchors.", m.name);
             }
+        } else if mesh_stale == 0 {
+            println!("No anchors in {} are stale.", m.name);
+        } else if mesh_stale == mesh_total {
+            println!("All anchors in {} are stale:", m.name);
         } else {
             println!(
-                "Mesh {} has {} out of {} stale anchors:",
-                m.name, mesh_stale, mesh_total
+                "{} out of {} anchors in mesh {} are stale:",
+                mesh_stale, mesh_total, m.name
             );
         }
-        println!();
         if options.stat {
             for f in &mesh_findings {
                 let (insertions, deletions) = diff_counts(repo, f);
@@ -436,13 +452,11 @@ fn render_human(
         for f in &mesh_findings {
             let mut line = String::new();
             line.push_str("- ");
-            line.push_str(&render_path_extent_human(
+            line.push_str(&render_path_extent_plain(
                 &f.anchored.path,
                 f.anchored.extent,
             ));
-            if f.status == AnchorStatus::Fresh {
-                line.push_str(" (Fresh)");
-            } else {
+            if f.status != AnchorStatus::Fresh {
                 let status_word = status_word(&f.status);
                 match (options.show_src, f.source) {
                     (true, Some(src)) => {
@@ -477,7 +491,7 @@ fn render_human(
                     let drift_note = drift_note(drift.as_ref());
                     println!(
                         "- {}{} (Pending add){}",
-                        render_path_extent_human(std::path::Path::new(&op.path), op.extent),
+                        render_path_extent_plain(std::path::Path::new(&op.path), op.extent),
                         render_pending_range_id(anchor_id),
                         drift_note,
                     );
@@ -491,7 +505,7 @@ fn render_human(
                     let drift_note = drift_note(drift.as_ref());
                     println!(
                         "- {}{} (Pending remove){}",
-                        render_path_extent_human(std::path::Path::new(&op.path), op.extent),
+                        render_path_extent_plain(std::path::Path::new(&op.path), op.extent),
                         render_pending_range_id(anchor_id),
                         drift_note,
                     );
@@ -513,18 +527,20 @@ fn render_human(
             match p {
                 PendingFinding::Why { body, .. } => {
                     println!();
-                    println!("[Why]");
                     println!("{body}");
                 }
                 PendingFinding::ConfigChange { change, .. } => {
                     println!();
-                    println!("[Config]");
                     println!("{}", config_str(change));
                 }
                 _ => {}
             }
         }
-        println!();
+        if mesh_idx + 1 < mesh_count {
+            println!();
+            println!("---");
+            println!();
+        }
     }
     Ok(())
 }
