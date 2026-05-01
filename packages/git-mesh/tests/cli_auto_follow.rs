@@ -6,8 +6,10 @@
 //!   3. Changed sibling → entire mesh suppressed (no follow).
 //!   4. Path rename → does not auto-follow (path changed).
 //!   5. Blob mismatch (content changed inside span) → does not auto-follow.
-//!   6. Commit message is exactly `mesh: follow N moved anchors`.
+//!   6. Original why is preserved in the new mesh commit (not overwritten).
 //!   7. Without flag and follow-moves=false → no rewrite (arrow only).
+//!   8. Whole-file anchor is not auto-followed.
+//!   9. current.blob == None does not auto-follow.
 
 mod support;
 
@@ -215,27 +217,97 @@ fn blob_mismatch_does_not_auto_follow() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Commit message is exactly `mesh: follow N moved anchors`
+// 6. Original why is preserved in the new mesh commit
 // ---------------------------------------------------------------------------
 
 #[test]
 fn audit_trail_commit_message_format() -> Result<()> {
     let repo = TestRepo::seeded()?;
+    // setup_verbatim_move writes why "seed" before the shift commit.
     setup_verbatim_move(&repo)?;
+
+    // Read the mesh tip commit message before auto-follow.
+    let original_msg = repo.git_stdout([
+        "log",
+        "-1",
+        "--format=%B",
+        "refs/meshes/v1/m",
+    ])?;
 
     repo.mesh_stdout(["stale", "m", "--auto-follow"])?;
 
-    // Read the mesh tip commit message.
-    let msg = repo.git_stdout([
+    // The new mesh tip must preserve the original why verbatim.
+    let new_msg = repo.git_stdout([
         "log",
         "-1",
-        "--format=%s",
+        "--format=%B",
         "refs/meshes/v1/m",
     ])?;
     assert_eq!(
-        msg.trim(),
-        "mesh: follow 1 moved anchors",
-        "commit message mismatch: {msg}"
+        new_msg.trim(),
+        original_msg.trim(),
+        "auto-follow must preserve the original why; new_msg={new_msg}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 8. Whole-file anchor is not auto-followed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn whole_file_anchor_not_auto_followed() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // Anchor the whole file (no line range).
+    repo.mesh_stdout(["add", "m", "file1.txt"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+
+    // Prepend lines — whole-file anchor would become Moved at the file level,
+    // but whole-file anchors are excluded from auto-follow.
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("shift")?;
+
+    let out = repo.run_mesh(["stale", "m", "--auto-follow"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("anchor automatically updated"),
+        "whole-file anchor must not be auto-followed; stdout={stdout}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 9. current.blob == None (worktree-only shift) does not auto-follow
+// ---------------------------------------------------------------------------
+
+#[test]
+fn worktree_only_move_does_not_auto_follow() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+
+    // Prepend lines in the worktree only — do NOT commit or stage.
+    // The anchor content moves verbatim to L3-L7 in the worktree.
+    // The resolver will detect a Moved with current.blob == None (worktree
+    // layer, no blob committed to git).
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    // Do NOT call commit_all — leave the change as a worktree-only modification.
+
+    let out = repo.run_mesh(["stale", "m", "--auto-follow"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The anchor may report Moved (worktree source) but must not be rewritten
+    // because current.blob is None — the blob is not committed to git.
+    assert!(
+        !stdout.contains("anchor automatically updated"),
+        "worktree-only move (current.blob=None) must not be auto-followed; stdout={stdout}"
     );
     Ok(())
 }

@@ -10,6 +10,7 @@ use crate::git::{
 };
 use crate::mesh::read::{read_mesh_at, serialize_config_blob};
 use crate::mesh::path_index;
+use std::collections::HashSet;
 use crate::types::AnchorExtent;
 use crate::{Error, Result};
 use gix::objs::Tree;
@@ -29,8 +30,11 @@ pub struct FollowDecision {
 }
 
 /// Write a new mesh commit that replaces each anchor named in `decisions`
-/// with its new location (re-anchored at HEAD).  Commit message is
-/// `mesh: follow N moved anchors` where N is `decisions.len()`.
+/// with its new location (re-anchored at HEAD).  The commit message is
+/// inherited verbatim from the parent commit to preserve the user's authored
+/// why — the audit trail is the new commit SHA, parent pointer, and reflog.
+/// (Trade-off: no `mesh: follow N moved anchors` subject in the message, but
+/// why-preservation takes priority over the audit string per spec.)
 ///
 /// Uses the same CAS retry pattern as `commit_mesh` (MAX_RETRIES = 5).
 pub fn follow_moves(
@@ -48,7 +52,7 @@ pub fn follow_moves(
     let mut attempt: usize = 0;
 
     let new_commit: String;
-    loop {
+    'retry: loop {
         // Re-read mesh tip on every attempt so the CAS parent is fresh.
         let current_parent = resolve_ref_oid_optional(wd, &mesh_ref_name)?;
         let m = read_mesh_at(repo, name, current_parent.as_deref())?;
@@ -81,6 +85,28 @@ pub fn follow_moves(
             (a.1.path.as_str(), extent_sort_key(&a.1.extent))
                 .cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
         });
+
+        // Guardrail: reject duplicate (path, extent) in the rebuilt list.
+        // A concurrent staging at the same destination address can otherwise
+        // produce duplicate anchors in the mesh tree.  Route through the
+        // CAS-conflict retry branch.
+        {
+            let mut seen: HashSet<(String, (u32, u32))> = HashSet::new();
+            for (_id, anchor) in &combined {
+                let key = (anchor.path.clone(), extent_sort_key(&anchor.extent));
+                if !seen.insert(key) {
+                    attempt += 1;
+                    if attempt >= MAX_RETRIES {
+                        return Err(Error::ConcurrentUpdate {
+                            expected: current_parent.unwrap_or_default(),
+                            found: resolve_ref_oid_optional(wd, &mesh_ref_name)?
+                                .unwrap_or_default(),
+                        });
+                    }
+                    continue 'retry;
+                }
+            }
+        }
 
         // Serialize anchors_v2.
         let anchors_v2_text: String = {
@@ -125,8 +151,13 @@ pub fn follow_moves(
             .detach()
             .to_string();
 
-        // Commit message: structured audit-trail per spec.
-        let message = format!("mesh: follow {} moved anchors", decisions.len());
+        // Commit message: inherit verbatim from parent to preserve the user's
+        // authored why.  The audit trail is the commit SHA, parent pointer,
+        // and reflog; we do not overwrite the why text.
+        let message = current_parent
+            .as_deref()
+            .and_then(|p| git::commit_meta(repo, p).ok().map(|m| m.message))
+            .unwrap_or_default();
 
         let parents: Vec<String> = current_parent
             .as_deref()

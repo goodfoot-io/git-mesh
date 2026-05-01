@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use crate::cli::{StaleArgs, StaleFormat};
+use crate::git;
 use crate::mesh::follow::{FollowDecision, follow_moves};
 use crate::resolver::{build_pending_findings, resolve_mesh, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
@@ -197,28 +198,51 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             }
 
             // Collect eligible Moved anchors.
-            // The resolver sets `Moved` iff the pinned span bytes are
-            // verbatim identical at the new location — that is the
-            // "zero byte change" guardrail. The file-level blob OIDs stored
-            // in `anchored.blob` and `current.blob` differ whenever lines are
-            // prepended/appended, so comparing them at the file level would
-            // always reject legitimate line-shift moves. We rely on `Moved`
-            // status as the byte-equality signal and use `current.blob` /
-            // `anchored.blob` only when both happen to be populated and the
-            // caller explicitly needs the OID (e.g., for the `FollowDecision`
-            // payload).
             let mut decisions: Vec<FollowDecision> = Vec::new();
             for r in &m.anchors {
                 if r.status != AnchorStatus::Moved {
                     continue;
                 }
                 let Some(cur) = &r.current else { continue };
+                // Guardrail: LineRange extents only — whole-file anchors are
+                // excluded from auto-follow.
+                if !matches!(r.anchored.extent, AnchorExtent::LineRange { .. })
+                    || !matches!(cur.extent, AnchorExtent::LineRange { .. })
+                {
+                    continue;
+                }
                 // Guardrail: path must not have been renamed.
                 if cur.path != r.anchored.path {
                     continue;
                 }
-                // `Moved` status already guarantees byte-identical span
-                // content.
+                // Guardrail: the move must be committed to HEAD (fail-closed).
+                // Compare HEAD's file-level blob OID for this path against the
+                // anchored file blob.  If they are equal the file is unchanged
+                // at HEAD — the shift exists only in the worktree or index and
+                // we must not rewrite the mesh against uncommitted content.
+                // If current.blob is None (uncommitted) we also skip.
+                let Some(anchored_file_blob) = r.anchored.blob else {
+                    continue;
+                };
+                let head_sha = match git::head_oid(repo) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let head_file_blob = match git::path_blob_at(
+                    repo,
+                    &head_sha,
+                    cur.path.to_str().unwrap_or(""),
+                ) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                // If HEAD file blob == anchored file blob, the file is
+                // unchanged at HEAD — this is a worktree-only shift.
+                if head_file_blob
+                    == anchored_file_blob.to_string()
+                {
+                    continue;
+                }
                 decisions.push(FollowDecision {
                     anchor_id: r.anchor_id.clone(),
                     new_path: cur.path.clone(),
