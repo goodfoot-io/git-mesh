@@ -84,7 +84,7 @@ pub fn load_git_history(
     }
 
     // Walk only commits that touch at least one seed path.
-    let commits =
+    let (commits, walk_complete) =
         git::git_log_name_only_for_paths(repo, cfg.history_recency_commits as usize, seed_paths)?;
     if commits.is_empty() {
         return Ok(fallback);
@@ -139,7 +139,9 @@ pub fn load_git_history(
     };
 
     // Persist to session-local cache so subsequent flushes skip the walk.
-    if let Some(dir) = session_dir
+    // Partial (budget-truncated) walks are never cached — the next flush retries the full walk.
+    if walk_complete
+        && let Some(dir) = session_dir
         && !head_sha.is_empty()
     {
         history_cache::try_write(dir, &head_sha, seed_paths, cfg, &index);

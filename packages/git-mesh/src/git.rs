@@ -403,9 +403,9 @@ pub fn git_log_name_only_for_paths(
     repo: &gix::Repository,
     n: usize,
     seed_paths: &[String],
-) -> Result<Vec<CommitChanges>> {
+) -> Result<(Vec<CommitChanges>, bool)> {
     if n == 0 || seed_paths.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), true));
     }
 
     let seed_set: std::collections::BTreeSet<&str> =
@@ -425,10 +425,15 @@ pub fn git_log_name_only_for_paths(
         .map_err(|e| Error::Git(format!("rev walk: {e}")))?;
 
     let mut out: Vec<CommitChanges> = Vec::with_capacity(n.min(512));
+    let budget_start = std::time::Instant::now();
+    let budget = std::time::Duration::from_millis(800);
 
     for info in walk {
         if out.len() >= n {
             break;
+        }
+        if budget_start.elapsed() > budget {
+            return Ok((out, false));
         }
         let info = info.map_err(|e| Error::Git(format!("rev walk next: {e}")))?;
         let commit = repo
@@ -534,7 +539,7 @@ pub fn git_log_name_only_for_paths(
         });
     }
 
-    Ok(out)
+    Ok((out, true))
 }
 
 /// Extracted commit metadata.
