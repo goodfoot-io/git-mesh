@@ -140,24 +140,25 @@ payload() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: SessionStart is a no-op (no baseline state machinery any more).
+# Test 1: SessionEnd removes the per-session advice directory.
 # ---------------------------------------------------------------------------
-log "Test 1: SessionStart no-op"
+log "Test 1: SessionEnd removes session directory"
 REPO1="$(make_repo repo1)"
 SID1="sess-one"
-PAYLOAD1="$(jq -nc --arg s "$SID1" --arg c "$REPO1" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup", model:"claude"}')"
-run_hook "$BIN_DIR/advice-session-start.sh" "$PAYLOAD1"
-assert_rc_zero "SessionStart"
-assert_stdout_empty "SessionStart"
+PRE1="$(jq -nc --arg s "$SID1" --arg c "$REPO1" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t1", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE1"
+assert_rc_zero "SessionEnd(setup mark)"
+END1="$(jq -nc --arg s "$SID1" --arg c "$REPO1" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionEnd", reason:"exit"}')"
+run_hook "$BIN_DIR/advice-session-end.sh" "$END1"
+assert_rc_zero "SessionEnd"
+assert_stdout_empty "SessionEnd"
 
-log "Test 1b: SessionStart with source=compact is also a no-op"
-SID1B="sess-one-b"
-PAYLOAD1B="$(jq -nc --arg s "$SID1B" --arg c "$REPO1" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"compact"}')"
-run_hook "$BIN_DIR/advice-session-start.sh" "$PAYLOAD1B"
-assert_rc_zero "SessionStart(compact)"
-assert_stdout_empty "SessionStart(compact)"
+log "Test 1b: SessionEnd is idempotent"
+run_hook "$BIN_DIR/advice-session-end.sh" "$END1"
+assert_rc_zero "SessionEnd(idempotent)"
+assert_stdout_empty "SessionEnd(idempotent)"
 
 # ---------------------------------------------------------------------------
 # Test 2: PostToolUse Bash after a write to a.txt surfaces the partner b.txt.
@@ -185,10 +186,6 @@ assert_stdout_contains "PostToolUse(Bash flush)" "b.txt"
 log "Test 3: PostToolUse Read records range in reads.jsonl"
 REPO3="$(make_repo repo3)"
 SID3="sess-three"
-run_hook "$BIN_DIR/advice-session-start.sh" \
-  "$(jq -nc --arg s "$SID3" --arg c "$REPO3" \
-    '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"SessionStart", source:"startup"}')"
-assert_rc_zero "SessionStart(repo3)"
 
 PAYLOAD3="$(jq -nc --arg s "$SID3" --arg c "$REPO3" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"b.txt", offset:1, limit:3}, tool_response:{}, tool_use_id:"t2", duration_ms:1}')"
