@@ -990,16 +990,7 @@ fn run_advice_read(
         LockTimeout::Bounded(std::time::Duration::from_secs(30)),
     )?;
 
-    // Replay any pending touches that were parked waiting for this read.
-    // Peek first so that if process_touches returns Err the rows remain on disk.
-    let pending = store.peek_pending_touches_for_path(&rec.path)?;
-    if !pending.is_empty() {
-        process_touches(repo, &store, "", pending)?;
-        // Drain only after successful processing so rows are never silently lost.
-        store.commit_drain_pending_touches_for_path(&rec.path)?;
-    }
-
-    let action = action_from_spec(&anchor).ok_or_else(|| {
+let action = action_from_spec(&anchor).ok_or_else(|| {
         anyhow::anyhow!("internal: action_from_spec returned None for `{anchor}`")
     })?;
     let meshes = {
