@@ -29,7 +29,7 @@ pub use cohesion::{
     range_tokens_of, read_anchor, tokens_of, trigram_cohesion, trigrams_of,
 };
 pub use composite::{CandidateScore, ComponentBreakdown, passes_cohesion_gate, score_candidate};
-pub use edges::{ComponentScores, Edge, score_edges};
+pub use edges::{ComponentScores, Edge, is_cross_cutting_path, score_edges};
 pub use emit::emit;
 pub use evidence::{
     EvidenceRecord, PairEvidenceMap, PairKey, PairState, SessionParticipants, Technique,

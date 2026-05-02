@@ -2,8 +2,9 @@
 
 use git_mesh::advice::suggest::{
     HistoryIndex, Op, OpKind, Participant, ParticipantKind, SessionParticipants, SuggestConfig,
-    build_canonical_ranges, build_pair_evidence, score_edges,
+    build_canonical_ranges, build_pair_evidence, is_cross_cutting_path, score_edges,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 fn cfg_zero_floor() -> SuggestConfig {
     SuggestConfig {
@@ -160,6 +161,62 @@ fn pair_shared_sessions_is_one() {
     assert_eq!(
         edges[0].shared_sessions, 1,
         "single-session input must report shared_sessions = 1"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-cutting path filter — lockfile pair must NOT reach the edge set, so
+// it can never ride the synthetic `historical-cochange` channel into High band.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cross_cutting_helper_classifies_lockfiles_and_source() {
+    assert!(is_cross_cutting_path("Cargo.lock"));
+    assert!(is_cross_cutting_path("yarn.lock"));
+    assert!(is_cross_cutting_path("node_modules/foo/index.js"));
+    assert!(is_cross_cutting_path("dist/bundle.js"));
+    assert!(is_cross_cutting_path(".gitignore"));
+    assert!(!is_cross_cutting_path("src/main.rs"));
+    assert!(!is_cross_cutting_path("Cargo.toml"));
+    assert!(!is_cross_cutting_path("package.json"));
+}
+
+#[test]
+fn lockfile_pair_with_strong_history_is_dropped_from_edges() {
+    // Build a `Cargo.toml` ↔ `Cargo.lock` candidate pair with synthetic
+    // history that clears the band's `historical_pair_commits >= 2` floor.
+    // The pair must be excluded at edge construction so it cannot surface as
+    // High band against single-session input.
+    let p_a = make_part("Cargo.toml", 1, 20, "s1", 0);
+    let p_b = make_part("Cargo.lock", 1, 20, "s1", 1);
+    let all = vec![p_a.clone(), p_b.clone()];
+    let canonical = build_canonical_ranges(&all, &cfg_zero_floor());
+    let sessions = vec![make_session("s1", all)];
+    let pairs = build_pair_evidence(&sessions, &canonical, &cfg_zero_floor());
+
+    // Synthetic history: 5 shared commits between the two paths.
+    let mut commits_by_path: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut commit_weight: BTreeMap<String, f64> = BTreeMap::new();
+    let mut shared: BTreeSet<String> = BTreeSet::new();
+    for i in 0..5 {
+        let h = format!("c{i}");
+        shared.insert(h.clone());
+        commit_weight.insert(h, 1.0);
+    }
+    commits_by_path.insert("Cargo.toml".to_string(), shared.clone());
+    commits_by_path.insert("Cargo.lock".to_string(), shared);
+    let history = HistoryIndex {
+        available: true,
+        commits_by_path,
+        commit_weight,
+        total_commits: 5,
+        mass_refactor_cap: 12,
+    };
+
+    let edges = score_edges(&pairs, &canonical, &history, &cfg_zero_floor());
+    assert!(
+        edges.is_empty(),
+        "lockfile pair with strong synthetic history must be excluded from the edge set"
     );
 }
 

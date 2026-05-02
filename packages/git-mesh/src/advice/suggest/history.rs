@@ -139,12 +139,13 @@ pub fn load_git_history(
     };
 
     // Persist to session-local cache so subsequent flushes skip the walk.
-    // Partial (budget-truncated) walks are never cached — the next flush retries the full walk.
-    if walk_complete
-        && let Some(dir) = session_dir
+    // Partial (budget-truncated) walks are never cached — `try_write` enforces
+    // this internally via the `walk_complete` parameter, so the next flush
+    // retries the full walk.
+    if let Some(dir) = session_dir
         && !head_sha.is_empty()
     {
-        history_cache::try_write(dir, &head_sha, seed_paths, cfg, &index);
+        history_cache::try_write(dir, &head_sha, seed_paths, cfg, &index, walk_complete);
     }
 
     Ok(index)

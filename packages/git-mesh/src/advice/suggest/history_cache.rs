@@ -109,13 +109,23 @@ pub(super) fn try_load(
 /// Write a `HistoryIndex` to `<session_dir>/history_cache.json` atomically.
 ///
 /// Write errors are logged to stderr at debug level; the index is always used.
+///
+/// `walk_complete = false` short-circuits the write entirely: a budget-truncated
+/// history walk must never be persisted as a cache hit. The invariant is
+/// enforced inside this function (rather than only at the caller) so a future
+/// second caller that forgets the outer guard cannot silently poison the
+/// session-local cache with a partial walk.
 pub(super) fn try_write(
     session_dir: &Path,
     head_sha: &str,
     seed_paths: &[String],
     cfg: &SuggestConfig,
     index: &HistoryIndex,
+    walk_complete: bool,
 ) {
+    if !walk_complete {
+        return;
+    }
     let cache = HistoryCacheFile {
         schema_version: SCHEMA_VERSION,
         head_sha: head_sha.to_owned(),
@@ -184,7 +194,7 @@ mod tests {
         let head = "abc123";
         let index = make_index();
 
-        try_write(dir.path(), head, &seed, &cfg, &index);
+        try_write(dir.path(), head, &seed, &cfg, &index, true);
         let loaded = try_load(dir.path(), head, &seed, &cfg).unwrap();
         assert!(loaded.available);
         assert_eq!(loaded.total_commits, 1);
@@ -199,7 +209,7 @@ mod tests {
         let seed = vec!["a.rs".to_string()];
         let index = make_index();
 
-        try_write(dir.path(), "head1", &seed, &cfg, &index);
+        try_write(dir.path(), "head1", &seed, &cfg, &index, true);
         assert!(try_load(dir.path(), "head2", &seed, &cfg).is_none());
     }
 
@@ -210,7 +220,7 @@ mod tests {
         let seed = vec!["a.rs".to_string()];
         let index = make_index();
 
-        try_write(dir.path(), "head1", &seed, &cfg, &index);
+        try_write(dir.path(), "head1", &seed, &cfg, &index, true);
         // New seed adds a path not in cache.
         let new_seed = vec!["a.rs".to_string(), "b.rs".to_string()];
         assert!(try_load(dir.path(), "head1", &new_seed, &cfg).is_none());
@@ -226,7 +236,7 @@ mod tests {
         let seed = vec!["a.rs".to_string(), "b.rs".to_string()];
         let index = make_index();
 
-        try_write(dir.path(), "head1", &seed, &cfg, &index);
+        try_write(dir.path(), "head1", &seed, &cfg, &index, true);
         let subset = vec!["a.rs".to_string()];
         assert!(
             try_load(dir.path(), "head1", &subset, &cfg).is_none(),
@@ -242,7 +252,7 @@ mod tests {
         let seed = vec!["a.rs".to_string(), "b.rs".to_string()];
         let index = make_index();
 
-        try_write(dir.path(), "head1", &seed, &cfg, &index);
+        try_write(dir.path(), "head1", &seed, &cfg, &index, true);
         let reordered = vec!["b.rs".to_string(), "a.rs".to_string()];
         assert!(try_load(dir.path(), "head1", &reordered, &cfg).is_some());
     }
@@ -254,7 +264,7 @@ mod tests {
         let seed = vec!["a.rs".to_string()];
         let index = make_index();
 
-        try_write(dir.path(), "head1", &seed, &cfg, &index);
+        try_write(dir.path(), "head1", &seed, &cfg, &index, true);
 
         let mut cfg2 = default_cfg();
         cfg2.history_recency_commits = 999;
@@ -296,6 +306,25 @@ mod tests {
         assert!(
             try_load(dir.path(), head, &seed, &cfg).is_none(),
             "complete=false cache file must miss"
+        );
+    }
+
+    #[test]
+    fn try_write_with_walk_complete_false_writes_no_file() {
+        // The partial-walk-not-cached invariant is enforced inside `try_write`
+        // (not just at the caller's outer `if walk_complete` guard) so a
+        // future second caller cannot silently poison the cache with a
+        // budget-truncated walk.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = default_cfg();
+        let seed = vec!["a.rs".to_string()];
+        let index = make_index();
+
+        try_write(dir.path(), "head1", &seed, &cfg, &index, false);
+        let cache_path = dir.path().join("history_cache.json");
+        assert!(
+            !cache_path.exists(),
+            "partial walk (walk_complete = false) must not be written to disk"
         );
     }
 

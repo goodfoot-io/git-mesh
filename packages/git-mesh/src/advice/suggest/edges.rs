@@ -48,6 +48,59 @@ pub struct Edge {
     pub history_weighted: f64,
 }
 
+// ── Cross-cutting path filter ────────────────────────────────────────────────
+
+/// Lockfiles, generated/build directories, and hidden top-level configs that
+/// historically churn with everything in the repo. When a pair has either side
+/// matching this filter, the pair is excluded from edge construction so the
+/// "trivial co-change" exit (e.g. `Cargo.toml` ↔ `Cargo.lock`) cannot bypass
+/// the band's channel-count cap by riding the synthetic `historical-cochange`
+/// channel into High band.
+///
+/// Basename comparison is exact and case-sensitive. Directory-segment
+/// comparison checks for `/<name>/` segments anywhere in the path.
+pub fn is_cross_cutting_path(path: &str) -> bool {
+    // Exact basename matches: lockfiles + hidden top-level configs that
+    // historically churn with everything.
+    const CROSS_CUTTING_BASENAMES: &[&str] = &[
+        "Cargo.lock",
+        "yarn.lock",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "Gemfile.lock",
+        "composer.lock",
+        "poetry.lock",
+        "uv.lock",
+        "go.sum",
+        "Pipfile.lock",
+        ".gitignore",
+        ".gitattributes",
+    ];
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    if CROSS_CUTTING_BASENAMES.contains(&basename) {
+        return true;
+    }
+
+    // Path-component matches: anything inside a generated/build/vendored
+    // directory tree.
+    const CROSS_CUTTING_SEGMENTS: &[&str] = &[
+        "/dist/",
+        "/build/",
+        "/generated/",
+        "/.next/",
+        "/node_modules/",
+    ];
+    // Normalize so a leading segment (e.g. `dist/foo`) is also caught.
+    let normalized = format!("/{path}");
+    for seg in CROSS_CUTTING_SEGMENTS {
+        if normalized.contains(seg) {
+            return true;
+        }
+    }
+
+    false
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Score all pairs and return edges above `edge_score_floor`.
@@ -73,6 +126,14 @@ pub fn score_edges(
         };
         // Skip same-file pairs.
         if a_range.path == b_range.path {
+            continue;
+        }
+        // Skip pairs where either side is a cross-cutting path (lockfiles,
+        // generated/build dirs, hidden top-level configs). These churn with
+        // everything in the repo, so their `historical_pair_commits` clears
+        // the band cap's `>= 2` floor trivially and would surface non-semantic
+        // dependencies (e.g. `Cargo.toml` ↔ `Cargo.lock`) as High band.
+        if is_cross_cutting_path(&a_range.path) || is_cross_cutting_path(&b_range.path) {
             continue;
         }
 
@@ -189,6 +250,7 @@ mod tests {
     use crate::advice::suggest::history::HistoryIndex;
     use crate::advice::suggest::op_stream::{Op, OpKind};
     use crate::advice::suggest::participants::{Participant, ParticipantKind};
+    use std::collections::BTreeSet;
 
     fn cfg() -> SuggestConfig {
         // Lower floor so test edges pass through.
@@ -240,6 +302,63 @@ mod tests {
             ops,
             parts,
         }
+    }
+
+    #[test]
+    fn cross_cutting_path_helper_classifies_lockfiles_and_build_dirs() {
+        // Cross-cutting (true).
+        assert!(is_cross_cutting_path("Cargo.lock"));
+        assert!(is_cross_cutting_path("yarn.lock"));
+        assert!(is_cross_cutting_path("packages/foo/yarn.lock"));
+        assert!(is_cross_cutting_path("node_modules/foo/index.js"));
+        assert!(is_cross_cutting_path("packages/x/dist/bundle.js"));
+        assert!(is_cross_cutting_path("dist/bundle.js"));
+        assert!(is_cross_cutting_path(".gitignore"));
+        assert!(is_cross_cutting_path("packages/x/build/out.o"));
+        assert!(is_cross_cutting_path("apps/web/.next/server/page.js"));
+
+        // Source files (false).
+        assert!(!is_cross_cutting_path("src/main.rs"));
+        assert!(!is_cross_cutting_path("Cargo.toml"));
+        assert!(!is_cross_cutting_path("package.json"));
+        // Case-sensitive: lowercase variant must not match.
+        assert!(!is_cross_cutting_path("cargo.lock"));
+    }
+
+    #[test]
+    fn lockfile_pair_is_excluded_from_edges() {
+        // `Cargo.toml` ↔ `Cargo.lock` is the canonical trivial-co-change exit.
+        // The pair must be dropped at edge construction so neither the
+        // cross-channel score nor the historical-cochange channel can carry
+        // it into the candidate set.
+        let p_a = make_part("Cargo.toml", 1, 20, "s1", 0);
+        let p_b = make_part("Cargo.lock", 1, 20, "s1", 1);
+        let all = vec![p_a.clone(), p_b.clone()];
+        let canonical = build_canonical_ranges(&all, &cfg());
+        let sessions = vec![make_session("s1", all)];
+        let pairs = build_pair_evidence(&sessions, &canonical, &cfg());
+        // Even with strong synthetic history, the pair must be dropped.
+        let mut history = HistoryIndex {
+            available: true,
+            ..HistoryIndex::default()
+        };
+        history.total_commits = 10;
+        let mut commits: BTreeSet<String> = BTreeSet::new();
+        for i in 0..5 {
+            commits.insert(format!("c{i}"));
+            history.commit_weight.insert(format!("c{i}"), 1.0);
+        }
+        history
+            .commits_by_path
+            .insert("Cargo.toml".to_string(), commits.clone());
+        history
+            .commits_by_path
+            .insert("Cargo.lock".to_string(), commits);
+        let edges = score_edges(&pairs, &canonical, &history, &cfg());
+        assert!(
+            edges.is_empty(),
+            "lockfile pair must be excluded from edge construction"
+        );
     }
 
     #[test]
