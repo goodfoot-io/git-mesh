@@ -73,14 +73,36 @@ fn composite_above_078_with_three_channels_and_full_density_is_high_plus() {
 
 #[test]
 fn one_channel_caps_at_medium() {
-    let c = make_candidate(0.80, 1, 1.0, 3, 0.3, 0.2, 2);
+    // `hist_commits = 0` isolates the in-session technique count from the
+    // historical-cochange channel (which now counts toward the cap when
+    // `historical_pair_commits >= 2`).
+    let c = make_candidate(0.80, 1, 1.0, 3, 0.3, 0.2, 0);
     assert_eq!(confidence_band(&c), ConfidenceBand::Medium);
 }
 
 #[test]
 fn two_channels_caps_at_high() {
-    let c = make_candidate(0.80, 2, 1.0, 3, 0.3, 0.2, 2);
+    let c = make_candidate(0.80, 2, 1.0, 3, 0.3, 0.2, 0);
     assert_eq!(confidence_band(&c), ConfidenceBand::High);
+}
+
+#[test]
+fn one_in_session_channel_with_strong_history_lifts_to_high() {
+    // The historical-cochange channel counts when `historical_pair_commits
+    // >= 2`. With one in-session technique kind plus strong history
+    // (`hist_commits = 4`), the cap rises from Medium to High.
+    let c = make_candidate(0.80, 1, 1.0, 3, 0.3, 0.2, 4);
+    assert_eq!(confidence_band(&c), ConfidenceBand::High);
+}
+
+#[test]
+fn one_in_session_channel_with_single_historical_commit_stays_medium() {
+    // A single historical co-change commit is the noise floor and does NOT
+    // count toward the cap. Without this guard, any repo with one
+    // historical co-change would let single-touch single-session runs
+    // trivially reach High.
+    let c = make_candidate(0.80, 1, 1.0, 3, 0.3, 0.2, 1);
+    assert_eq!(confidence_band(&c), ConfidenceBand::Medium);
 }
 
 #[test]

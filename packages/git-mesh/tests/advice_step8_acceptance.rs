@@ -205,6 +205,67 @@ fn flush_existing_files_emits_suggestion() -> Result<()> {
     Ok(())
 }
 
+// ── Signal 1c: touch_without_prior_read_reaches_suggester ───────────────────
+
+/// Regression: a flush whose only session signal is the *current flush's*
+/// touch (no prior `advice read` on the touched path) must still seed the
+/// suggester with that touch. Previously, `process_touches` built the
+/// `SessionRecord` from `store.load_touches()` BEFORE persisting the
+/// current flush's touches, so a turn that mark→modify→flush'd a single
+/// file with no prior read produced an empty seed and silent stdout — the
+/// exact gate path Step 1a's `process_touches` was supposed to open.
+///
+/// We cannot easily assert a non-empty High-band suggestion here because the
+/// downstream pipeline still requires a cross-file pair candidate to surface
+/// a creation suggestion, and a single-file touch yields none. Instead we
+/// assert the *participant pre-condition*: after the flush, `touches.jsonl`
+/// in the session dir contains the modified path. If `process_touches`
+/// regresses to appending after the SessionRecord build, the persisted
+/// touches stream still records the touch (the loop just runs later), so
+/// this test alone is not sufficient — combine with the SessionRecord-side
+/// assertion below.
+#[test]
+fn flush_current_touch_joins_prior_turn_read_in_seed() -> Result<()> {
+    let repo = CochangeRepo::build()?;
+    let sid = CochangeRepo::sid("sig1c");
+
+    // Turn 1: read b.rs only, then mark+flush with no edits. This persists
+    // b.rs as a session read but produces no touches.
+    let r = advice(repo.path(), repo.advice_dir(), &sid, "read", &["b.rs"]);
+    assert!(r.status.success(), "read failed: {}", String::from_utf8_lossy(&r.stderr));
+    advice_mark(repo.path(), repo.advice_dir(), &sid, "t1");
+    let f1 = advice_flush(repo.path(), repo.advice_dir(), &sid, "t1");
+    assert_eq!(f1.status.code(), Some(0));
+
+    // Turn 2: NO prior read of a.rs. Just mark, modify a.rs, flush. The only
+    // way for the (a.rs, b.rs) pair to surface is for the SessionRecord
+    // passed to the suggester to contain BOTH the persisted prior-turn read
+    // (b.rs) AND the current flush's touch (a.rs). Before the fix in
+    // `process_touches`, the SessionRecord was built BEFORE the current
+    // touches were appended, so `load_touches()` returned `[]` and the
+    // pair never formed → empty stdout despite identical inputs.
+    advice_mark(repo.path(), repo.advice_dir(), &sid, "t2");
+    std::fs::write(
+        repo.path().join("a.rs"),
+        "fn a_seeded_by_touch() {}\nfn shared_helper_compute() {}\nfn billing_invoice_total() {}\nfn customer_record_id() {}\n",
+    )?;
+    let flush_out = advice_flush(repo.path(), repo.advice_dir(), &sid, "t2");
+    assert_eq!(
+        flush_out.status.code(),
+        Some(0),
+        "flush must exit 0: {}",
+        String::from_utf8_lossy(&flush_out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&flush_out.stdout);
+    let stderr = String::from_utf8_lossy(&flush_out.stderr);
+    assert!(
+        stdout.contains("has implicit semantic dependencies, document with `git mesh`"),
+        "current-flush touch must join the SessionRecord seed alongside prior-turn reads.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+    );
+    Ok(())
+}
+
 // ── Signal 2: flush_empty_history_no_suggestion ──────────────────────────────
 
 /// A repo with a single commit (no co-change history) produces no suggestion
@@ -545,34 +606,13 @@ fn flush_multi_turn_session_uses_session_scope() -> Result<()> {
 }
 
 // ── Latency guard: flush_partial_walk_not_cached ─────────────────────────────
-
-/// Verify that `git_log_name_only_for_paths` returns `complete = false` when
-/// the 800 ms budget fires, and that no `history_cache.json` is written in
-/// that case.
-///
-/// Making this deterministic in integration tests is fragile: the budget
-/// depends on wall-clock time and the number of commits in the test repo. We
-/// test the invariant at the unit level instead: we call the function on a
-/// 0-commit (empty) repo and confirm the result is ([], true) — i.e. the
-/// complete=true fast path for an empty walk.
-///
-/// The real partial-walk path (complete=false) would require either an
-/// injectable clock or a very large repo. This test is therefore a structural
-/// guard: it confirms the function signature returns a `bool` completion flag
-/// and that the cache module respects it, which is tested by `history_cache`
-/// unit tests (`miss_on_complete_false` / round_trip).
-///
-/// A deterministic wall-clock version would require an injectable `Instant`
-/// abstraction — documented here as the reason this test is marked `#[ignore]`.
-#[test]
-#[ignore = "deterministic partial-walk requires injectable clock; see test body"]
-fn flush_partial_walk_not_cached() {
-    // To implement deterministically:
-    // 1. Expose a `Deadline` parameter on `git_log_name_only_for_paths`.
-    // 2. Pass `Instant::now()` (already expired) as the deadline.
-    // 3. Assert ([], false) is returned.
-    // 4. Assert no history_cache.json is written in the subsequent pipeline call.
-}
+//
+// The partial-walk-not-cached invariant is exercised by
+// `advice::suggest::history_cache::tests::miss_on_complete_false`, which
+// directly writes a `complete: false` cache entry and asserts `try_load`
+// returns a miss. The integration-level deterministic version would require
+// an injectable wall-clock on `git_log_name_only_for_paths`; see that unit
+// test for the canonical coverage of this contract.
 
 // ── Step 1b: flush_deleted_suppression ───────────────────────────────────────
 

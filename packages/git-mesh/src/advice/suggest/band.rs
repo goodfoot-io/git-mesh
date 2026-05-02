@@ -42,7 +42,25 @@ pub fn confidence_band(c: &CandidateScore) -> ConfidenceBand {
     };
 
     // Channel-count cap: 1 channel caps at medium, 2 at high, ≥3 reaches high+.
-    let cc = c.techniques.len();
+    //
+    // `historical-cochange` is treated as an additional channel ONLY when the
+    // historical co-change is non-trivial (>= 2 shared commits). A single
+    // shared commit is the noise floor — under d049473 any `hist_count > 0`
+    // surfaced `historical-cochange` as a kind, which let a single-touch
+    // single-session run against any repo with one historical co-change
+    // bypass the cap and reach High trivially. Requiring >= 2 commits keeps
+    // the cap honest while still letting genuine co-change history lift
+    // single-in-session-channel suggestions out of the Medium ceiling.
+    let in_session_techniques = c
+        .techniques
+        .iter()
+        .filter(|t| t.as_str() != "historical-cochange")
+        .count();
+    let cc = if c.historical_pair_commits >= 2 {
+        in_session_techniques + 1
+    } else {
+        in_session_techniques
+    };
     if cc <= 1 {
         band = cap_band(band, ConfidenceBand::Medium);
     } else if cc <= 2 {
@@ -114,7 +132,10 @@ mod tests {
                 history_score: 0.5,
             },
             techniques: (0..techniques).map(|i| format!("tech-{i}")).collect(),
-            historical_pair_commits: 2,
+            // Default to 0 so the channel-count tests count only the
+            // explicitly-provided in-session technique kinds. Tests that
+            // exercise the historical-cochange channel set this explicitly.
+            historical_pair_commits: 0,
             historical_weighted: 0.5,
             same_file_dominance: 0.5,
             cross_package: true,
@@ -161,6 +182,51 @@ mod tests {
         c.components.cluster_cohesion = 0.0;
         c.components.trigram_score = 0.0;
         assert_eq!(viability_label(&c, true), Viability::Suppressed);
+    }
+
+    #[test]
+    fn single_in_session_technique_caps_at_medium_even_with_history() {
+        // Regression: a previous version of `score_edges` pushed a synthetic
+        // "historical-cochange" string into `Edge::kinds` whenever `hist_count
+        // > 0`. That string flowed up into `CandidateScore::techniques` and
+        // bypassed the `techniques.len() <= 1 → Medium` cap on tiny
+        // single-session corpora — a single-touch single-session run against
+        // any repo with non-trivial history could trivially reach High. The
+        // band cap is meant to count *in-session* evidence channels, not
+        // history (which is already weighted into the composite via
+        // `s_history` and `s_cofreq`). This test asserts a single-technique
+        // candidate stays capped at Medium regardless of historical
+        // co-change strength.
+        let mut c = make_candidate(0.80, 1, 1.0, 2);
+        // Trivial historical co-change: exactly one shared commit. The
+        // `score_edges` stage will still push `historical-cochange` into
+        // `kinds` whenever `hist_count > 0`, so we mirror that here.
+        c.historical_pair_commits = 1;
+        c.historical_weighted = 1.0;
+        c.components.history_score = 0.5;
+        c.techniques.push("historical-cochange".to_string());
+        c.techniques.sort();
+        assert_eq!(
+            confidence_band(&c),
+            ConfidenceBand::Medium,
+            "single in-session technique with a single historical commit must cap at Medium"
+        );
+    }
+
+    #[test]
+    fn single_in_session_technique_with_strong_history_can_reach_high() {
+        // Counter-test for the cap: with `historical_pair_commits >= 2`, the
+        // "historical-cochange" channel counts and lifts the cap to High.
+        // This is what makes the cap honest — strong historical signal must
+        // be allowed to surface, while the noise-floor case (1 commit) is
+        // gated to Medium.
+        let mut c = make_candidate(0.80, 1, 1.0, 2);
+        c.historical_pair_commits = 4;
+        c.historical_weighted = 2.0;
+        c.components.history_score = 1.0;
+        c.techniques.push("historical-cochange".to_string());
+        c.techniques.sort();
+        assert_eq!(confidence_band(&c), ConfidenceBand::High);
     }
 
     #[test]

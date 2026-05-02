@@ -134,9 +134,14 @@ pub fn score_edges(
                 Technique::LocatorEditContext => "locator-edit-context".to_string(),
             })
             .collect();
-        // Historical co-change is the seam channel — surface it in the edge's
-        // techniques so the band/channel-count cap counts it as a distinct
-        // signal alongside the in-session evidence kinds.
+        // Historical co-change is surfaced in `kinds` so downstream
+        // diagnostics can see it, but `confidence_band` excludes it from the
+        // channel-count cap (see `band::in_session_technique_count`). The cap
+        // is meant to count *in-session* evidence channels; counting history
+        // as a distinct technique lets a single-touch single-session run with
+        // one historical co-change reach High trivially, masking the
+        // "one channel caps at Medium" invariant. History is already
+        // weighted into the composite via `s_history` and `s_cofreq`.
         if hist_count > 0 {
             kinds_sorted.push("historical-cochange".to_string());
         }

@@ -270,6 +270,36 @@ mod tests {
     }
 
     #[test]
+    fn miss_on_complete_false() {
+        // A cache file with `complete: false` represents a budget-truncated
+        // history walk. `try_load` MUST treat it as a miss so the next flush
+        // retries the full walk instead of inheriting the partial result.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = default_cfg();
+        let seed = vec!["a.rs".to_string()];
+        let head = "head1";
+
+        let cache = HistoryCacheFile {
+            schema_version: SCHEMA_VERSION,
+            head_sha: head.to_string(),
+            seed_paths: seed.clone(),
+            cfg_fingerprint: cfg_fingerprint(&cfg),
+            complete: false,
+            commits_by_path: BTreeMap::new(),
+            commit_weight: BTreeMap::new(),
+            total_commits: 0,
+            mass_refactor_cap: 12,
+        };
+        let bytes = serde_json::to_vec(&cache).unwrap();
+        std::fs::write(dir.path().join("history_cache.json"), bytes).unwrap();
+
+        assert!(
+            try_load(dir.path(), head, &seed, &cfg).is_none(),
+            "complete=false cache file must miss"
+        );
+    }
+
+    #[test]
     fn miss_on_truncated_file() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = default_cfg();

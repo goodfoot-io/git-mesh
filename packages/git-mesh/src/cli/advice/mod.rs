@@ -548,6 +548,17 @@ fn process_touches(
         }
     }
 
+    // Persist the current flush's touches BEFORE building the SessionRecord
+    // for the suggester. The pipeline reads `store.load_touches()` to seed the
+    // single active session; if we appended after the suggester ran, a flush
+    // triggered by a touch (no prior `advice_mark`) would arrive at the
+    // pipeline with an empty seed and produce no output. Persisting first
+    // closes that gap; the gate downstream still reads `&touches` directly so
+    // we do not depend on a re-read for "current-flush" semantics.
+    for t in &touches {
+        store.append_touch(t)?;
+    }
+
     let deleted_paths: std::collections::HashSet<String> = touches
         .iter()
         .filter(|t| matches!(t.kind, TouchKind::Deleted))
@@ -645,10 +656,6 @@ fn process_touches(
             output.push_str(&creation_instructions(&[]));
             flags.has_printed_creation_instructions = true;
         }
-    }
-
-    for t in &touches {
-        store.append_touch(t)?;
     }
 
     use std::io::Write;
