@@ -27,7 +27,7 @@ MESH_COUNTS=(1 10 100)
 ANCHORS_PER_MESH=(2 20)
 ITERATIONS=5
 OUT_CSV="./bench-mesh.csv"
-OPS=(add why commit show ls stale)
+OPS=(add why commit show list stale)
 KEEP_FIXTURE=0
 
 usage() {
@@ -207,7 +207,7 @@ for ref in "${REFS[@]}"; do
       echo "    ref=$ref M=$M A=$A — seeding $((M > 0 ? M : 0)) meshes" >&2
       if [[ "$M" -gt 0 ]]; then
         seed_meshes "$WORKDIR" "$M" "$A"
-        seeded=$(cd "$WORKDIR" && git-mesh ls --porcelain 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
+        seeded=$(cd "$WORKDIR" && git-mesh list --porcelain 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
         if [[ "$seeded" -lt "$M" ]]; then
           echo "FATAL: seeded only $seeded of $M meshes (ref=$ref M=$M A=$A)" >&2
           exit 1
@@ -243,8 +243,8 @@ for ref in "${REFS[@]}"; do
             show)
               t=$(cd "$WORKDIR" && timed git-mesh show "$reader_name")
               ;;
-            ls)
-              t=$(cd "$WORKDIR" && timed git-mesh ls)
+            list)
+              t=$(cd "$WORKDIR" && timed git-mesh list)
               ;;
             stale)
               t=$(cd "$WORKDIR" && timed git-mesh stale --no-exit-code)
