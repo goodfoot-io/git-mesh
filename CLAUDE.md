@@ -58,30 +58,6 @@ Use the `jsdoczoom:jsdoczoom` subagent instead of the `Explore` subagent to answ
 
 <documentation>
 
-<bash-tool-env-var-bug>
-A bug prevents env var expansion when followed by a "|" character pipe.
-
-This fails:
-
-```bash
-echo $HOME | cat # returns ''
-```
-
-Do this instead:
-
-```bash
-echo $(printenv HOME) | cat # returns '/home/user'
-
-# or no pipe:
-
-echo $HOME # returns '/home/user'
-
-# or with a redirect:
-
-echo $HOME 2>&1 # returns '/home/user'
-```
-</bash-tool-env-var-bug>
-
 <validation>
 Lint and typecheck the entire project frequently — these operations are cheap. During development, focus test runs as tightly as possible: a single failing test or suite should be re-run alone until it passes. Broaden scope only for final confirmations or when a fix demands wider information.
 
