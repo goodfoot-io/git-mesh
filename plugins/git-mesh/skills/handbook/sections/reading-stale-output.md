@@ -59,14 +59,12 @@ git mesh stale --format=github-actions
 
 JSON carries `{ "schema_version": 1, ... }`. Parse the `source` field for the layer (`(index)` / `(worktree)` / `(staged)`); do not read the culprit column as a SHA. `CONTENT_UNAVAILABLE` findings carry a `reason`.
 
-## Plugin `additionalContent` blocks
+## Hook injections vs. CLI stale output
 
-The plugin emits drift summaries that look like:
+The PostToolUse hook in `plugins/git-mesh/hooks/hooks.json` does **not** call `git mesh stale`. It calls `git mesh advice <sid> read|touch|flush`, whose render shape and marker set are different. See `./understanding-hook-output.md` for the advice render. Notable differences when reading text in `additionalContext` / `systemMessage`:
 
-```
-request-schema mesh: Charge request schema is shared by client and server.
-- src/api.ts#L1-L3 [CHANGED]
-- server/routes.ts#L8-L21
-```
+- Header line: `<active-anchor> is in the <mesh> mesh with:` (advice) vs. per-mesh status header (`stale`).
+- Status clauses appear in **parentheses** in advice (`(CHANGED)`, `(MOVED)`, `(ORPHANED)`, `(CONFLICT)`, `(SUBMODULE)`, `(DELETED)`, `(RENAMED)`); `stale` uses **square brackets** (`[CHANGED]`, `[MOVED]`) plus `FRESH`, `(ack)`, and `src=…` annotations that advice does not emit.
+- Advice may include an excerpt block of related anchor bytes and a one-line `git mesh …` next-step command; `stale` never does.
 
-The first line is the mesh name + current why. Each bullet is an anchor; the marker in brackets is its status. Absence of a marker means `FRESH`. The why tells you which subsystem the anchors form so you can judge whether the change still belongs to it before touching either side.
+If text in `additionalContext` carries `(ack)` or `src=…`, something other than the standard hook produced it.

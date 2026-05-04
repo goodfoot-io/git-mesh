@@ -1,156 +1,100 @@
 # Understanding hook output
 
-A one-pager for contributors and operators wiring the advice subsystem
-into a Claude Code session. The reader to keep in mind is a developer
-who has installed the hooks, sees text appearing in
-`additionalContext` and in the session transcript, and wants to know
-what each surfacing means and when to expect it. The hooks are a thin
-delivery layer — what they inject is the same routing the developer
-would see at the prompt — but the *timing* and *trigger* of each
-injection is what shapes the experience around an assistant. These
-are the commitments the hooks answer to; anything that violates one
-of them is a bug in the delivery layer, regardless of what the
-underlying signal looked like.
+A one-pager for contributors and operators wiring the advice subsystem into a Claude Code session. The reader to keep in mind is a developer who has installed the hooks, sees text appearing in `additionalContext` and in the session transcript, and wants to know what each surfacing means and when to expect it. The hooks are a thin delivery layer — what they inject is the rendered output of the `git mesh advice` CLI for the current session — but the *timing* and *trigger* of each invocation is what shapes the experience around an assistant.
 
 ## What the hooks inject
 
-The hooks do not invent advice. Each one composes a session-scoped
-read of the workspace's standing state — the same read a developer
-could run by hand — and routes the resulting plain text into two
-surfaces:
+The hooks do not invent advice. Each one composes a session-scoped read of the workspace's standing state by calling a `git mesh advice <session-id> <verb>` subcommand, and routes the resulting plain text into two surfaces:
 
-- **`additionalContext`** — material the assistant sees on its next
-  turn. This is where routing belongs: the other anchors in the mesh
-  the assistant should also consider, the why that defines the
-  subsystem the anchors form, the mesh name that labels the
-  coupling.
-- **`systemMessage`** — the same text mirrored into the transcript,
-  so the developer reading the conversation later sees exactly what
-  the assistant saw. The two surfaces always carry identical bytes;
-  there is no agent-only channel and no developer-only channel.
+- **`additionalContext`** — material the assistant sees on its next turn. This is where routing belongs: the other anchors in the mesh the assistant should also consider, the why that defines the subsystem the anchors form, the mesh name that labels the coupling.
+- **`systemMessage`** — the same text mirrored into the transcript, so the developer reading the conversation later sees exactly what the assistant saw. The two surfaces always carry identical bytes; there is no agent-only channel and no developer-only channel.
 
-If a render produces nothing, neither surface is written. Silence is
-a valid output. A turn with no injection is the steady state, not a
-failure.
+If a render produces nothing, neither surface is written. Silence is a valid output. A turn with no injection is the steady state, not a failure.
+
+The hook layer fails closed: if the workspace is not a git repository, if the hook payload is missing a session id, if the resolved repo cannot be located, or if the underlying `git mesh advice` call returns nothing or non-zero, the hook exits 0 and writes nothing rather than surfacing an error.
 
 ## When each hook fires
 
-Four events drive the delivery layer. Each one has a single,
-distinct job; together they cover the moments when the workspace's
-relationships could have shifted under the developer or the
-assistant.
+Three events drive the delivery layer (`plugins/git-mesh/hooks/hooks.json`). Only one of them produces user-visible output; the other two manage the per-session state the renderer reads from.
 
-### 1. Session start — establish the baseline
+### PreToolUse — capture a snapshot pair
 
-Every session, including the fresh session id created by a compact,
-captures the current workspace as the baseline that later renders
-diff against. Nothing is injected. The job is to make sure later
-hooks have something to compare against; a session without a
-baseline cannot route attention because it cannot tell what moved.
+Matcher: `Edit|Write|MultiEdit|Bash|mcp__.*`. Script: `bin/advice-pre-tool-use.sh`.
 
-### 2. User prompt submit — read what the developer named
+For tools whose effects on the workspace are not visible from their structured input — `Bash` and any `mcp__*` tool — the hook calls `git mesh advice <sid> mark <tool_use_id>` to capture a before snapshot of the working tree. PostToolUse then captures the after snapshot and diffs the pair, so file changes produced as side effects of a shell command or MCP call can be attributed back to the exact tool call that caused them.
 
-When the developer submits a prompt, path-shaped tokens lifted from
-the prompt are recorded as reads. Then a render runs and, if it has
-something to say, lands in `additionalContext` and `systemMessage`
-before the assistant's turn begins. The framing matches Goal #1 of
-the advice DX: the news is the other anchors in the mesh, never the
-developer's own typing. A path the developer mentioned appears only
-as the locator that makes the related side legible.
+For tools the matcher includes but the script's deny-list short-circuits (`Edit`, `Write`, `MultiEdit`, plus the read-only set `Read`/`Grep`/`Glob`/`LS`/`WebFetch`/`WebSearch` if they reach this script), no snapshot is taken — PostToolUse already has structured input that names the affected path and range directly.
 
-### 3. Post tool use — read what the assistant just touched
+PreToolUse never injects text. Its only job is to leave a snapshot pair on disk so PostToolUse has something to diff.
 
-After the assistant finishes a tool call that may have moved the
-workspace — a file read, a file write, a notebook edit, a shell
-command, an MCP call — the hook resolves the repository the tool
-actually operated in (file path for read/edit tools, parsed `cd` and
-`git -C` targets for shell, the session cwd as a fallback for MCP
-tools without a uniform target) and renders advice there. If the
-tool touched multiple repositories, each one renders independently
-and the results combine into a single injection. This is where most
-real-time routing happens: the moment after the assistant changed
-something is the moment the developer most needs to know what else
-the change crossed.
+### PostToolUse — render advice for what just happened
 
-### 4. Stop — catch anything the per-tool renders missed
+Matcher: `Read|Edit|Write|MultiEdit|Bash|mcp__.*`. Script: `bin/advice-post-tool-use.sh`. **The only injection point.**
 
-When the assistant finishes its turn, a final render runs to surface
-anything the per-tool hooks did not catch — typically staging or
-configuration changes a shell command produced as a side effect.
-Stop is informational only and never blocks turn end. Renders
-triggered by `max_tokens` or `stop_sequence` are skipped, because
-those reasons mean the turn ended without intent and routing
-attention there would be noise.
+Per tool, it picks the right `git mesh advice` verb:
+
+- **`Read`** → `git mesh advice <sid> read <path>[#L<offset>-L<end>] [<tool_use_id>]`. The session records the read; if the read intersects an anchor in any mesh, the renderer surfaces the rest of the mesh (other anchors, the why) so the assistant sees what the read just touched.
+- **`Edit` / `MultiEdit`** → For each hunk in the structured patch, `git mesh advice <sid> touch <tuid> <path>#L<new_start>-L<new_end> modified`. If a hunk has `newLines == 0` (whole-file deletion), or no structured patch is present, falls back to a whole-file `touch <tuid> <path> modified` once.
+- **`Write`** → `git mesh advice <sid> touch <tuid> <path> {added|modified}` (`added` when the response reports `type=create`, `modified` otherwise).
+- **`Bash`, `mcp__*`, anything else** → `git mesh advice <sid> flush <tuid>`. This is where the PreToolUse snapshot pair pays off: `flush` diffs the before/after snapshots and routes advice for any anchor the side effects crossed.
+
+The output of the chosen verb is JSON-wrapped into `{hookSpecificOutput: {hookEventName: PostToolUse, additionalContext: <text>}, systemMessage: <text>}`. Empty output writes nothing.
+
+### SessionEnd — clean up session state
+
+Matcher: `*`. Script: `bin/advice-session-end.sh`.
+
+Calls `git mesh advice <sid> end`, which removes the per-session advice directory and any leftover snapshot pairs left under `.git/mesh/advice/<sid>/`. SessionEnd does not inject text; it exists so the on-disk session store does not grow without bound across many sessions.
+
+There is no `SessionStart` hook in the current plugin. The session store is created lazily by the first `git mesh advice <sid> <verb>` call from PostToolUse.
+
+There is no `Stop` hook. Catching deferred side effects from the assistant's full turn is folded into PostToolUse's `flush` step on the last tool call.
+
+There is no `UserPromptSubmit` hook. Path-shaped tokens lifted from prompts are not currently fed to the advice render.
 
 ## What the injected text looks like
 
-The body of every injection is plain text the developer could read
-in any terminal, log, or diff view (Goal #10 of advice DX). It
-follows the same shape regardless of which hook produced it:
+Every injection is plain text rendered by `git mesh advice` (`packages/git-mesh/src/advice/render.rs`). The shape is consistent across verbs.
 
-- A header naming the mesh and the one-sentence why describing the
-  relationship the anchors hold, so a reader who has never heard of
-  the underlying tooling still understands the coupling (Goal #2).
-- A trigger locator pointing at what routed attention — the path
-  the developer named, or the anchor the assistant just touched —
-  rendered as the minimum context that makes the related side
-  legible (Goal #1).
-- The addresses of the other anchors in the mesh, carrying the
-  headline. State is conveyed factually — `CHANGED`, `MOVED`,
-  address-only when the related anchor is not excerptible — with no
-  severity, no red text, no "warning:" prefix (Goal #4).
-- Optionally, a concrete next step when the action is unambiguous
-  and a one-time explanation block when a finding escalates toward a
-  recommendation for the first time in the session (Goals #3, #5,
-  #6).
+A finding for a single mesh:
 
-Detail scales with certainty. A glancing touch earns a one-line
-pointer. A change that crosses a relationship earns enough context
-to compare the two sides. A high-confidence signal — a stale
-reference, a structural conflict, a candidate worth recording —
-earns the most context and a concrete next step.
+```
+src/checkout.tsx#L88-L120 is in the billing/checkout-request-flow mesh with:
+- api/charge.ts#L30-L76 (CHANGED)
+- docs/billing/charge-contract.md
+```
+
+- **Header line**: `<active-anchor> is in the <mesh> mesh with:` when a triggering anchor is known. Otherwise `<mesh> mesh contains:`. The active anchor is whatever the developer or the assistant just touched (the path the read landed on, the hunk that was edited, the partner that drifted under a side effect).
+- **Bullets**: each related anchor in the mesh, in `<path>#L<start>-L<end>` form (or bare path for whole-file anchors). A status clause in parentheses follows the address when the anchor is anything other than `FRESH`. Markers used here are `(CHANGED)`, `(MOVED)`, `(ORPHANED)`, `(CONFLICT)`, `(SUBMODULE)`, `(DELETED)`, `(RENAMED)`. Absence of a clause means `FRESH`. (These are the rendered forms — internally the markers are `[CHANGED]` etc.; `format_status` strips the brackets and wraps in parentheses for the user-facing line.)
+- **Excerpt block** (optional, density ≥ 1): a few lines of the related anchor's bytes, with its address, when the anchor is excerptible. Skipped for whole-file anchors and for the non-excerpt markers `[ORPHANED]`, `[CONFLICT]`, `[SUBMODULE]`, `[DELETED]`.
+- **Command block** (optional, density 2): a one-line lead-in and an indented `git mesh …` command when the next step is unambiguous (re-record after edits, follow a rename, narrow or retire a mesh, record a candidate mesh).
+
+A new-mesh suggestion (cross-cutting candidate the suggest pipeline scored High or High+):
+
+```
+Possible implicit semantic dependency between:
+  - web/checkout.tsx#L88-L120
+  - api/charge.ts#L30-L76
+
+Record the link if real:
+  git mesh add <name> \
+    web/checkout.tsx \
+    api/charge.ts
+  git mesh why <name> -m "What these anchors do together."
+```
+
+Multiple stanzas in one injection are separated by `\n---\n\n`.
 
 ## What the hooks deliberately do not inject
 
-- **Acknowledgements the developer or the assistant just received
-  from a write command.** Advice composes on top of the rest of the
-  CLI; the hooks never restate "updated `<ref>`" or "renamed `<old>`
-  to `<new>`" (Goal #8).
-- **Findings the session has already been told about.** Once a
-  relationship has been surfaced for a specific reason in this
-  session, the hooks stay quiet about it until the situation
-  changes. Each injection reports what is new since the previous
-  render, not the full standing state (Goal #7).
-- **Anything when no heuristic clears its bar.** A heuristic without
-  the inputs it needs to be confident stays silent. A missed signal
-  is cheaper than a wrong one (Goal #9). The hooks fail closed: if
-  the workspace is not a repository, if the session has no id, if
-  the render returns nothing, the hook exits zero and writes
-  nothing.
-- **Editor or agent-specific shapes.** No LSP payloads, no JSON
-  schemas tuned to a particular tool, no network calls. The same
-  bytes appear in `additionalContext`, in `systemMessage`, and on
-  the developer's terminal at the prompt (Goal #10).
+- **Acknowledgements the developer or the assistant just received from a write command.** Advice composes on top of the rest of the CLI; the hooks never restate "updated `<ref>`" or "renamed `<old>` to `<new>`".
+- **Findings the session has already been told about.** Once a relationship has been surfaced for a specific reason in this session, the renderer's "advice-seen" set suppresses it until the situation changes. Each injection reports what is new since the previous render, not the full standing state.
+- **Anything when no heuristic clears its bar.** Only suggestions banded `High` or `High+` reach a render; a heuristic without the inputs it needs to be confident stays silent.
+- **Editor or agent-specific shapes.** No LSP payloads, no JSON schemas tuned to a particular tool, no network calls. The same bytes appear in `additionalContext`, in `systemMessage`, and on the developer's terminal at the prompt.
 
 ## When something looks wrong
 
-Three diagnostics cover most surprises:
-
-- **An injection appeared and the developer thinks it shouldn't
-  have.** The render is reporting what is new since the last render
-  in this session. If the same finding seems to repeat, the
-  underlying state changed enough to clear the suppression filter —
-  that is the routing working, not noise. If it genuinely repeats
-  unchanged, that is a bug in the suppression layer and should be
-  filed against the render, not the hooks.
-- **No injection appeared when the developer expected one.** The
-  most common cause is that the heuristic for that reason kind did
-  not clear its bar (Goal #9), or the relationship has already been
-  surfaced once in this session (Goal #7), or the workspace has no
-  baseline because the session-start hook did not run (re-launching
-  the session re-establishes it). Silence is the steady state; the
-  bar to break it is intentionally high.
-- **The same text appeared in `additionalContext` and in the
-  transcript.** That is by design. The two surfaces carry identical
-  bytes so the developer reading the transcript later sees exactly
-  what the assistant saw on its next turn.
+- **An injection appeared and the developer thinks it shouldn't have.** The render is reporting what is new since the last render in this session. If the same finding seems to repeat, the underlying state changed enough to clear the suppression filter — that is the routing working, not noise. If it genuinely repeats unchanged, that is a bug in the suppression layer (`advice_seen_set`) and should be filed against the render, not the hooks.
+- **No injection appeared when the developer expected one.** Most common causes: the suggestion banded below `High`; the relationship has already been surfaced once in this session; the workspace is not a git repository; the snapshot pair PreToolUse should have written for a `Bash`/MCP call did not survive (check whether `GIT_MESH_ADVICE_DEBUG=1` and re-run — debug mode mirrors stderr from the `git mesh advice` calls into `systemMessage`); the session store was wiped by an earlier `SessionEnd` cleanup before this turn.
+- **The same text appeared in `additionalContext` and in the transcript.** That is by design — the two surfaces always carry identical bytes so the developer reading the transcript later sees exactly what the assistant saw on its next turn.
+- **A hook crashed.** All scripts trap errors and exit 0 with a `git-mesh advice hook: error rc=<n> at line <l>` breadcrumb on stderr; an internal failure must never block a turn or surface as a non-blocking exit-code error in the transcript.

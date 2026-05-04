@@ -6,16 +6,40 @@ Terminal statuses short-circuit the resolver — no slice math, no diff. Each on
 
 **Cause.** The anchor commit or anchor data is unreachable from current refs. Usually a force-push that rewrote history, a `git gc` that pruned an unreferenced commit, or a partial clone that never fetched the anchor.
 
-**Fix.**
+**First, try to recover the missing history** — a missing fetch is the only fix that doesn't require human judgment:
+
 ```bash
 git fetch --all
 git mesh fetch
+git mesh stale <name>     # re-check
 ```
-If the anchor commit is truly gone, re-anchor on a reachable commit:
-```bash
-git mesh add <name> <path>#L<start>-L<end>
-git mesh commit <name>
-```
+
+**If the anchor is still ORPHANED, the goal is not to dig up the lost commit. It is to confirm the relationship still holds and re-anchor at current bytes.** Do not script a bulk "add every anchor as-is" loop over `git mesh list --porcelain`; that erases the prompt without doing the work the prompt exists for. Each mesh needs its own decision.
+
+**Per-mesh process.** For each ORPHANED mesh:
+
+1. **Read the why.** What relationship does this mesh claim?
+   ```bash
+   git mesh why <name>
+   ```
+2. **Inspect each current anchor.** Open the file at the recorded path and line range. For whole-file anchors, read the file. The recorded line range may no longer correspond to the same content the mesh was originally pinned to — the orphan status means that history is unverifiable from refs.
+   ```bash
+   git mesh <name> --oneline           # list anchors compactly
+   # then read each path / range in the editor or via Read
+   ```
+   `git mesh stale <name> --patch` is the right tool for `CHANGED` anchors but produces nothing useful for true orphans (there are no anchored bytes to diff against). Read the live content directly.
+3. **Decide per the drift rules in `./responding-to-drift.md`:**
+   - Relationship still holds at the current location → re-anchor at the current span (`git mesh add <name> <path>#L<start>-L<end>`).
+   - Lines have shifted → re-anchor at the *new* span (`git mesh remove` the old line range, then `git mesh add` the new one). Do **not** copy the old range forward without checking it still points at the right code.
+   - The related code has diverged → fix it first, then re-anchor. Both sides land in the same commit.
+   - The subsystem itself changed → stage a new why (`git mesh why <name> -m "..."`), then re-anchor.
+   - The relationship no longer exists → `git mesh delete <name>`.
+4. **Commit per mesh**, not in bulk:
+   ```bash
+   git mesh commit <name>
+   ```
+
+Bulk loops that re-add every recorded anchor verbatim are an anti-pattern: they convert "this needs review" into a clean exit code without anyone confirming the line ranges still bound the right code, that the why still describes the relationship, or that the mesh shouldn't be deleted.
 
 ## `MERGE_CONFLICT`
 
