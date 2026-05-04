@@ -336,9 +336,14 @@ fn ls_filtered_porcelain_path_index_tracks_rename_and_delete() -> Result<()> {
     // Delete the mesh.
     repo.mesh_stdout(["delete", "renamed"])?;
 
-    // Path-index lookup now returns empty.
-    let deleted = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
-    assert_eq!(deleted.trim(), "no meshes");
+    // Path-index lookup now returns empty (zero-match → exit 1 per card spec).
+    // mesh_stdout checks success(), so use run_mesh to capture exit code.
+    let deleted_out = repo.run_mesh(["ls", "file1.txt#L3-L4", "--porcelain"])?;
+    assert_eq!(deleted_out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&deleted_out.stderr).trim(),
+        "git mesh ls: no mesh or file found for 'file1.txt#L3-L4'"
+    );
     Ok(())
 }
 
