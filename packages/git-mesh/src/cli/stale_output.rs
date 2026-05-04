@@ -151,10 +151,16 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             let _perf = crate::perf::span("stale.resolve-named-meshes");
             resolve_named_meshes(repo, &mesh_names, options)?
         };
-        let mut meshes: Vec<MeshResolved> = resolved
-            .into_iter()
-            .filter_map(|(_, r)| r.ok())
-            .collect();
+        let mut meshes: Vec<MeshResolved> = Vec::with_capacity(resolved.len());
+        for (_name, result) in resolved {
+            match result {
+                Ok(mesh) => meshes.push(mesh),
+                Err(crate::Error::MeshNotFound(_)) => {
+                    // Staging-only mesh; step 6 will check for pending entries.
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
 
         // Step 6: surface staging-only meshes for names that had no committed ref.
         if layers.staged_mesh {
