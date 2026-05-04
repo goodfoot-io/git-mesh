@@ -98,24 +98,27 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
             // Step 1: try mesh name first (mesh names never contain '/').
             if !arg.contains('/') {
                 let mesh_ref = format!("refs/meshes/v1/{arg}");
-                if crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)
-                    .unwrap_or(None)
-                    .is_some()
-                {
-                    if seen.insert(arg.clone()) {
-                        mesh_names.push(arg.clone());
+                match crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)? {
+                    Some(_oid) => {
+                        // Committed mesh ref exists.
+                        if seen.insert(arg.clone()) {
+                            mesh_names.push(arg.clone());
+                        }
+                        found = true;
                     }
-                    found = true;
-                } else if layers.staged_mesh
-                    && !build_pending_findings(repo, arg).is_empty()
-                {
-                    // Staging-only mesh: no committed ref, but has pending staging
-                    // entries. Treated as a valid mesh reference like the original
-                    // single-mesh path did for `resolve_mesh` → MeshNotFound.
-                    if seen.insert(arg.clone()) {
-                        mesh_names.push(arg.clone());
+                    None => {
+                        // Not a committed mesh; check for staging-only mesh before
+                        // falling through to path-index lookup. Matches the original
+                        // single-mesh path's MeshNotFound → staging check.
+                        if layers.staged_mesh
+                            && !build_pending_findings(repo, arg).is_empty()
+                        {
+                            if seen.insert(arg.clone()) {
+                                mesh_names.push(arg.clone());
+                            }
+                            found = true;
+                        }
                     }
-                    found = true;
                 }
             }
 

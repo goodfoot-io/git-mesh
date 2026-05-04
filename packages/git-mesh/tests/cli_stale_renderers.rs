@@ -433,3 +433,96 @@ fn json_changed_finding_has_no_moved_to_field() -> Result<()> {
     );
     Ok(())
 }
+
+// ── multi-arg positional resolution ──────────────────────────────────────
+
+#[test]
+fn zero_match_arg_exits_one_with_diagnostic() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["stale", "nonexistent-file"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no mesh or file found for 'nonexistent-file'"),
+        "expected zero-match diagnostic, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn multiple_zero_match_args_reports_each() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["stale", "bad1", "bad2"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no mesh or file found for 'bad1'"),
+        "expected diagnostic for bad1, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("no mesh or file found for 'bad2'"),
+        "expected diagnostic for bad2, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn file_path_arg_resolves_mesh_via_path_index() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    drift_in_head(&repo)?;
+    // Resolve by file path (not mesh name) through the path index.
+    let out = repo.run_mesh(["stale", "file1.txt", "--format=json"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stale mesh should exit 1, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    assert_eq!(
+        v["mesh"], "m",
+        "file path arg should resolve to mesh 'm' via path index, got: {v}"
+    );
+    Ok(())
+}
+
+#[test]
+fn mixed_mesh_name_and_path_args_are_deduplicated() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    drift_in_head(&repo)?;
+    // Pass both the mesh name and the file path — both resolve to mesh "m".
+    let out = repo.run_mesh(["stale", "m", "file1.txt", "--format=json"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stale mesh should exit 1, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    assert_eq!(
+        v["mesh"], "m",
+        "deduplicated args should produce one mesh output, got: {v}"
+    );
+    let findings = v["findings"].as_array().expect("findings array");
+    let changed = findings
+        .iter()
+        .filter(|f| f["status"]["code"] == "CHANGED")
+        .count();
+    assert!(
+        changed > 0,
+        "should have at least one CHANGED finding from mesh 'm'"
+    );
+    Ok(())
+}
+
+#[test]
+fn all_args_resolve_to_clean_mesh_exits_zero() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "clean-mesh")?;
+    // Mesh is clean (no drift). Stale by mesh name should exit 0.
+    let out = repo.run_mesh(["stale", "clean-mesh"])?;
+    assert_eq!(out.status.code(), Some(0));
+    Ok(())
+}
