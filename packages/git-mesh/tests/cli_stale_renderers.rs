@@ -437,31 +437,51 @@ fn json_changed_finding_has_no_moved_to_field() -> Result<()> {
 // ── multi-arg positional resolution ──────────────────────────────────────
 
 #[test]
-fn zero_match_arg_exits_one_with_diagnostic() -> Result<()> {
+fn missing_file_arg_exits_one_with_diagnostic() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["stale", "nonexistent-file"])?;
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("no mesh or file found for 'nonexistent-file'"),
-        "expected zero-match diagnostic, got: {stderr}"
+        stderr.contains("file not found: 'nonexistent-file'"),
+        "expected file-not-found diagnostic, got: {stderr}"
     );
     Ok(())
 }
 
 #[test]
-fn multiple_zero_match_args_reports_each() -> Result<()> {
+fn multiple_missing_file_args_reports_each() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_mesh(["stale", "bad1", "bad2"])?;
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("no mesh or file found for 'bad1'"),
+        stderr.contains("file not found: 'bad1'"),
         "expected diagnostic for bad1, got: {stderr}"
     );
     assert!(
-        stderr.contains("no mesh or file found for 'bad2'"),
+        stderr.contains("file not found: 'bad2'"),
         "expected diagnostic for bad2, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn existing_file_with_no_mesh_does_not_error() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // file2.txt exists in the seeded worktree but no mesh tracks it. Stale
+    // should exit 0 silently — "no mesh involves this file" is not an error.
+    let out = repo.run_mesh(["stale", "file2.txt"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0 for existing-but-unanchored file, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("file not found"),
+        "must not surface file-not-found for an existing file, got: {stderr}"
     );
     Ok(())
 }

@@ -90,7 +90,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         let _perf = crate::perf::span("stale.resolve-args");
         let mut mesh_names: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        let mut zero_match_args: Vec<String> = Vec::new();
+        let mut missing_files: Vec<String> = Vec::new();
 
         for arg in &args.paths {
             let mut found = false;
@@ -135,16 +135,25 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                 }
             }
 
-            // Step 3: track zero-match args for diagnostics.
+            // Step 3: arg matched neither a mesh nor any path-index entry. If
+            // it names an existing file in the worktree, silently skip — no
+            // mesh tracks it, so there is nothing for stale to scan and that
+            // is not an error. If the file doesn't exist, surface it.
             if !found {
-                zero_match_args.push(arg.clone());
+                let exists = repo
+                    .workdir()
+                    .map(|w| w.join(arg).exists())
+                    .unwrap_or(false);
+                if !exists {
+                    missing_files.push(arg.clone());
+                }
             }
         }
 
-        // Step 4: zero-match → exit 1 with a diagnostic per failed arg.
-        if !zero_match_args.is_empty() {
-            for failed in &zero_match_args {
-                eprintln!("git mesh stale: no mesh or file found for '{}'", failed);
+        // Step 4: any arg that named a non-existent file → exit 1.
+        if !missing_files.is_empty() {
+            for failed in &missing_files {
+                eprintln!("git mesh stale: file not found: '{}'", failed);
             }
             return Ok(1);
         }
