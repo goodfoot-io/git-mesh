@@ -861,7 +861,7 @@ pub(crate) fn resolve_targets(
     }
 
     let mut result: HashSet<String> = HashSet::new();
-    let mut zero_match_args: Vec<&str> = Vec::new();
+    let mut missing_args: Vec<&str> = Vec::new();
 
     // Hoist the staging-name set so we can check for staging-only meshes in
     // the bare-arg dispatch without re-reading per arg.
@@ -869,26 +869,31 @@ pub(crate) fn resolve_targets(
         .into_iter()
         .collect();
 
+    // Resolve each arg. Rule: a zero-match against the mesh set is fine on
+    // its own — exit 0 silently. We only error when the arg names something
+    // that doesn't exist: a missing file, a missing mesh name, or a glob the
+    // shell left literal because it matched nothing.
     for arg in args {
         if arg.contains("#L") {
             // Range address: parse path and range, look up via path index.
             let (path, start, end) = parse_range_address(arg)?;
             let names = crate::mesh::path_index::matching_mesh_names(repo, &path, Some((start, end)))?;
-            if names.is_empty() {
-                zero_match_args.push(arg);
-            } else {
+            if !names.is_empty() {
                 result.extend(names);
+            } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
+                missing_args.push(arg);
             }
         } else if arg.contains('/') {
             // Path with `/`: skip mesh-name check, go straight to path index.
             let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
-            if names.is_empty() {
-                zero_match_args.push(arg);
-            } else {
+            if !names.is_empty() {
                 result.extend(names);
+            } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
+                missing_args.push(arg);
             }
         } else {
-            // Bare arg: try mesh name first (committed → staging), fall back to path index.
+            // Bare arg: try mesh name first (committed → staging), fall back
+            // to path index, then fall back to a worktree existence check.
             let ref_name = format!("refs/meshes/v1/{arg}");
             if crate::git::resolve_ref_oid_optional_repo(repo, &ref_name)?.is_some() {
                 result.insert(arg.clone());
@@ -898,23 +903,29 @@ pub(crate) fn resolve_targets(
             } else {
                 let names =
                     crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
-                if names.is_empty() {
-                    zero_match_args.push(arg);
-                } else {
+                if !names.is_empty() {
                     result.extend(names);
+                } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
+                    missing_args.push(arg);
                 }
             }
         }
     }
 
-    if !zero_match_args.is_empty() {
-        for arg in &zero_match_args {
-            eprintln!("git mesh list: no mesh or file found for '{arg}'");
+    if !missing_args.is_empty() {
+        for arg in &missing_args {
+            eprintln!("git mesh list: no such file or mesh: '{arg}'");
         }
-        anyhow::bail!("one or more targets did not match any mesh or file");
+        anyhow::bail!("one or more targets named no existing file or mesh");
     }
 
     Ok(result.into_iter().collect())
+}
+
+fn file_exists_in_workdir(repo: &gix::Repository, rel: &std::path::Path) -> bool {
+    repo.workdir()
+        .map(|w| w.join(rel).exists())
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

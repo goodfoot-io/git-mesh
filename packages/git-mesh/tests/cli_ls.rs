@@ -336,13 +336,81 @@ fn ls_filtered_porcelain_path_index_tracks_rename_and_delete() -> Result<()> {
     // Delete the mesh.
     repo.mesh_stdout(["delete", "renamed"])?;
 
-    // Path-index lookup now returns empty (zero-match → exit 1 per card spec).
-    // mesh_stdout checks success(), so use run_mesh to capture exit code.
+    // Path-index lookup now returns empty. file1.txt still exists in the
+    // worktree, so a zero-match is fine — exit 0 silently rather than
+    // erroring. The error contract only fires when the referent (file or
+    // mesh) doesn't exist.
     let deleted_out = repo.run_mesh(["list", "file1.txt#L3-L4", "--porcelain"])?;
-    assert_eq!(deleted_out.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&deleted_out.stderr).trim(),
-        "git mesh list: no mesh or file found for 'file1.txt#L3-L4'"
+        deleted_out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&deleted_out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&deleted_out.stdout).trim(),
+        "no meshes",
+        "expected porcelain `no meshes` sentinel"
+    );
+    Ok(())
+}
+
+#[test]
+fn list_existing_file_with_no_mesh_does_not_error() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // file2.txt exists in the worktree but no mesh tracks it.
+    let out = repo.run_mesh(["list", "file2.txt"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("no such file or mesh"),
+        "must not surface diagnostic for an existing file, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn list_missing_file_arg_errors() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["list", "no-such-file.txt"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no such file or mesh: 'no-such-file.txt'"),
+        "expected diagnostic, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn list_missing_path_arg_errors() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_mesh(["list", "missing/dir/no-such.txt"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no such file or mesh: 'missing/dir/no-such.txt'"),
+        "expected diagnostic, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn list_unmatched_glob_literal_errors() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // Shell would normally expand a glob; an unmatched glob is passed through
+    // literally and must error like any other missing path.
+    let out = repo.run_mesh(["list", "src/missing-*.ts"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no such file or mesh: 'src/missing-*.ts'"),
+        "expected diagnostic, got: {stderr}"
     );
     Ok(())
 }
