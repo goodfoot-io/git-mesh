@@ -770,6 +770,76 @@ fn short(sha: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-target resolver
+// ---------------------------------------------------------------------------
+
+/// Resolve positional args to a deduplicated set of mesh names.
+///
+/// Two-step dispatch per arg:
+///   - `#L` range → `parse_range_address` + `matching_mesh_names` with range
+///   - `/` present → `matching_mesh_names` without range (skip mesh-name check)
+///   - bare arg → check `refs/meshes/v1/<arg>`; if exists, use as mesh name,
+///     else fall through to `matching_mesh_names` without range
+///
+/// Zero-match args produce stderr diagnostics and an error.  Empty args return
+/// an empty vector immediately.
+pub(crate) fn resolve_targets(
+    repo: &gix::Repository,
+    args: &[String],
+) -> Result<Vec<String>> {
+    if args.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut result: HashSet<String> = HashSet::new();
+    let mut zero_match_args: Vec<&str> = Vec::new();
+
+    for arg in args {
+        if arg.contains("#L") {
+            // Range address: parse path and range, look up via path index.
+            let (path, start, end) = parse_range_address(arg)?;
+            let names = crate::mesh::path_index::matching_mesh_names(repo, &path, Some((start, end)))?;
+            if names.is_empty() {
+                zero_match_args.push(arg);
+            } else {
+                result.extend(names);
+            }
+        } else if arg.contains('/') {
+            // Path with `/`: skip mesh-name check, go straight to path index.
+            let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
+            if names.is_empty() {
+                zero_match_args.push(arg);
+            } else {
+                result.extend(names);
+            }
+        } else {
+            // Bare arg: try mesh name first, fall back to path index.
+            let ref_name = format!("refs/meshes/v1/{arg}");
+            if crate::git::resolve_ref_oid_optional_repo(repo, &ref_name)?.is_some() {
+                result.insert(arg.clone());
+            } else {
+                let names =
+                    crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
+                if names.is_empty() {
+                    zero_match_args.push(arg);
+                } else {
+                    result.extend(names);
+                }
+            }
+        }
+    }
+
+    if !zero_match_args.is_empty() {
+        for arg in &zero_match_args {
+            eprintln!("git mesh ls: no mesh or file found for '{arg}'");
+        }
+        anyhow::bail!("one or more targets did not match any mesh or file");
+    }
+
+    Ok(result.into_iter().collect())
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -964,5 +1034,155 @@ mod tests {
     fn unknown_placeholder_az_rejected() {
         let err = parse_format("%aZ").unwrap_err();
         assert!(err.to_string().contains("supported:"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_targets helpers and tests
+    // -----------------------------------------------------------------------
+
+    use crate::git::{apply_ref_transaction_repo, RefUpdate};
+    use crate::mesh::path_index::ref_updates_for_mesh;
+    use crate::types::Anchor;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn seed_repo() -> (tempfile::TempDir, gix::Repository) {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let repo = gix::open(dir).unwrap();
+        (td, repo)
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn anchor(path: &str, start: u32, end: u32) -> Anchor {
+        Anchor {
+            anchor_sha: "0000000000000000000000000000000000000000".to_string(),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            path: path.to_string(),
+            extent: AnchorExtent::LineRange { start, end },
+            blob: "0000000000000000000000000000000000000000".to_string(),
+        }
+    }
+
+    fn create_mesh_ref(repo: &gix::Repository, name: &str) {
+        let head_oid = repo
+            .head_id()
+            .unwrap()
+            .detach()
+            .to_string();
+        let updates = vec![RefUpdate::Create {
+            name: format!("refs/meshes/v1/{name}"),
+            new_oid: head_oid,
+        }];
+        apply_ref_transaction_repo(repo, &updates).unwrap();
+    }
+
+    fn create_path_index_entry(
+        repo: &gix::Repository,
+        mesh_name: &str,
+        path: &str,
+        start: u32,
+        end: u32,
+    ) {
+        let anchors = vec![("a1".to_string(), anchor(path, start, end))];
+        let updates = ref_updates_for_mesh(repo, mesh_name, &[], &anchors).unwrap();
+        apply_ref_transaction_repo(repo, &updates).unwrap();
+    }
+
+    #[test]
+    fn resolve_targets_finds_mesh_by_name() {
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "my-mesh");
+        let result = resolve_targets(&repo, &["my-mesh".to_string()]).unwrap();
+        assert_eq!(result, vec!["my-mesh"]);
+    }
+
+    #[test]
+    fn resolve_targets_path_index_lookup() {
+        let (_td, repo) = seed_repo();
+        create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 5);
+        let result = resolve_targets(&repo, &["a.txt".to_string()]).unwrap();
+        assert_eq!(result, vec!["mesh-a"]);
+    }
+
+    #[test]
+    fn resolve_targets_hash_l_range() {
+        let (_td, repo) = seed_repo();
+        create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 10);
+        let result =
+            resolve_targets(&repo, &["a.txt#L1-L5".to_string()]).unwrap();
+        assert_eq!(result, vec!["mesh-a"]);
+    }
+
+    #[test]
+    fn resolve_targets_slash_skips_mesh_name_check() {
+        let (_td, repo) = seed_repo();
+        create_path_index_entry(&repo, "mesh-from-path", "src/lib.rs", 1, 10);
+        let result =
+            resolve_targets(&repo, &["src/lib.rs".to_string()]).unwrap();
+        assert_eq!(result, vec!["mesh-from-path"]);
+    }
+
+    #[test]
+    fn resolve_targets_deduplicates_across_args() {
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "mesh-a");
+        create_path_index_entry(&repo, "mesh-a", "a.txt", 1, 5);
+        let result = resolve_targets(
+            &repo,
+            &["mesh-a".to_string(), "a.txt".to_string()],
+        )
+        .unwrap();
+        assert_eq!(result, vec!["mesh-a"]);
+    }
+
+    #[test]
+    fn resolve_targets_zero_match_errors() {
+        let (_td, repo) = seed_repo();
+        let err = resolve_targets(&repo, &["nonexistent".to_string()])
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn resolve_targets_empty_args_returns_empty_vec() {
+        let (_td, repo) = seed_repo();
+        let result: Vec<String> = resolve_targets(&repo, &[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn resolve_targets_mixed_mesh_names_and_paths() {
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "mesh-a");
+        create_path_index_entry(&repo, "mesh-b", "a.txt", 1, 5);
+        let result = resolve_targets(
+            &repo,
+            &["mesh-a".to_string(), "a.txt".to_string()],
+        )
+        .unwrap();
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec!["mesh-a", "mesh-b"]);
     }
 }
