@@ -863,6 +863,12 @@ pub(crate) fn resolve_targets(
     let mut result: HashSet<String> = HashSet::new();
     let mut zero_match_args: Vec<&str> = Vec::new();
 
+    // Hoist the staging-name set so we can check for staging-only meshes in
+    // the bare-arg dispatch without re-reading per arg.
+    let staged_names: HashSet<String> = list_staged_mesh_names(repo)?
+        .into_iter()
+        .collect();
+
     for arg in args {
         if arg.contains("#L") {
             // Range address: parse path and range, look up via path index.
@@ -882,9 +888,12 @@ pub(crate) fn resolve_targets(
                 result.extend(names);
             }
         } else {
-            // Bare arg: try mesh name first, fall back to path index.
+            // Bare arg: try mesh name first (committed → staging), fall back to path index.
             let ref_name = format!("refs/meshes/v1/{arg}");
             if crate::git::resolve_ref_oid_optional_repo(repo, &ref_name)?.is_some() {
+                result.insert(arg.clone());
+            } else if staged_names.contains(arg.as_str()) {
+                // Staging-only mesh (has staged ops but no committed ref yet).
                 result.insert(arg.clone());
             } else {
                 let names =
@@ -1253,6 +1262,31 @@ mod tests {
         let mut sorted = result.clone();
         sorted.sort();
         assert_eq!(sorted, vec!["mesh-a", "mesh-b"]);
+    }
+
+    #[test]
+    fn resolve_targets_staging_only_mesh() {
+        let (_td, repo) = seed_repo();
+        // Create a staging-only mesh (no committed ref) by writing an ops file
+        // into .git/mesh/staging/ — same layout write_staging produces.
+        let staging_dir = repo.git_dir().join("mesh").join("staging");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(staging_dir.join("pending-mesh"), "add a.txt#L1-L5\n").unwrap();
+        let result = resolve_targets(&repo, &["pending-mesh".to_string()]).unwrap();
+        assert_eq!(result, vec!["pending-mesh"]);
+    }
+
+    #[test]
+    fn resolve_targets_committed_wins_over_staging() {
+        // When a mesh has both a committed ref and staging entries, the
+        // committed ref takes priority (same name, no duplication).
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "dual-mesh");
+        let staging_dir = repo.git_dir().join("mesh").join("staging");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(staging_dir.join("dual-mesh"), "add a.txt#L1-L5\n").unwrap();
+        let result = resolve_targets(&repo, &["dual-mesh".to_string()]).unwrap();
+        assert_eq!(result, vec!["dual-mesh"]);
     }
 
     // -----------------------------------------------------------------------
