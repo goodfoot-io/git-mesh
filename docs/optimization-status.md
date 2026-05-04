@@ -46,11 +46,11 @@ Important benchmark outputs preserved locally under ignored `profiling/`:
 - Removed repeated repository opens from read paths by using the already-open `gix::Repository` for anchor and mesh reads.
 - Added per-command `HEAD:path` blob lookup reuse for repeated anchor paths.
 - Added a scale benchmark harness, `scripts/bench-mesh-scale.sh`, for synthetic 100/1,000/10,000 mesh sweeps with 2/3/4/5 primary anchors, optional 10/20/120 edge anchors, line/whole/mixed anchor distributions, loose-ref/packed-ref/maintenance variants, and process-per-query wiki `ls <path>#L<start>-L<end> --porcelain` timing.
-- Avoided reading mesh config blobs in `git mesh ls`, which only needs the mesh why text and anchor ids.
-- Replaced repeated linear staged/committed name checks in `git mesh ls` with command-local `HashSet` membership.
+- Avoided reading mesh config blobs in `git mesh list`, which only needs the mesh why text and anchor ids.
+- Replaced repeated linear staged/committed name checks in `git mesh list` with command-local `HashSet` membership.
 - Removed a redundant post-render mesh commit info lookup from default `git mesh show <name>`.
-- Added a mesh-ref enumeration path that carries each mesh ref's target OID into bulk reads. `ls`, workspace-wide `stale`, and `pre-commit` no longer parse the same mesh revision once during listing and again during the mesh read.
-- Made `git mesh ls --porcelain` skip committed mesh why text and staged-state reads unless `--search` or human rendering needs them.
+- Added a mesh-ref enumeration path that carries each mesh ref's target OID into bulk reads. `list`, workspace-wide `stale`, and `pre-commit` no longer parse the same mesh revision once during listing and again during the mesh read.
+- Made `git mesh list --porcelain` skip committed mesh why text and staged-state reads unless `--search` or human rendering needs them.
 - Reworked `git mesh pre-commit` to resolve committed meshes through one shared resolver state, matching the workspace-wide `stale` reuse pattern while preserving staging-only mesh reporting.
 
 ## Current Results
@@ -76,7 +76,7 @@ Dirty-worktree profiling on a kept v9 fixture improved from about 502 ms before 
 
 Continued scale loop synthetic mixed-anchor results:
 
-| meshes | anchors/mesh | add | commit | show | ls --porcelain | filtered ls hit | filtered ls miss | stale | pre-commit | wiki hit workload | wiki miss workload |
+| meshes | anchors/mesh | add | commit | show | list --porcelain | filtered list hit | filtered list miss | stale | pre-commit | wiki hit workload | wiki miss workload |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 100 | 2 | 0.0139s | 0.0176s | 0.0043s | 0.0170s | 0.0211s | 0.0109s | 0.1737s | 0.6528s | 5 queries / 0.0615s | 5 queries / 0.0552s |
 | 100 | 3 | 0.0507s | 0.0531s | 0.0049s | 0.0353s | 0.0298s | 0.0144s | 0.1424s | 0.6925s | 5 queries / 0.0673s | 5 queries / 0.0680s |
@@ -88,28 +88,28 @@ Direct `GIT_MESH_PERF=1` on the kept 1,000-mesh fixture:
 
 | operation | total | notable spans |
 |---|---:|---|
-| `ls --porcelain` | 91.221 ms | list mesh refs 7.849 ms; read committed mesh/anchor records 81.376 ms; sort/page/render 1.817 ms |
-| `ls src/module_001.rs#L15-L19 --porcelain` | 87.477 ms | list mesh refs 6.074 ms; read committed mesh/anchor records 81.101 ms; path filter 0.069 ms |
+| `list --porcelain` | 91.221 ms | list mesh refs 7.849 ms; read committed mesh/anchor records 81.376 ms; sort/page/render 1.817 ms |
+| `list src/module_001.rs#L15-L19 --porcelain` | 87.477 ms | list mesh refs 6.074 ms; read committed mesh/anchor records 81.101 ms; path filter 0.069 ms |
 | `stale --no-exit-code` | 2,576.988 ms | list meshes 6.287 ms; init layers 8.685 ms; resolve all meshes 2,570.378 ms; render human 6.310 ms |
 
 Post-pass direct `GIT_MESH_PERF=1` on a fresh 1,000-mesh, 2-anchor mixed fixture:
 
 | operation | total | notable spans |
 |---|---:|---|
-| `ls --porcelain` | 91.656 ms | list mesh refs 19.135 ms; read committed mesh/anchor records 70.977 ms; sort/page/render 1.361 ms |
-| `ls src/module_001.rs#L15-L19 --porcelain` | 89.138 ms | list mesh refs 19.131 ms; read committed mesh/anchor records 69.583 ms; path filter 0.220 ms |
+| `list --porcelain` | 91.656 ms | list mesh refs 19.135 ms; read committed mesh/anchor records 70.977 ms; sort/page/render 1.361 ms |
+| `list src/module_001.rs#L15-L19 --porcelain` | 89.138 ms | list mesh refs 19.131 ms; read committed mesh/anchor records 69.583 ms; path filter 0.220 ms |
 | `stale --no-exit-code` | 1,718.633 ms | resolve all meshes 1,718.439 ms; resolve mesh loop 1,695.391 ms; render human 0.001 ms |
 | `pre-commit --no-exit-code` | 2,643.159 ms | shared resolve mesh loop 2,576.382 ms; pre-commit resolve wrapper 2,631.430 ms |
 
 Post-pass 100-mesh, 2-anchor mixed harness sample:
 
-| meshes | anchors/mesh | ls --porcelain | filtered ls hit | filtered ls miss | stale | pre-commit | wiki hit workload | wiki miss workload |
+| meshes | anchors/mesh | list --porcelain | filtered list hit | filtered list miss | stale | pre-commit | wiki hit workload | wiki miss workload |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 100 | 2 | 0.0210s | 0.0737s | 0.0264s | 0.4145s | 0.4399s | 3 queries / 0.1367s | 3 queries / 0.1470s |
 
 Top bottlenecks found:
 
-- Filtered `ls` is still O(all committed mesh/anchor records). The path/range filter is cheap once records are materialized; the remaining bottleneck is the current ref/object layout and lack of an authoritative path-oriented index.
+- Filtered `list` is still O(all committed mesh/anchor records). The path/range filter is cheap once records are materialized; the remaining bottleneck is the current ref/object layout and lack of an authoritative path-oriented index.
 - Workspace-wide `stale` at 1,000 meshes is dominated by repeated anchor resolution, not mesh ref enumeration or rendering.
 - `pre-commit` is substantially slower than plain `stale` on the synthetic fixture and needs a separate hook-path profile before changing behavior.
 - `show <name>` remains effectively O(anchors in that mesh) at this scale.
@@ -128,13 +128,13 @@ Rejected or deferred experiments:
 - Durable path/range index: likely needed for 10,000-mesh wiki workloads, but deferred until the new harness completes 10,000-mesh, packed-ref, and maintenance variants. If added, it should be authoritative Git-backed mesh metadata, not a derived cache.
 - Reftable-specific path: deferred because local fixture coverage and Git support detection still need to be added to the harness.
 - Automatic Git maintenance during normal CLI operations: deferred to avoid surprising repository mutation. The harness can measure `--pack-refs` and `--maintenance` variants explicitly.
-- Command-local anchor-ref OID snapshot: rejected for now. On the 1,000-mesh fixture it added a 30-60 ms namespace scan/peel cost to `ls` and regressed `stale` to about 4.7 s because the resolver already benefits from targeted anchor ref reads and object reuse.
+- Command-local anchor-ref OID snapshot: rejected for now. On the 1,000-mesh fixture it added a 30-60 ms namespace scan/peel cost to `list` and regressed `stale` to about 4.7 s because the resolver already benefits from targeted anchor ref reads and object reuse.
 
 ## 10,000-Mesh Scale Findings and Schema Change Decision
 
-A full 10,000-mesh benchmarking matrix was prepared using `scripts/bench-mesh-scale.sh`. Profiling confirmed that `ls <path> --porcelain` without an index remains effectively `O(all committed mesh/anchor records)`, leading to unacceptable latency for downstream tools like the wiki renderer which requires a per-query process invocation.
+A full 10,000-mesh benchmarking matrix was prepared using `scripts/bench-mesh-scale.sh`. Profiling confirmed that `list <path> --porcelain` without an index remains effectively `O(all committed mesh/anchor records)`, leading to unacceptable latency for downstream tools like the wiki renderer which requires a per-query process invocation.
 
-| design | expected filtered `ls` complexity | write cost | storage cost | failure mode | migration needed now? |
+| design | expected filtered `list` complexity | write cost | storage cost | failure mode | migration needed now? |
 |---|---|---|---|---|---|
 | current refs | O(all mesh/anchor records) | current | high ref count | ref iteration/object reads | no |
 | mesh-embedded anchors | O(meshes) or better with index | lower refs | more commit-tree data | commit tree parse errors | no, greenfield only |
@@ -143,58 +143,58 @@ A full 10,000-mesh benchmarking matrix was prepared using `scripts/bench-mesh-sc
 
 **Decision:** We are proceeding with **mesh-embedded anchors** (`anchors.v2` embedded layout).
 - Removing anchor refs entirely drops the repository ref count from 30,000 down to 10,000 (at 10,000 meshes with 2 anchors).
-- It fundamentally shifts filtered `ls` to `O(meshes)` object reads by side-stepping the need to materialize ~20,000 distinct anchor `blob` and `ref` objects.
+- It fundamentally shifts filtered `list` to `O(meshes)` object reads by side-stepping the need to materialize ~20,000 distinct anchor `blob` and `ref` objects.
 - It preserves `fail-closed` behavior, natively utilizes existing tree atomicity, and requires no daemon state or cross-mesh index maintenance contention.
 
 Implementation of the greenfield `anchors.v2` layout slice is complete:
 - `git mesh commit` now writes an `anchors.v2` blob containing fully serialized anchor records directly within the mesh commit tree.
-- `git mesh ls` and `git mesh stale` prioritize the `anchors.v2` blob over individual legacy ref resolution.
+- `git mesh list` and `git mesh stale` prioritize the `anchors.v2` blob over individual legacy ref resolution.
 - 10,000-mesh benchmark artifacts have been recorded.
 
 ## Breakthrough v3: Authoritative Path Index
 
-The next measured bottleneck after `anchors.v2` was filtered `ls`. On a 10,000-mesh, 2-anchor mixed fixture, direct perf showed the path/range predicate itself was cheap, but command execution still materialized every committed mesh before filtering:
+The next measured bottleneck after `anchors.v2` was filtered `list`. On a 10,000-mesh, 2-anchor mixed fixture, direct perf showed the path/range predicate itself was cheap, but command execution still materialized every committed mesh before filtering:
 
 | operation | total | notable spans |
 |---|---:|---|
-| `ls --porcelain` | 397.749 ms | list mesh refs 131.637 ms; read committed mesh records 249.563 ms |
-| `ls src/module_001.rs#L15-L19 --porcelain` | 380.219 ms | list mesh refs 168.766 ms; read committed mesh records 209.659 ms; path filter 0.388 ms |
+| `list --porcelain` | 397.749 ms | list mesh refs 131.637 ms; read committed mesh records 249.563 ms |
+| `list src/module_001.rs#L15-L19 --porcelain` | 380.219 ms | list mesh refs 168.766 ms; read committed mesh records 209.659 ms; path filter 0.388 ms |
 
 Harness baseline on the same scale:
 
 | op | result |
 |---|---:|
-| `ls_filtered_hit` | 0.3439 s |
-| `ls_filtered_miss` | 0.3362 s |
+| `list_filtered_hit` | 0.3439 s |
+| `list_filtered_miss` | 0.3362 s |
 | `wiki_hit_queries` | 20 queries / 7.2783 s |
 | `wiki_miss_queries` | 20 queries / 7.1594 s |
 
 Decision matrix update:
 
-| design | expected filtered `ls` complexity | write cost | storage cost | failure mode | migration needed now? |
+| design | expected filtered `list` complexity | write cost | storage cost | failure mode | migration needed now? |
 |---|---|---|---|---|---|
 | current `anchors.v2` only | O(meshes) | current | 10,000 mesh refs plus mesh commits | ref iteration and per-mesh object reads dominate | no |
 | packed refs / reftable only | still O(meshes), lower constants possible | current | backend-dependent | unavailable backend or still object-read bound | no |
 | CLI batching | O(queries * matching work) process cost amortized | new public surface | none | downstream adoption required | yes, if exposed |
 | authoritative path-index refs | O(path bucket + matching meshes) | update affected path buckets transactionally with mesh ref | one ref/blob per indexed path | transaction conflict fails closed | no, greenfield only |
 
-**Decision:** Implement **authoritative path-index refs** for filtered porcelain `ls`.
+**Decision:** Implement **authoritative path-index refs** for filtered porcelain `list`.
 - Each indexed path has a deterministic ref under `refs/meshes-index/v1/path/<sha256-shard>/<sha256>`.
 - The ref points at a blob with sorted `(mesh, start, end)` rows for that path. Whole-file anchors are represented as `0	0`.
-- `commit`, `delete`, `mv`, and `revert` update affected path-index refs in the same reference transaction as the mesh ref.
-- `git mesh ls <path>[#Lx-Ly] --porcelain` uses the path index to expand only matching committed mesh names, then reads those meshes to preserve the existing porcelain contract of rendering every anchor in each matching mesh.
-- Human `ls`, `--search`, and unfiltered porcelain keep the existing full listing path.
+- `commit`, `delete`, `move`, and `revert` update affected path-index refs in the same reference transaction as the mesh ref.
+- `git mesh list <path>[#Lx-Ly] --porcelain` uses the path index to expand only matching committed mesh names, then reads those meshes to preserve the existing porcelain contract of rendering every anchor in each matching mesh.
+- Human `list`, `--search`, and unfiltered porcelain keep the existing full listing path.
 
 Measured on the kept 10,000-mesh fixture after backfilling index refs to simulate a greenfield indexed repository:
 
 | operation | total | notable spans |
 |---|---:|---|
-| `ls src/module_001.rs#L15-L19 --porcelain` | 2.816 ms | path-index lookup 1.382 ms; candidate expansion 1.328 ms |
-| missing filtered `ls` | 1.422 ms | path-index lookup 0.234 ms; pending scan 1.128 ms |
+| `list src/module_001.rs#L15-L19 --porcelain` | 2.816 ms | path-index lookup 1.382 ms; candidate expansion 1.328 ms |
+| missing filtered `list` | 1.422 ms | path-index lookup 0.234 ms; pending scan 1.128 ms |
 | 20 wiki hit queries | 0.2230 s | process-per-query workload |
 | 20 wiki miss queries | 0.1881 s | process-per-query workload |
 
-This changes the hot filtered `ls` path from scanning 10,000 mesh commits to reading one path bucket plus matching mesh commits. In this synthetic fixture, the direct in-process hit improved from ~380 ms to ~2.8 ms, and the wiki-style 20-query process workload improved from ~7.3 s to ~0.22 s.
+This changes the hot filtered `list` path from scanning 10,000 mesh commits to reading one path bucket plus matching mesh commits. In this synthetic fixture, the direct in-process hit improved from ~380 ms to ~2.8 ms, and the wiki-style 20-query process workload improved from ~7.3 s to ~0.22 s.
 
 ## Validation
 

@@ -40,7 +40,7 @@ Choosing segments:
 - For anchors that form a thing together, name what they form: `checkout-request-flow`, `tier-rollout`, `auth-token`, `rate-limits`.
 - For one side that promises or governs the other, name the contract or rule: `charge-request-contract`, `uuidv4-lex-order`, `p1-payment-runbook`.
 - For prose-to-prose citations or summaries, name what's being kept in sync: `architecture-summary-sync`, `threat-model-controls-link`.
-- **Category / subcategory.** Domain or team at the top (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`, `wiki/`, `adr/`, `security/`); a stable sub-grouping in the middle (a feature area, a numbered artifact, an article slug, a sub-team). Reuse the same prefix across sibling meshes so prefix listings (`git mesh ls billing/payments/...`) group naturally.
+- **Category / subcategory.** Domain or team at the top (`billing/`, `platform/`, `experiments/`, `docs/`, `auth/`, `wiki/`, `adr/`, `security/`); a stable sub-grouping in the middle (a feature area, a numbered artifact, an article slug, a sub-team). Reuse the same prefix across sibling meshes so prefix listings (`git mesh list billing/payments/...`) group naturally.
 - Avoid naming after one anchor (`charge-ts-deps`, `adr-0017-impl`); the leaf should survive a rename or rewrite of either side.
 - Avoid `misc`, `john-work`, `temp`, `frontend`, and other catch-all segments at any level.
 - One relationship per mesh. If anchors split into two reasons to change together, create two meshes — typically siblings under the same prefix.
@@ -67,7 +67,7 @@ Re-anchor after drift; do not rewrite the why:
 git mesh add billing/checkout-request-flow api/charge.ts#L30-L76
 
 # Different line span: rm the old, add the new
-git mesh rm  billing/checkout-request-flow api/charge.ts#L30-L76
+git mesh remove  billing/checkout-request-flow api/charge.ts#L30-L76
 git mesh add billing/checkout-request-flow api/charge.ts#L34-L82
 ```
 

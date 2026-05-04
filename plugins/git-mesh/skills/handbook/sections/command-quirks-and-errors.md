@@ -27,7 +27,7 @@ The later `add` supersedes the earlier one (last-write-wins). No `restore` or `r
 
 ## Re-anchoring — same extent vs new span
 
-Same `(path, extent)` with new bytes: just `git mesh add` again. Different line span: `git mesh rm` old, `git mesh add` new. Overlapping but non-identical anchors (e.g. `#L1-L10` and `#L5-L15`) are allowed and coexist.
+Same `(path, extent)` with new bytes: just `git mesh add` again. Different line span: `git mesh remove` old, `git mesh add` new. Overlapping but non-identical anchors (e.g. `#L1-L10` and `#L5-L15`) are allowed and coexist.
 
 ## `SidecarTampered` in `doctor` or `stale`
 

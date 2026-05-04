@@ -18,10 +18,10 @@ Read these first:
 
 Latest completed pass:
 
-- `git mesh ls --porcelain` skips committed mesh why text and staged-state reads unless human output or `--search` needs them.
-- Bulk `ls`, workspace-wide `stale`, and `pre-commit` reuse mesh ref target OIDs from enumeration instead of resolving the same mesh refs again.
+- `git mesh list --porcelain` skips committed mesh why text and staged-state reads unless human output or `--search` needs them.
+- Bulk `list`, workspace-wide `stale`, and `pre-commit` reuse mesh ref target OIDs from enumeration instead of resolving the same mesh refs again.
 - `pre-commit` now resolves committed meshes through one shared resolver state, matching the `stale` reuse pattern.
-- A command-local full anchor-ref OID snapshot was tested and rejected: on the 1,000-mesh fixture it added a 30-60 ms namespace scan/peel cost to `ls` and regressed `stale` to about 4.7 s.
+- A command-local full anchor-ref OID snapshot was tested and rejected: on the 1,000-mesh fixture it added a 30-60 ms namespace scan/peel cost to `list` and regressed `stale` to about 4.7 s.
 
 Post-pass direct `GIT_MESH_PERF=1` on a fresh 1,000-mesh, 2-anchor mixed fixture:
 
@@ -82,7 +82,7 @@ Primary breakthrough candidates:
 The downstream wiki CLI shells out once per fragment link:
 
 ```sh
-git-mesh ls <repo-relative-path>#L<start>-L<end> --porcelain
+git-mesh list <repo-relative-path>#L<start>-L<end> --porcelain
 ```
 
 It parses:
@@ -122,8 +122,8 @@ Then run direct perf on the kept fixture:
 
 ```sh
 cd /tmp/<kept-fixture>/repo-10000-2-mixed
-GIT_MESH_PERF=1 /workspace/packages/git-mesh/target/release/git-mesh ls --porcelain >/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls.out 2>/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls.err
-GIT_MESH_PERF=1 /workspace/packages/git-mesh/target/release/git-mesh ls 'src/module_001.rs#L15-L19' --porcelain >/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls-filter.out 2>/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls-filter.err
+GIT_MESH_PERF=1 /workspace/packages/git-mesh/target/release/git-mesh list --porcelain >/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls.out 2>/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls.err
+GIT_MESH_PERF=1 /workspace/packages/git-mesh/target/release/git-mesh list 'src/module_001.rs#L15-L19' --porcelain >/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls-filter.out 2>/workspace/profiling/git-mesh-profile.breakthrough.10000x2.ls-filter.err
 GIT_MESH_PERF=1 /workspace/packages/git-mesh/target/release/git-mesh stale --no-exit-code >/workspace/profiling/git-mesh-profile.breakthrough.10000x2.stale.out 2>/workspace/profiling/git-mesh-profile.breakthrough.10000x2.stale.err
 GIT_MESH_PERF=1 /workspace/packages/git-mesh/target/release/git-mesh pre-commit --no-exit-code >/workspace/profiling/git-mesh-profile.breakthrough.10000x2.pre-commit.out 2>/workspace/profiling/git-mesh-profile.breakthrough.10000x2.pre-commit.err
 ```
@@ -147,7 +147,7 @@ test -f .git/packed-refs && wc -l .git/packed-refs
 
 After the 10,000-mesh profile, write down a short decision matrix in `docs/optimization-status.md` comparing at least these designs:
 
-| design | expected filtered `ls` complexity | write cost | storage cost | failure mode | migration needed now? |
+| design | expected filtered `list` complexity | write cost | storage cost | failure mode | migration needed now? |
 |---|---|---|---|---|---|
 | current refs | O(all mesh/anchor records) | current | high ref count | ref iteration/object reads | no |
 | mesh-embedded anchors | O(meshes) or better with index | lower refs | more commit-tree data | commit tree parse errors | no, greenfield only |
@@ -162,7 +162,7 @@ Prefer focused vertical slices:
 
 1. Add read/write model types and parser tests for the new authoritative metadata.
 2. Write metadata during new mesh commits.
-3. Read metadata in filtered `ls --porcelain` only.
+3. Read metadata in filtered `list --porcelain` only.
 4. Preserve legacy read path for any operation not covered by the new authoritative data only if the repository can contain both formats during the greenfield transition. If greenfield means no fallback, update tests and docs accordingly.
 5. Benchmark before broadening to `stale` or `pre-commit`.
 
@@ -170,9 +170,9 @@ Be careful with semantics:
 
 - Whole-file anchors match any range query on the same path.
 - Line-range anchors overlap inclusively.
-- `ls <target> --porcelain` filters meshes by target but renders all anchors in each matching mesh, not only the matching anchor.
+- `list <target> --porcelain` filters meshes by target but renders all anchors in each matching mesh, not only the matching anchor.
 - `--search` matches name, why, path, and rendered anchor address, so it may still require broader reads.
-- Staging-only meshes must still appear in `ls` and `pre-commit` behavior.
+- Staging-only meshes must still appear in `list` and `pre-commit` behavior.
 - Orphaned anchors and missing refs must fail/report as current tests expect.
 
 ## Profiling Spans To Add If Needed
@@ -185,7 +185,7 @@ Keep perf logging opt-in and stderr-only. Add spans only around opaque groups:
 - read anchor refs/blobs
 - path-index lookup
 - path-index candidate expansion
-- filtered `ls` render matched meshes
+- filtered `list` render matched meshes
 - ref transaction setup and execution
 - commit-tree construction
 

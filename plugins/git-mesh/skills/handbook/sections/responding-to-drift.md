@@ -23,12 +23,12 @@ git mesh commit <name>
 **Different line span — the anchor moved.** A span that does not exactly match an existing anchor is treated as *new*. Remove the old first:
 
 ```bash
-git mesh rm  <name> server/routes.ts#L13-L34
+git mesh remove  <name> server/routes.ts#L13-L34
 git mesh add <name> server/routes.ts#L15-L36
 git mesh commit <name>
 ```
 
-This is the only time `git mesh rm` appears in a re-anchor workflow. Otherwise, `rm` only removes an anchor from the mesh entirely.
+This is the only time `git mesh remove` appears in a re-anchor workflow. Otherwise, `remove` only removes an anchor from the mesh entirely.
 
 ## The why is the subsystem, not a changelog
 
@@ -74,7 +74,7 @@ Copy-detection values:
 ## Clearing, renaming, deleting, reverting
 
 - **`git mesh restore <name>`** — Clear `.git/mesh/staging/<name>*`. Does not touch committed history. Use when staged work should be thrown away.
-- **`git mesh mv <old> <new>`** — Rename a mesh. The relationship is the same; the label is better.
+- **`git mesh move <old> <new>`** — Rename a mesh. The relationship is the same; the label is better.
 - **`git mesh delete <name>`** — Remove the mesh. Use only when the relationship itself should no longer exist.
 - **`git mesh revert <name> <commit-ish>`** — Restore a prior mesh state by writing a new commit. Prefer over delete when a past state was correct and history should show the restoration.
 

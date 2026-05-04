@@ -62,7 +62,7 @@ git mesh-recommend \
 - `--highlight` repeats. Each value is a short phrase (commit subject, wiki link
   text, ADR title). Defaults: none.
 - `--sibling-meshes` defaults to 16. Picks the closest neighbors by prefix from
-  the live `git mesh ls` output.
+  the live `git mesh list` output.
 - `--git-context` defaults to 8. Pulls commit subjects that touched ≥2 anchor
   paths from `git log --no-renames` (most-recent-first).
 
@@ -280,7 +280,7 @@ starts. Stop and update this doc if a day's gate fails.
 
 1. Implement `git-mesh-recommend` end-to-end (assemble packet from live repo,
    serialize, encode, greedy-decode in tract, parse, validate).
-2. Run on three real meshes from this repo's `git mesh ls` output.
+2. Run on three real meshes from this repo's `git mesh list` output.
 3. **Gate:** binary exits 0 and produces handbook-compliant output on at least
    2 of 3.
 
@@ -373,7 +373,7 @@ that satisfies all of:
 For each row:
 
 - `anchors` from the mesh-version's anchor set, content read at the mesh commit.
-- `siblings` from `git mesh ls` *as of that commit*, capped at 16 closest by prefix.
+- `siblings` from `git mesh list` *as of that commit*, capped at 16 closest by prefix.
 - `highlights` from `git log --no-renames` subjects that touched ≥ 2 anchor paths,
   capped at the most recent 8.
 
@@ -402,7 +402,7 @@ Runtime path inside the Rust binary:
 
 1. Parse CLI: anchors, highlights, sibling count, git-context count.
 2. Resolve each anchor (read bytes, compute line range if absent).
-3. Read `git mesh ls` for sibling names; pick the N closest by Levenshtein on
+3. Read `git mesh list` for sibling names; pick the N closest by Levenshtein on
    path components.
 4. Read `git log --no-renames -- <paths>...` for co-touching commit subjects;
    take the top N most recent subjects that touched ≥ 2 anchor paths.

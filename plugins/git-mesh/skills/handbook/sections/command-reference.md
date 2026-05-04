@@ -9,7 +9,7 @@
 
 ```bash
 git mesh
-git mesh ls [<path>|<path>#L<start>-L<end>]
+git mesh list [<path>|<path>#L<start>-L<end>]
 git mesh <name>
 git mesh <name> --oneline
 git mesh <name> --format=<fmt>
@@ -26,7 +26,7 @@ git mesh stale [<name>] [--ignore-unavailable] [--no-exit-code]
 
 ```bash
 git mesh add <name> <anchor>... [--at <commit-ish>]
-git mesh rm  <name> <anchor>...
+git mesh remove  <name> <anchor>...
 git mesh why <name>                                 # print current why
 git mesh why <name> [--at <commit-ish>]             # print historical why
 git mesh why <name> [-m <text>|-F <file>|--edit]    # stage a new why
@@ -50,7 +50,7 @@ Keys: `copy-detection` (`off` | `same-commit` | `any-file-in-commit` | `any-file
 git mesh restore <name>
 git mesh revert  <name> <commit-ish>
 git mesh delete  <name>
-git mesh mv      <old> <new>
+git mesh move      <old> <new>
 ```
 
 ## Sync and maintenance
@@ -63,4 +63,4 @@ git mesh doctor
 
 ## Reserved mesh names
 
-Do not name a mesh after a command: `add`, `rm`, `commit`, `why`, `restore`, `revert`, `delete`, `mv`, `stale`, `fetch`, `push`, `doctor`, `log`, `config`, `ls`, `help`.
+Do not name a mesh after a command: `add`, `remove`, `commit`, `why`, `restore`, `revert`, `delete`, `move`, `stale`, `fetch`, `push`, `doctor`, `log`, `config`, `list`, `help`.

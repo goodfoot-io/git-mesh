@@ -29,7 +29,7 @@ git mesh commit <name>
 
 **Fix.** Remove the anchor and re-pin at the appropriate level:
 ```bash
-git mesh rm <name> <submodule-path>/inner/file.ts#L10-L20
+git mesh remove <name> <submodule-path>/inner/file.ts#L10-L20
 # Either: whole-file pin on the submodule root
 git mesh add <name> <submodule-path>
 # Or: pin a parent-repo path that witnesses the same relationship

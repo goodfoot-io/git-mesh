@@ -11,10 +11,10 @@ git mesh fetch
 One block per mesh, with why and anchors. Staged or pending meshes are marked.
 
 ```bash
-git mesh ls
-git mesh ls --porcelain          # tab-separated rows: name<TAB>path<TAB>start-end
-git mesh ls --search 'parser'    # filter by name, why, or anchor address (case-insensitive)
-git mesh ls --offset 10 --limit 10   # pagination (by mesh, after filters)
+git mesh list
+git mesh list --porcelain          # tab-separated rows: name<TAB>path<TAB>start-end
+git mesh list --search 'parser'    # filter by name, why, or anchor address (case-insensitive)
+git mesh list --offset 10 --limit 10   # pagination (by mesh, after filters)
 ```
 
 Bare `git mesh` (no arguments) prints short help.
@@ -67,8 +67,8 @@ git mesh <name> --format='%(config:copy-detection)'
 Overlap semantics — a mesh is listed if any anchor touches the queried path or range. The full anchor list of each matching mesh is always shown.
 
 ```bash
-git mesh ls src/Button.tsx
-git mesh ls src/Button.tsx#L40-L60
+git mesh list src/Button.tsx
+git mesh list src/Button.tsx#L40-L60
 ```
 
 ## Before a mesh's first commit
@@ -78,4 +78,4 @@ A mesh ref does not exist until `git mesh commit <name>` succeeds once. Before t
 - **`git mesh stale`** (no name) — workspace scan; shows staged ops for the not-yet-committed mesh in the trailing "staged mesh ops" section.
 - **`git mesh stale <new-name>`** — errors: mesh ref not found.
 - **`git mesh <new-name>`** — errors: mesh ref not found.
-- **`git mesh ls`** — pending meshes (staging-only, no committed tip) appear with a `(pending)` marker.
+- **`git mesh list`** — pending meshes (staging-only, no committed tip) appear with a `(pending)` marker.
