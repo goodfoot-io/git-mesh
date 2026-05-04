@@ -23,7 +23,8 @@ pub(crate) fn read_entries_for_path(
     repo: &gix::Repository,
     path: &str,
 ) -> Result<Vec<PathIndexEntry>> {
-    let Some(blob_oid) = git::resolve_ref_oid_optional_repo(repo, &ref_name_for_path(path))? else {
+    let ref_name = ref_name_for_path(path);
+    let Some(blob_oid) = git::resolve_ref_oid_optional_repo(repo, &ref_name)? else {
         return Ok(Vec::new());
     };
     let text = git::read_git_text(repo, &blob_oid)?;
@@ -37,7 +38,8 @@ pub(crate) fn matching_mesh_names(
 ) -> Result<Vec<String>> {
     let mut names = Vec::new();
     let mut last = None::<String>;
-    for entry in read_entries_for_path(repo, path)? {
+    let entries = read_entries_for_path(repo, path)?;
+    for entry in entries {
         let matches = match range {
             Some((start, end)) => {
                 (entry.start == 0 && entry.end == 0) || (entry.start <= end && entry.end >= start)

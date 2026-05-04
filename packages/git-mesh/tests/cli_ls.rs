@@ -326,18 +326,17 @@ fn ls_filtered_porcelain_path_index_tracks_rename_and_delete() -> Result<()> {
     let repo = TestRepo::seeded()?;
     commit_mesh(&repo, "alpha", "file1.txt#L1-L5", "alpha why")?;
 
+    // Rename alpha -> renamed.
     repo.mesh_stdout(["mv", "alpha", "renamed"])?;
-    let renamed = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
-    assert!(
-        renamed.contains("renamed\tfile1.txt\t1-5"),
-        "renamed mesh should match: {renamed}"
-    );
-    assert!(
-        !renamed.contains("alpha\t"),
-        "old mesh name should not remain indexed: {renamed}"
-    );
 
+    // Path-index lookup follows the rename.
+    let after_rename = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
+    assert_eq!(after_rename.trim(), "renamed\tfile1.txt\t1-5");
+
+    // Delete the mesh.
     repo.mesh_stdout(["delete", "renamed"])?;
+
+    // Path-index lookup now returns empty.
     let deleted = repo.mesh_stdout(["ls", "file1.txt#L3-L4", "--porcelain"])?;
     assert_eq!(deleted.trim(), "no meshes");
     Ok(())

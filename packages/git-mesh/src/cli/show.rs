@@ -384,11 +384,94 @@ fn collect_listings_with_options(
     Ok(listings)
 }
 
-fn collect_filtered_porcelain_listings(
+fn collect_listings_for_names(
     repo: &gix::Repository,
-    target: &str,
+    names: &[String],
+    include_why: bool,
+    include_state: bool,
 ) -> Result<Vec<MeshListing>> {
-    collect_filtered_porcelain_listings_with_staging(repo, target, None)
+    let name_set: HashSet<&str> = names.iter().map(String::as_str).collect();
+
+    let committed_refs = crate::mesh::read::list_mesh_refs(repo)?;
+    let staged_names = list_staged_mesh_names(repo)?;
+
+    let staged_name_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
+    let committed_name_set: HashSet<&str> = committed_refs.iter().map(|(n, _)| n.as_str()).collect();
+
+    let mut listings = Vec::with_capacity(names.len());
+
+    // Committed meshes matching the name set.
+    for (name, commit_oid) in &committed_refs {
+        if !name_set.contains(name.as_str()) {
+            continue;
+        }
+        let (message, anchors_v2) = if include_why {
+            let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
+            (mesh.message, mesh.anchors_v2)
+        } else {
+            (
+                String::new(),
+                crate::mesh::read::read_anchors_v2_blob(repo, commit_oid).unwrap_or_default(),
+            )
+        };
+        let mut anchors = Vec::new();
+        for (_id, r) in anchors_v2 {
+            anchors.push(AnchorEntry {
+                path: r.path,
+                extent: r.extent,
+            });
+        }
+        // Determine if this committed mesh also has staged ops.
+        let state = if include_state && staged_name_set.contains(name.as_str()) {
+            let staging = read_staging(repo, name)?;
+            if staging.adds.is_empty()
+                && staging.removes.is_empty()
+                && staging.configs.is_empty()
+                && staging.why.is_none()
+            {
+                MeshState::Committed
+            } else {
+                MeshState::Staged
+            }
+        } else {
+            MeshState::Committed
+        };
+        let why = message.trim_end_matches('\n').to_string();
+        listings.push(MeshListing {
+            name: name.clone(),
+            why,
+            anchors,
+            state,
+        });
+    }
+
+    // Pending meshes matching the name set.
+    for name in &staged_names {
+        if !name_set.contains(name.as_str()) {
+            continue;
+        }
+        if committed_name_set.contains(name.as_str()) {
+            continue; // already handled as committed+staged
+        }
+        let staging = read_staging(repo, name)?;
+        let why = staging.why.unwrap_or_default();
+        let anchors = staging
+            .adds
+            .into_iter()
+            .map(|a| AnchorEntry {
+                path: a.path,
+                extent: a.extent,
+            })
+            .collect();
+        listings.push(MeshListing {
+            name: name.clone(),
+            why,
+            anchors,
+            state: MeshState::Pending,
+        });
+    }
+
+    Ok(listings)
 }
 
 fn collect_filtered_porcelain_listings_with_staging(
@@ -491,26 +574,6 @@ fn anchor_matches(anchor: &AnchorEntry, path: &str, range: Option<(u32, u32)>) -
             start <= query_end && end >= query_start
         }
     }
-}
-
-fn apply_path_filter(listings: &mut Vec<MeshListing>, target: &str) -> Result<()> {
-    if target.contains("#L") {
-        let (path, s, e) = parse_range_address(target)?;
-        listings.retain(|l| {
-            l.anchors.iter().any(|a| {
-                if a.path != path {
-                    return false;
-                }
-                match a.extent {
-                    AnchorExtent::WholeFile => true,
-                    AnchorExtent::LineRange { start, end } => start <= e && end >= s,
-                }
-            })
-        });
-    } else {
-        listings.retain(|l| l.anchors.iter().any(|a| a.path == target));
-    }
-    Ok(())
 }
 
 fn apply_search(listings: &mut Vec<MeshListing>, re: &regex::Regex) {
@@ -704,25 +767,31 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
         return run_ls_batch_porcelain(repo);
     }
 
+    // Resolve targets to mesh names (or list all if no args).
+    let resolved_names: Option<Vec<String>> = if args.targets.is_empty() {
+        None
+    } else {
+        match resolve_targets(repo, &args.targets) {
+            Ok(names) => Some(names),
+            Err(_e) => {
+                // stderr diagnostics already printed by resolve_targets
+                return Ok(1);
+            }
+        }
+    };
+
     let include_why = !args.porcelain || args.search.is_some();
     let include_state = !args.porcelain;
     let mut listings = {
         let _perf = crate::perf::span("ls.collect");
-        if args.porcelain && args.search.is_none() && args.target.is_some() {
-            collect_filtered_porcelain_listings(repo, args.target.as_deref().unwrap())?
+        if let Some(ref names) = resolved_names {
+            collect_listings_for_names(repo, names, include_why, include_state)?
         } else if include_why && include_state {
             collect_listings(repo)?
         } else {
             collect_listings_with_options(repo, include_why, include_state)?
         }
     };
-
-    if let Some(ref t) = args.target
-        && !(args.porcelain && args.search.is_none())
-    {
-        let _perf = crate::perf::span("ls.filter-path");
-        apply_path_filter(&mut listings, t)?;
-    }
 
     if let Some(ref pat) = args.search {
         let _perf = crate::perf::span("ls.filter-search");
@@ -1184,5 +1253,111 @@ mod tests {
         let mut sorted = result.clone();
         sorted.sort();
         assert_eq!(sorted, vec!["mesh-a", "mesh-b"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // run_ls integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_ls_no_args_returns_ok() {
+        let (_td, repo) = seed_repo();
+        let args = LsArgs {
+            targets: vec![],
+            porcelain: false,
+            batch: false,
+            search: None,
+            offset: 0,
+            limit: None,
+        };
+        let exit_code = run_ls(&repo, args).unwrap();
+        assert_eq!(exit_code, 0);
+    }
+
+    #[test]
+    fn run_ls_mesh_name_arg_returns_ok() {
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "my-mesh");
+        let args = LsArgs {
+            targets: vec!["my-mesh".to_string()],
+            porcelain: false,
+            batch: false,
+            search: None,
+            offset: 0,
+            limit: None,
+        };
+        let exit_code = run_ls(&repo, args).unwrap();
+        assert_eq!(exit_code, 0);
+    }
+
+    #[test]
+    fn run_ls_zero_match_returns_exit_1() {
+        let (_td, repo) = seed_repo();
+        let args = LsArgs {
+            targets: vec!["nonexistent".to_string()],
+            porcelain: false,
+            batch: false,
+            search: None,
+            offset: 0,
+            limit: None,
+        };
+        let exit_code = run_ls(&repo, args).unwrap();
+        assert_eq!(exit_code, 1);
+    }
+
+    #[test]
+    fn resolve_targets_works_after_rename() {
+        // Simulate the failing integration test: commit a mesh, rename it,
+        // then look up via path index.
+        let (_td, repo) = seed_repo();
+
+        // Commit mesh "alpha" with file1.txt#L1-L5.
+        create_mesh_ref(&repo, "alpha");
+        create_path_index_entry(&repo, "alpha", "a.txt", 1, 5);
+
+        // Rename "alpha" → "renamed" via direct ref + path-index ops.
+        let old_ref = "refs/meshes/v1/alpha";
+        let new_ref = "refs/meshes/v1/renamed";
+        let head_oid = repo.head_id().unwrap().detach().to_string();
+        let updates = vec![
+            RefUpdate::Create {
+                name: new_ref.to_string(),
+                new_oid: head_oid.clone(),
+            },
+            RefUpdate::Delete {
+                name: old_ref.to_string(),
+                expected_old_oid: head_oid,
+            },
+        ];
+        apply_ref_transaction_repo(&repo, &updates).unwrap();
+
+        // Update path index from "alpha" to "renamed" via ref_updates_for_rename,
+        // which atomically removes old entries and adds new ones.
+        let anchors = vec![("a1".to_string(), anchor("a.txt", 1, 5))];
+        let pi_updates =
+            crate::mesh::path_index::ref_updates_for_rename(&repo, "alpha", "renamed", &anchors)
+                .unwrap();
+        apply_ref_transaction_repo(&repo, &pi_updates).unwrap();
+
+        // Now resolve_targets should find only "renamed" via the path index.
+        let result = resolve_targets(&repo, &["a.txt#L3-L4".to_string()]).unwrap();
+        assert_eq!(result, vec!["renamed"]);
+    }
+
+    #[test]
+    fn run_ls_multiple_mesh_names() {
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "mesh-a");
+        create_mesh_ref(&repo, "mesh-b");
+        let args = LsArgs {
+            targets: vec!["mesh-a".to_string(), "mesh-b".to_string()],
+            porcelain: false,
+            batch: false,
+            search: None,
+            offset: 0,
+            limit: None,
+        };
+        let exit_code = run_ls(&repo, args).unwrap();
+        assert_eq!(exit_code, 0);
     }
 }

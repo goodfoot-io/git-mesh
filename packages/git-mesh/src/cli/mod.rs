@@ -171,8 +171,9 @@ pub struct ShowArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct LsArgs {
-    /// Optional `<path>` or `<path>#L<start>-L<end>` to filter by.
-    pub target: Option<String>,
+    /// File paths, `<path>#L<start>-L<end>` ranges, or bare mesh names to list.
+    /// Omit to list all meshes.
+    pub targets: Vec<String>,
 
     /// Emit one tab-separated row per anchor instead of human blocks.
     #[arg(long)]
@@ -182,7 +183,7 @@ pub struct LsArgs {
     #[arg(
         long,
         requires = "porcelain",
-        conflicts_with_all = ["target", "search", "offset", "limit"]
+        conflicts_with_all = ["targets", "search", "offset", "limit"]
     )]
     pub batch: bool,
 
