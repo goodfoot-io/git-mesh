@@ -16,7 +16,7 @@ import {
 } from './utils/gitMeshBinary.js';
 
 const MISSING_GIT_MESH_MESSAGE =
-  'git-mesh is not on PATH. Install it via npm (`npm install -g git-mesh`), Homebrew (`brew install goodfoot-io/tap/git-mesh`), or download from https://github.com/goodfoot-io/git-mesh/releases.';
+  'git-mesh is not on PATH. Install it from https://github.com/goodfoot-io/git-mesh/releases, or via npm / Homebrew (see installation docs at the repository).';
 
 /**
  * Called by VS Code when the extension is activated.
@@ -26,7 +26,11 @@ const MISSING_GIT_MESH_MESSAGE =
 export function activate(context: vscode.ExtensionContext): void {
   // Drop any PATH entry persisted by a prior extension version that used a
   // managed install. New terminals will inherit the ambient PATH.
-  context.environmentVariableCollection.clear();
+  try {
+    context.environmentVariableCollection.clear();
+  } catch (error) {
+    console.error('Git Mesh: failed to clear environment variable collection:', error);
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('gitMesh.showVersion', async () => {
