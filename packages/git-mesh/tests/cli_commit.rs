@@ -146,7 +146,7 @@ fn cli_rm_stages_remove() -> Result<()> {
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
     repo.mesh_stdout(["commit", "m"])?;
-    repo.mesh_stdout(["rm", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["remove", "m", "file1.txt#L1-L5"])?;
     let status = staging_dump(&repo, "m");
     assert!(status.contains("remove") || status.contains("rm"));
     Ok(())
@@ -524,7 +524,7 @@ fn cli_rm_of_range_not_in_mesh_errors() -> Result<()> {
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
     repo.mesh_stdout(["why", "m", "-m", "seed"])?;
     repo.mesh_stdout(["commit", "m"])?;
-    let out = repo.run_mesh(["rm", "m", "file1.txt#L7-L9"])?;
+    let out = repo.run_mesh(["remove", "m", "file1.txt#L7-L9"])?;
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("anchor not in mesh"), "stderr={stderr}");
@@ -537,7 +537,7 @@ fn cli_rm_of_staged_add_succeeds() -> Result<()> {
     // (it "undoes" the add in the same staging pass).
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
-    let out = repo.run_mesh(["rm", "m", "file1.txt#L1-L5"])?;
+    let out = repo.run_mesh(["remove", "m", "file1.txt#L1-L5"])?;
     assert!(
         out.status.success(),
         "stderr={}",

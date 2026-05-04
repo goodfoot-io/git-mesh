@@ -123,7 +123,7 @@ fn pending_add_sidecar_mismatch_fails_commit() -> Result<()> {
 fn pending_remove_with_index_drift_fails_commit() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_mesh(&repo, "m")?;
-    let _ = repo.run_mesh(["rm", "m", "file1.txt#L1-L5"])?;
+    let _ = repo.run_mesh(["remove", "m", "file1.txt#L1-L5"])?;
     repo.write_file(
         "file1.txt",
         "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",

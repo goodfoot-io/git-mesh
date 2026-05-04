@@ -1,4 +1,4 @@
-//! CLI: `git mesh`, `git mesh <name>`, `git mesh ls`.
+//! CLI: `git mesh`, `git mesh <name>`, `git mesh list`.
 
 mod support;
 
@@ -131,7 +131,7 @@ fn show_at_bad_revision_reports_revision_not_missing_mesh() -> Result<()> {
 fn ls_all_lists_every_file_with_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
-    let out = repo.mesh_stdout(["ls"])?;
+    let out = repo.mesh_stdout(["list"])?;
     assert!(out.contains("file1.txt"));
     Ok(())
 }
@@ -141,7 +141,7 @@ fn ls_all_lists_every_file_with_ranges() -> Result<()> {
 fn ls_by_path_filters() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
-    let out = repo.mesh_stdout(["ls", "file1.txt"])?;
+    let out = repo.mesh_stdout(["list", "file1.txt"])?;
     assert!(out.contains("file1.txt"));
     assert!(!out.contains("file2.txt"));
     Ok(())
@@ -161,7 +161,7 @@ fn show_format_commit_placeholders() -> Result<()> {
 fn ls_by_path_range_filters() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
-    let out = repo.mesh_stdout(["ls", "file1.txt#L1-L3"])?;
+    let out = repo.mesh_stdout(["list", "file1.txt#L1-L3"])?;
     assert!(out.contains("file1.txt"));
     Ok(())
 }

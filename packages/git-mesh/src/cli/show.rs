@@ -1,6 +1,6 @@
-//! `git mesh` list / `git mesh <name>` show / `git mesh ls` — §10.4, §3.4.
+//! `git mesh` list / `git mesh <name>` show / `git mesh list` — §10.4, §3.4.
 
-use crate::cli::{LsArgs, ShowArgs, parse_range_address};
+use crate::cli::{ListArgs, ShowArgs, parse_range_address};
 use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Anchor, AnchorExtent};
 use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
@@ -294,7 +294,7 @@ fn collect_listings_with_options(
     include_state: bool,
 ) -> Result<Vec<MeshListing>> {
     let committed_refs = {
-        let _perf = crate::perf::span("ls.list-committed-meshes");
+        let _perf = crate::perf::span("list.list-committed-meshes");
         crate::mesh::read::list_mesh_refs(repo)?
     };
     let committed_names: Vec<&str> = committed_refs
@@ -302,7 +302,7 @@ fn collect_listings_with_options(
         .map(|(name, _oid)| name.as_str())
         .collect();
     let staged_names = {
-        let _perf = crate::perf::span("ls.list-staged-meshes");
+        let _perf = crate::perf::span("list.list-staged-meshes");
         list_staged_mesh_names(repo)?
     };
 
@@ -312,7 +312,7 @@ fn collect_listings_with_options(
         Vec::with_capacity(committed_refs.len() + staged_names.len());
     // Collect committed meshes.
     {
-        let _perf = crate::perf::span("ls.read-committed-meshes");
+        let _perf = crate::perf::span("list.read-committed-meshes");
         for (name, commit_oid) in &committed_refs {
             let (message, anchors_v2) = if include_why {
                 let mesh = crate::mesh::read::read_mesh_listing_at(repo, commit_oid)?;
@@ -357,7 +357,7 @@ fn collect_listings_with_options(
 
     // Collect staging-only (pending) meshes.
     {
-        let _perf = crate::perf::span("ls.read-pending-meshes");
+        let _perf = crate::perf::span("list.read-pending-meshes");
         for name in &staged_names {
             if committed_name_set.contains(name.as_str()) {
                 continue; // already handled above
@@ -487,12 +487,12 @@ fn collect_filtered_porcelain_listings_with_staging(
     };
 
     let committed_names = {
-        let _perf = crate::perf::span("ls.path-index-lookup");
+        let _perf = crate::perf::span("list.path-index-lookup");
         crate::mesh::path_index::matching_mesh_names(repo, &path, range)?
     };
     let mut listings = Vec::with_capacity(committed_names.len());
     {
-        let _perf = crate::perf::span("ls.path-index-candidate-expansion");
+        let _perf = crate::perf::span("list.path-index-candidate-expansion");
         for name in committed_names {
             let commit_oid = match crate::mesh::read::resolve_mesh_revision(repo, &name, None) {
                 Ok(commit_oid) => commit_oid,
@@ -517,7 +517,7 @@ fn collect_filtered_porcelain_listings_with_staging(
     }
 
     {
-        let _perf = crate::perf::span("ls.path-index-pending-meshes");
+        let _perf = crate::perf::span("list.path-index-pending-meshes");
         let staged;
         let staged_listings = match staged_listings {
             Some(staged_listings) => staged_listings,
@@ -642,9 +642,9 @@ fn render_porcelain(page: &[MeshListing]) {
     }
 }
 
-fn run_ls_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
+fn run_list_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
     let staged_listings = {
-        let _perf = crate::perf::span("ls.batch-read-staged-meshes");
+        let _perf = crate::perf::span("list.batch-read-staged-meshes");
         collect_staged_porcelain_listings(repo)?
     };
     let stdin = io::stdin();
@@ -761,10 +761,10 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     Ok(0)
 }
 
-pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
+pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
     if args.batch {
-        let _perf = crate::perf::span("ls.batch-porcelain");
-        return run_ls_batch_porcelain(repo);
+        let _perf = crate::perf::span("list.batch-porcelain");
+        return run_list_batch_porcelain(repo);
     }
 
     // Resolve targets to mesh names (or list all if no args).
@@ -783,7 +783,7 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
     let include_why = !args.porcelain || args.search.is_some();
     let include_state = !args.porcelain;
     let mut listings = {
-        let _perf = crate::perf::span("ls.collect");
+        let _perf = crate::perf::span("list.collect");
         if let Some(ref names) = resolved_names {
             collect_listings_for_names(repo, names, include_why, include_state)?
         } else if include_why && include_state {
@@ -794,7 +794,7 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
     };
 
     if let Some(ref pat) = args.search {
-        let _perf = crate::perf::span("ls.filter-search");
+        let _perf = crate::perf::span("list.filter-search");
         match RegexBuilder::new(pat).case_insensitive(true).build() {
             Ok(re) => apply_search(&mut listings, &re),
             Err(err) => {
@@ -804,7 +804,7 @@ pub fn run_ls(repo: &gix::Repository, args: LsArgs) -> Result<i32> {
         }
     }
 
-    let _perf = crate::perf::span("ls.sort-page-render");
+    let _perf = crate::perf::span("list.sort-page-render");
     listings.sort_by(|a, b| a.name.cmp(&b.name));
 
     let page: Vec<_> = listings

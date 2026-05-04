@@ -312,12 +312,12 @@ fn test_compact_path_index_updated() -> Result<()> {
 
     repo.run_mesh(["stale", "m", "--compact"])?;
 
-    // After compaction, `git mesh ls` should still work (path-index is valid).
-    let out = repo.run_mesh(["ls", "file1.txt"])?;
+    // After compaction, `git mesh list` should still work (path-index is valid).
+    let out = repo.run_mesh(["list", "file1.txt"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("m"),
-        "mesh m should still appear in ls after compact: {stdout}"
+        "mesh m should still appear in list after compact: {stdout}"
     );
     Ok(())
 }

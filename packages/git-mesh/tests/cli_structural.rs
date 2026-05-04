@@ -54,7 +54,7 @@ fn delete_removes_ref() -> Result<()> {
 fn mv_renames_ref() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "oldn")?;
-    repo.mesh_stdout(["mv", "oldn", "newn"])?;
+    repo.mesh_stdout(["move", "oldn", "newn"])?;
     assert!(repo.ref_exists("refs/meshes/v1/newn"));
     assert!(!repo.ref_exists("refs/meshes/v1/oldn"));
     Ok(())
@@ -65,7 +65,7 @@ fn mv_renames_ref() -> Result<()> {
 fn mv_rejects_reserved_name() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "oldn")?;
-    let out = repo.run_mesh(["mv", "oldn", "delete"])?;
+    let out = repo.run_mesh(["move", "oldn", "delete"])?;
     assert!(!out.status.success());
     Ok(())
 }
@@ -89,7 +89,7 @@ fn doctor_runs_clean_on_fresh_repo_with_hooks() -> Result<()> {
     // Install both suggested hooks + file-index so doctor is finding-free.
     install_hooks(&repo)?;
     // Force file-index creation via `ls`.
-    repo.mesh_stdout(["ls"])?;
+    repo.mesh_stdout(["list"])?;
     let out = repo.run_mesh(["doctor"])?;
     assert_eq!(
         out.status.code(),

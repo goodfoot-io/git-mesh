@@ -1,6 +1,6 @@
-//! Structural handlers (restore, revert, delete, mv) + doctor — §6.6, §6.7, §6.8.
+//! Structural handlers (restore, revert, delete, move) + doctor — §6.6, §6.7, §6.8.
 
-use crate::cli::{DeleteArgs, MvArgs, RestoreArgs, RevertArgs};
+use crate::cli::{DeleteArgs, MoveArgs, RestoreArgs, RevertArgs};
 use crate::sync::default_remote;
 use crate::{delete_mesh, file_index, list_mesh_names, rename_mesh, restore_mesh, revert_mesh};
 use anyhow::Result;
@@ -22,7 +22,7 @@ pub fn run_delete(repo: &gix::Repository, args: DeleteArgs) -> Result<i32> {
     Ok(0)
 }
 
-pub fn run_mv(repo: &gix::Repository, args: MvArgs) -> Result<i32> {
+pub fn run_move(repo: &gix::Repository, args: MoveArgs) -> Result<i32> {
     rename_mesh(repo, &args.old, &args.new)?;
     Ok(0)
 }

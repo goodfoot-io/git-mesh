@@ -561,7 +561,7 @@ not in the why.
 
 Inspect a mesh:
   git mesh show <name>           # anchors, why, history
-  git mesh ls <path>             # meshes that touch a file
+  git mesh list <path>             # meshes that touch a file
   git mesh stale                 # anchors whose bytes have drifted
   git mesh why <name>            # read the why
 ";
@@ -574,7 +574,7 @@ update it or accept that the relationship has shifted and re-record
 the mesh.
 
 A second `git mesh add` over the identical (path, extent) is a
-re-record — last-write-wins, no `rm` needed:
+re-record — last-write-wins, no `remove` needed:
 
   git mesh add <name> <path>#L<s>-L<e>
   git mesh commit <name>              # finalized by the post-commit hook
@@ -586,7 +586,7 @@ file still works for callers that import it by symbol, but hard-coded
 paths — markup src, fetch URLs, doc links — do not follow a rename.
 Update the literal, or move the mesh to the new path:
 
-  git mesh rm  <name> <old-path>
+  git mesh remove  <name> <old-path>
   git mesh add <name> <new-path>
   git mesh commit <name>
 ";
@@ -597,7 +597,7 @@ recorded. The mesh now pins less code than the relationship was about.
 When the line span changes, remove the old anchor first, then add the
 new one:
 
-  git mesh rm  <name> <path>#L<old-s>-L<old-e>
+  git mesh remove  <name> <path>#L<old-s>-L<old-e>
   git mesh add <name> <path>#L<new-s>-L<new-e>
   git mesh commit <name>
 ";
@@ -607,7 +607,7 @@ Most anchors in this mesh no longer match what was recorded. When most
 of a mesh has drifted, the relationship itself has usually changed.
 Narrow the mesh to the anchors still in play, or retire it:
 
-  git mesh rm     <name> <path>          # drop an anchor
+  git mesh remove     <name> <path>          # drop an anchor
   git mesh delete <name>                 # retire the mesh
   git mesh revert <name> <commit-ish>    # restore a prior correct state
 ";
@@ -678,7 +678,7 @@ A terminal marker means the resolver cannot evaluate this anchor at all.
 [SUBMODULE] — the anchor points inside a submodule, which mesh does
               not open. Pin the submodule root or a parent-repo path
               that witnesses the same relationship:
-                git mesh rm  <name> <submodule>/inner/file.ts#L10-L20
+                git mesh remove  <name> <submodule>/inner/file.ts#L10-L20
                 git mesh add <name> <submodule>
                 git mesh commit <name>
 ";
@@ -723,10 +723,10 @@ fn render_hint_for_reason(reason: &str) -> Option<String> {
             "to follow a rename, run `git mesh add <name> <new-path>` and then `git mesh commit <name>`."
         }
         "range_collapse" => {
-            "to re-record a shrunk extent, run `git mesh rm <name> <path>#L<old-s>-L<old-e>` and then `git mesh add <name> <path>#L<new-s>-L<new-e>`."
+            "to re-record a shrunk extent, run `git mesh remove <name> <path>#L<old-s>-L<old-e>` and then `git mesh add <name> <path>#L<new-s>-L<new-e>`."
         }
         "losing_coherence" => {
-            "to narrow or retire a mesh, run `git mesh rm <name> <path>` or `git mesh delete <name>`."
+            "to narrow or retire a mesh, run `git mesh remove <name> <path>` or `git mesh delete <name>`."
         }
         "symbol_rename" => {
             "to re-record after a symbol rename, run `git mesh add <name> <path>#L<s>-L<e>` and then `git mesh commit <name>`."
@@ -1097,7 +1097,7 @@ mod tests {
             partner_clause: String::new(),
             density: CDensity::L2,
             command:
-                "git mesh rm  link src/foo.ts\ngit mesh add link src/bar.ts\ngit mesh commit link"
+                "git mesh remove  link src/foo.ts\ngit mesh add link src/bar.ts\ngit mesh commit link"
                     .into(),
             excerpt_of_path: String::new(),
             excerpt_start: None,
@@ -1114,8 +1114,8 @@ mod tests {
             "must emit rename lead-in; got:\n{out}"
         );
         assert!(
-            out.contains("  git mesh rm  link src/foo.ts"),
-            "must emit rm command with two-space indent; got:\n{out}"
+            out.contains("  git mesh remove  link src/foo.ts"),
+            "must emit remove command with two-space indent; got:\n{out}"
         );
         assert!(
             out.contains("  git mesh add link src/bar.ts"),

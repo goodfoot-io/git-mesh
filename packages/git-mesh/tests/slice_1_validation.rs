@@ -184,7 +184,7 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
         "expected mesh ref under refs/meshes/v1/billing/"
     );
 
-    let listed = repo.mesh_stdout(["ls", "a.ts"])?;
+    let listed = repo.mesh_stdout(["list", "a.ts"])?;
     assert!(
         listed.contains("billing/checkout-request-flow"),
         "ls output missing the mesh:\n{listed}"
@@ -204,7 +204,7 @@ fn category_slash_slug_name_accepted_and_indexed() -> Result<()> {
         String::from_utf8_lossy(&stale.stderr)
     );
 
-    let listed_b = repo.mesh_stdout(["ls", "b.ts"])?;
+    let listed_b = repo.mesh_stdout(["list", "b.ts"])?;
     assert!(
         listed_b.contains("billing/checkout-request-flow"),
         "file-index missing partner side:\n{listed_b}"
@@ -238,7 +238,7 @@ fn hierarchical_three_segment_name_accepted_and_indexed() -> Result<()> {
         "expected mesh ref under refs/meshes/v1/billing/payments/"
     );
 
-    let listed = repo.mesh_stdout(["ls", "a.ts"])?;
+    let listed = repo.mesh_stdout(["list", "a.ts"])?;
     assert!(
         listed.contains(name),
         "ls output missing the hierarchical mesh:\n{listed}"

@@ -265,7 +265,7 @@ fn human_pending_ops_render_range_addresses() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     repo.mesh_stdout(["add", "m", "file2.txt#L1-L5"])?;
-    repo.mesh_stdout(["rm", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["remove", "m", "file1.txt#L1-L5"])?;
 
     let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
     assert!(

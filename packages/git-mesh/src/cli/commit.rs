@@ -1,6 +1,6 @@
 //! Staging + commit handlers — §6.2, §6.3, §6.4, §10.5.
 
-use crate::cli::{AddArgs, CommitArgs, ConfigArgs, RmArgs, WhyArgs};
+use crate::cli::{AddArgs, CommitArgs, ConfigArgs, RemoveArgs, WhyArgs};
 use crate::staging::{StagedConfig, append_prepared_add, parse_address, prepare_add};
 use crate::types::{AnchorExtent, CopyDetection, EngineOptions, validate_add_target};
 use crate::{append_config, append_remove, commit_mesh, read_mesh, set_why};
@@ -122,12 +122,12 @@ fn mesh_current_range_id_lookup(
     out
 }
 
-pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
+pub fn run_remove(repo: &gix::Repository, args: RemoveArgs) -> Result<i32> {
     crate::validation::validate_mesh_name(&args.name)?;
 
     let mut parsed: Vec<(String, AnchorExtent)> = Vec::with_capacity(args.anchors.len());
     {
-        let _perf = crate::perf::span("rm.parse-anchors");
+        let _perf = crate::perf::span("remove.parse-anchors");
         for addr in &args.anchors {
             let p = parse_address(addr).ok_or_else(|| {
                 anyhow!("invalid anchor `{addr}`; expected <path>[#L<start>-L<end>]")
@@ -138,7 +138,7 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
 
     let mut present: Vec<(String, AnchorExtent)> = Vec::new();
     {
-        let _perf = crate::perf::span("rm.read-current-anchors");
+        let _perf = crate::perf::span("remove.read-current-anchors");
         match read_mesh(repo, &args.name) {
             Ok(mesh) => {
                 for (_id, r) in &mesh.anchors_v2 {
@@ -182,7 +182,7 @@ pub fn run_rm(repo: &gix::Repository, args: RmArgs) -> Result<i32> {
     }
 
     {
-        let _perf = crate::perf::span("rm.write-staging");
+        let _perf = crate::perf::span("remove.write-staging");
         for (path, extent) in &parsed {
             match extent {
                 AnchorExtent::LineRange { start, end } => {

@@ -56,7 +56,7 @@ pub enum Commands {
     Show(ShowArgs),
 
     /// List files and anchors currently tracked by a mesh.
-    Ls(LsArgs),
+    List(ListArgs),
 
     /// Report anchors whose content has drifted from their anchored state.
     Stale(StaleArgs),
@@ -65,7 +65,7 @@ pub enum Commands {
     Add(AddArgs),
 
     /// Stage anchors to remove on the next mesh commit.
-    Rm(RmArgs),
+    Remove(RemoveArgs),
 
     /// Read or stage the mesh's why — a one-sentence definition of
     /// the subsystem, flow, or concern the anchors collectively form.
@@ -96,7 +96,7 @@ pub enum Commands {
     Delete(DeleteArgs),
 
     /// Rename a mesh.
-    Mv(MvArgs),
+    Move(MoveArgs),
 
     /// Read or stage mesh-level resolver options.
     Config(ConfigArgs),
@@ -170,7 +170,7 @@ pub struct ShowArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct LsArgs {
+pub struct ListArgs {
     /// File paths, `<path>#L<start>-L<end>` ranges, or bare mesh names to list.
     /// Omit to list all meshes.
     pub targets: Vec<String>,
@@ -304,7 +304,7 @@ pub struct AddArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct RmArgs {
+pub struct RemoveArgs {
     /// Mesh to stage the removal into.
     pub name: String,
 
@@ -380,7 +380,7 @@ pub struct DeleteArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct MvArgs {
+pub struct MoveArgs {
     /// Existing mesh name.
     pub old: String,
 
@@ -460,9 +460,9 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
             let _perf = crate::perf::span("command.show");
             show::run_show(repo, args)
         }
-        Commands::Ls(args) => {
-            let _perf = crate::perf::span("command.ls");
-            show::run_ls(repo, args)
+        Commands::List(args) => {
+            let _perf = crate::perf::span("command.list");
+            show::run_list(repo, args)
         }
         Commands::Stale(args) => {
             let _perf = crate::perf::span("command.stale");
@@ -472,9 +472,9 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
             let _perf = crate::perf::span("command.add");
             commit::run_add(repo, args)
         }
-        Commands::Rm(args) => {
-            let _perf = crate::perf::span("command.rm");
-            commit::run_rm(repo, args)
+        Commands::Remove(args) => {
+            let _perf = crate::perf::span("command.remove");
+            commit::run_remove(repo, args)
         }
         Commands::Why(args) => {
             let _perf = crate::perf::span("command.why");
@@ -500,9 +500,9 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
             let _perf = crate::perf::span("command.delete");
             structural::run_delete(repo, args)
         }
-        Commands::Mv(args) => {
-            let _perf = crate::perf::span("command.mv");
-            structural::run_mv(repo, args)
+        Commands::Move(args) => {
+            let _perf = crate::perf::span("command.move");
+            structural::run_move(repo, args)
         }
         Commands::Doctor(args) => {
             let _perf = crate::perf::span("command.doctor");
