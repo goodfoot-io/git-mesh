@@ -205,20 +205,17 @@ fn workspace_scan_all_clean_exit_zero() -> Result<()> {
     Ok(())
 }
 
-/// With `--name`, a clean mesh must still be shown (explicit request bypasses filter).
+/// A clean named mesh produces no stdout — `stale` is a
+/// no-news-is-good-news command. Exit 0.
 #[test]
-fn named_lookup_returns_clean_mesh() -> Result<()> {
+fn named_lookup_clean_mesh_is_silent() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "quiet")?;
     let out = repo.run_mesh(["stale", "quiet"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("quiet"),
-        "named clean mesh must still render: {stdout}"
-    );
-    assert!(
-        stdout.contains("No anchors in quiet are stale"),
-        "clean mesh must say so: {stdout}"
+        stdout.trim().is_empty(),
+        "clean named mesh must produce no stdout, got: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())

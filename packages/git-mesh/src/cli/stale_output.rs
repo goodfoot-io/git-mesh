@@ -562,8 +562,8 @@ fn render_human(
     followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
 ) -> Result<()> {
-    let mesh_count = meshes.len();
-    for (mesh_idx, m) in meshes.iter().enumerate() {
+    let mut printed_any_mesh = false;
+    for m in meshes.iter() {
         // Include every tracked anchor — Fresh ones synthesized as
         // `Finding`s so default/oneline/stat/patch all list the full
         // mesh. Order follows the mesh's stored anchor order, with
@@ -607,6 +607,36 @@ fn render_human(
             .filter(|p| pending_mesh(p) == m.name.as_str())
             .collect();
 
+        let mesh_total = mesh_findings.len();
+        let mesh_stale = mesh_findings
+            .iter()
+            .filter(|f| f.status != AnchorStatus::Fresh)
+            .count();
+        let pending_adds = mesh_pending
+            .iter()
+            .filter(|p| matches!(p, PendingFinding::Add { .. }))
+            .count();
+        let pending_removes = mesh_pending
+            .iter()
+            .filter(|p| matches!(p, PendingFinding::Remove { .. }))
+            .count();
+
+        // Suppress fully-clean meshes — `stale` is a no-news-is-good-news
+        // command. If nothing in this mesh is stale and nothing is staged
+        // as a pending Add/Remove, render no per-mesh block at all (no
+        // header, no anchor list, no why). Matches the no-args sweep,
+        // which already filters clean meshes at the engine level.
+        if mesh_stale == 0 && pending_adds == 0 && pending_removes == 0 {
+            continue;
+        }
+
+        if printed_any_mesh {
+            println!();
+            println!("---");
+            println!();
+        }
+        printed_any_mesh = true;
+
         if options.oneline {
             for f in &mesh_findings {
                 println!(
@@ -618,15 +648,6 @@ fn render_human(
             continue;
         }
 
-        let mesh_total = mesh_findings.len();
-        let mesh_stale = mesh_findings
-            .iter()
-            .filter(|f| f.status != AnchorStatus::Fresh)
-            .count();
-        let pending_adds = mesh_pending
-            .iter()
-            .filter(|p| matches!(p, PendingFinding::Add { .. }))
-            .count();
         if mesh_total == 0 {
             if pending_adds > 0 {
                 println!(
@@ -800,11 +821,6 @@ fn render_human(
                 }
                 _ => {}
             }
-        }
-        if mesh_idx + 1 < mesh_count {
-            println!();
-            println!("---");
-            println!();
         }
     }
     Ok(())

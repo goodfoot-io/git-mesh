@@ -368,17 +368,25 @@ fn human_moved_row_shows_arrow_with_destination() -> Result<()> {
 }
 
 #[test]
-fn human_fresh_row_has_no_trailing_parenthesis() -> Result<()> {
-    // Fresh anchors must render as bare `- <path>` with no status word.
+fn human_fresh_sibling_row_has_no_trailing_parenthesis() -> Result<()> {
+    // In a partially-stale mesh, Fresh siblings must render as bare
+    // `- <path>` with no status word. (Fully-fresh meshes produce no
+    // output at all — see workspace_scan_all_clean_exit_zero.)
     let repo = TestRepo::seeded()?;
-    seed_line_range(&repo, "m")?;
-    let out = repo.mesh_stdout(["stale", "m", "--no-exit-code"])?;
-    // The line must start with "- file1.txt" and must NOT contain "(Fresh)"
-    // or any other trailing parenthetical.
-    let line = out
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "seed"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+    // Drift only file1.txt so file2.txt#L1-L5 stays Fresh.
+    repo.write_file(
+        "file1.txt",
+        "edit1\nedit2\nedit3\nedit4\nedit5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let out = repo.run_mesh(["stale", "m"])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text
         .lines()
-        .find(|l| l.starts_with("- file1.txt"))
-        .unwrap_or_else(|| panic!("no anchor bullet in stdout={out}"));
+        .find(|l| l.starts_with("- file2.txt"))
+        .unwrap_or_else(|| panic!("no fresh-sibling bullet in stdout={text}"));
     assert!(
         !line.contains('('),
         "Fresh bullet must not have trailing parenthesis; line={line}"
