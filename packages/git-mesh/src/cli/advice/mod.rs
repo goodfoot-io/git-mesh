@@ -426,7 +426,7 @@ fn process_touches(
 ) -> Result<i32> {
     use crate::advice::session::state::TouchKind;
     use crate::advice::structured::{
-        Action, BasicOutput, Status, creation_instructions, edit_overlaps, format_anchor_resolved,
+        Action, BasicOutput, Status, edit_overlaps, format_anchor_resolved,
         reconciliation_instructions,
     };
 
@@ -584,7 +584,6 @@ fn process_touches(
         s
     };
     let mut emitted_fps: Vec<String> = Vec::new();
-    let mut any_creation_emission = false;
 
     if !gate_seed.is_empty() {
         use crate::advice::suggest::{SuggestConfig, run_suggest_pipeline};
@@ -636,28 +635,44 @@ fn process_touches(
                 if has_deleted_participant {
                     continue;
                 }
-                for p in &sug.participants {
-                    let active_anchor = if p.whole {
-                        p.path.to_string_lossy().into_owned()
-                    } else {
-                        format!("{}#L{}-L{}", p.path.to_string_lossy(), p.start, p.end)
-                    };
-                    let mut stanza = String::new();
-                    stanza.push_str(&format!(
-                        "If {active_anchor} has implicit semantic dependencies, document with `git mesh`:\n"
-                    ));
-                    stanza.push_str(
-                        "  git mesh add <name> [anchor 1] [anchor 2] && git mesh why -m <why>\n",
-                    );
-                    creation_stanzas.push(stanza);
+                if any_participant_references_another(&sug.participants, wd) {
+                    continue;
                 }
+                let anchors: Vec<String> = sug
+                    .participants
+                    .iter()
+                    .map(|p| {
+                        if p.whole {
+                            p.path.to_string_lossy().into_owned()
+                        } else {
+                            format!("{}#L{}-L{}", p.path.to_string_lossy(), p.start, p.end)
+                        }
+                    })
+                    .collect();
+                let paths: Vec<String> = sug
+                    .participants
+                    .iter()
+                    .map(|p| p.path.to_string_lossy().into_owned())
+                    .collect();
+                let mut stanza = String::new();
+                stanza.push_str("Possible implicit semantic dependency between:\n");
+                for a in &anchors {
+                    stanza.push_str(&format!("  - {a}\n"));
+                }
+                stanza.push_str("\nRecord the link if real:\n");
+                stanza.push_str("  git mesh add <name> \\\n");
+                let last = paths.len() - 1;
+                for (i, path) in paths.iter().enumerate() {
+                    if i == last {
+                        stanza.push_str(&format!("    {path}\n"));
+                    } else {
+                        stanza.push_str(&format!("    {path} \\\n"));
+                    }
+                }
+                stanza.push_str("  git mesh why <name> -m \"What these anchors do together.\"\n");
+                creation_stanzas.push(stanza);
                 emitted_fps.push(fp);
-                any_creation_emission = true;
             }
-        }
-        if any_creation_emission && !flags.has_printed_creation_instructions {
-            output.push_str(&creation_instructions(&[]));
-            flags.has_printed_creation_instructions = true;
         }
         for (i, stanza) in creation_stanzas.iter().enumerate() {
             if i > 0 {
@@ -697,6 +712,41 @@ fn process_touches(
     store.write_flags(&flags)?;
     store.discard_snapshot(id);
     Ok(0)
+}
+
+/// True iff any pair of distinct participants has one whose file content
+/// contains the other's repo-relative path as a substring. This catches the
+/// "explicit semantic dependency" case (e.g. one markdown file inline-links to
+/// another) so we don't surface a coupling that is already documented in-tree.
+///
+/// Files that can't be read (missing, IO error, non-UTF-8) are treated as
+/// empty — fail-open: emit the suggestion rather than silently swallow it.
+fn any_participant_references_another(
+    participants: &[crate::advice::candidates::MeshAnchor],
+    wd: &std::path::Path,
+) -> bool {
+    let paths: Vec<String> = participants
+        .iter()
+        .map(|p| p.path.to_string_lossy().into_owned())
+        .collect();
+    let contents: Vec<String> = paths
+        .iter()
+        .map(|p| std::fs::read_to_string(wd.join(p)).unwrap_or_default())
+        .collect();
+    for (i, content) in contents.iter().enumerate() {
+        if content.is_empty() {
+            continue;
+        }
+        for (j, path) in paths.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if content.contains(path.as_str()) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ── touch ───────────────────────────────────────────────────────────────────

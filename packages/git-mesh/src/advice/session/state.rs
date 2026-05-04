@@ -68,10 +68,6 @@ pub struct SessionFlags {
     /// this session.
     #[serde(default)]
     pub has_printed_reconciliation_instructions: bool,
-    /// True after creation instructions (for new files with related anchors)
-    /// have been printed at least once this session.
-    #[serde(default)]
-    pub has_printed_creation_instructions: bool,
 }
 
 /// One entry in `<session>/snapshots/<id>.untracked` — captured at `mark`,

@@ -232,31 +232,6 @@ pub fn reconciliation_instructions(mesh: &MeshResolved) -> String {
     wrap_documentation(&body)
 }
 
-/// Return the creation instructions block for a set of anchors the developer
-/// may want to associate with a new mesh.
-///
-/// The text matches the tone of the existing renderer's n-ary suggester
-/// preamble. Printed at most once per session
-/// (`SessionFlags::has_printed_creation_instructions`).
-///
-/// # TODO
-/// Align exact wording with the finalized structured-English spec before
-/// Phase 3 ships.
-pub fn creation_instructions(anchors: &[&AnchorResolved]) -> String {
-    let mut body = String::new();
-    body.push_str("Use `git mesh` to document implicit semantic dependencies.\n");
-    body.push_str("Potential candidates:\n");
-    for a in anchors {
-        body.push_str(&format!("- {}\n", format_anchor_resolved(a)));
-    }
-    body.push('\n');
-    body.push_str("To record a candidate mesh, run:\n");
-    body.push_str("  git mesh add <mesh-name> <path-1> <path-2>\n");
-    body.push_str("  git mesh why <mesh-name> -m \"What the anchors do together.\"\n");
-    body.push_str("  git mesh commit <mesh-name>\n");
-    wrap_documentation(&body)
-}
-
 /// Wrap an inline-documentation block in `<documentation>` tags with a
 /// trailing blank line so adjacent blocks remain visually separated.
 pub fn wrap_documentation(body: &str) -> String {

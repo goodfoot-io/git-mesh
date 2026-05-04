@@ -191,16 +191,16 @@ fn flush_existing_files_emits_suggestion() -> Result<()> {
     let stderr = String::from_utf8_lossy(&flush_out.stderr);
 
     // Strong assertion: the modified-only flush on a co-edit fixture must
-    // emit a per-anchor `If \`<anchor>\` ...` line and a creation-instructions
-    // block. Prior implementations bailed early when canonical.ranges was
-    // empty (no ranged participants from a whole-file Modified touch).
+    // emit a coupling stanza naming the participants together. Prior
+    // implementations bailed early when canonical.ranges was empty (no ranged
+    // participants from a whole-file Modified touch).
     assert!(
-        stdout.contains("has implicit semantic dependencies, document with `git mesh`"),
-        "expected per-anchor 'If <anchor> has implicit semantic dependencies' line in flush stdout.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+        stdout.contains("Possible implicit semantic dependency between:"),
+        "expected coupling stanza in flush stdout.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     );
     assert!(
-        stdout.contains("Use `git mesh` to document implicit semantic dependencies."),
-        "expected creation_instructions block in flush stdout. Got:\n{stdout}"
+        stdout.contains("git mesh add <name>"),
+        "expected `git mesh add` template in coupling stanza.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     );
     Ok(())
 }
@@ -260,7 +260,7 @@ fn flush_current_touch_joins_prior_turn_read_in_seed() -> Result<()> {
     let stdout = String::from_utf8_lossy(&flush_out.stdout);
     let stderr = String::from_utf8_lossy(&flush_out.stderr);
     assert!(
-        stdout.contains("has implicit semantic dependencies, document with `git mesh`"),
+        stdout.contains("Possible implicit semantic dependency between:"),
         "current-flush touch must join the SessionRecord seed alongside prior-turn reads.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     );
     Ok(())

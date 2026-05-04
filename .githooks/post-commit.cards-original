@@ -10,6 +10,7 @@ if [ -n "$WIKI_BIN" ]; then
   fi
 fi
 if command -v git-mesh >/dev/null 2>&1; then
-  echo "Running git mesh stale --compact (informational)..."
-  git mesh stale --compact --no-exit-code
+  git mesh commit
+  echo "Running git mesh stale --compact --auto-follow (informational)..."
+  git mesh stale --compact --auto-follow --no-exit-code
 fi
