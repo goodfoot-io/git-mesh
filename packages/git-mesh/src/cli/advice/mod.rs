@@ -616,6 +616,7 @@ fn process_touches(
         } else {
             &[]
         };
+        let mut creation_stanzas: Vec<String> = Vec::new();
         if !sessions.is_empty() {
             let cfg = SuggestConfig::from_env();
             let suggestions = run_suggest_pipeline(sessions, Some(repo), wd, &cfg, Some(store.dir()));
@@ -641,21 +642,28 @@ fn process_touches(
                     } else {
                         format!("{}#L{}-L{}", p.path.to_string_lossy(), p.start, p.end)
                     };
-                    output.push_str(&format!(
+                    let mut stanza = String::new();
+                    stanza.push_str(&format!(
                         "If {active_anchor} has implicit semantic dependencies, document with `git mesh`:\n"
                     ));
-                    output.push_str(
+                    stanza.push_str(
                         "  git mesh add <name> [anchor 1] [anchor 2] && git mesh why -m <why>\n",
                     );
+                    creation_stanzas.push(stanza);
                 }
                 emitted_fps.push(fp);
                 any_creation_emission = true;
             }
         }
         if any_creation_emission && !flags.has_printed_creation_instructions {
-            output.push('\n');
             output.push_str(&creation_instructions(&[]));
             flags.has_printed_creation_instructions = true;
+        }
+        for (i, stanza) in creation_stanzas.iter().enumerate() {
+            if i > 0 {
+                output.push_str("\n---\n\n");
+            }
+            output.push_str(stanza);
         }
     }
 
