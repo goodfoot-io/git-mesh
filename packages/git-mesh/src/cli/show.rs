@@ -909,7 +909,7 @@ pub(crate) fn resolve_targets(
 
     if !zero_match_args.is_empty() {
         for arg in &zero_match_args {
-            eprintln!("git mesh ls: no mesh or file found for '{arg}'");
+            eprintln!("git mesh list: no mesh or file found for '{arg}'");
         }
         anyhow::bail!("one or more targets did not match any mesh or file");
     }
@@ -1290,13 +1290,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // run_ls integration tests
+    // run_list integration tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn run_ls_no_args_returns_ok() {
+    fn run_list_no_args_returns_ok() {
         let (_td, repo) = seed_repo();
-        let args = LsArgs {
+        let args = ListArgs {
             targets: vec![],
             porcelain: false,
             batch: false,
@@ -1304,15 +1304,15 @@ mod tests {
             offset: 0,
             limit: None,
         };
-        let exit_code = run_ls(&repo, args).unwrap();
+        let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
     }
 
     #[test]
-    fn run_ls_mesh_name_arg_returns_ok() {
+    fn run_list_mesh_name_arg_returns_ok() {
         let (_td, repo) = seed_repo();
         create_mesh_ref(&repo, "my-mesh");
-        let args = LsArgs {
+        let args = ListArgs {
             targets: vec!["my-mesh".to_string()],
             porcelain: false,
             batch: false,
@@ -1320,14 +1320,14 @@ mod tests {
             offset: 0,
             limit: None,
         };
-        let exit_code = run_ls(&repo, args).unwrap();
+        let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
     }
 
     #[test]
-    fn run_ls_zero_match_returns_exit_1() {
+    fn run_list_zero_match_returns_exit_1() {
         let (_td, repo) = seed_repo();
-        let args = LsArgs {
+        let args = ListArgs {
             targets: vec!["nonexistent".to_string()],
             porcelain: false,
             batch: false,
@@ -1335,7 +1335,7 @@ mod tests {
             offset: 0,
             limit: None,
         };
-        let exit_code = run_ls(&repo, args).unwrap();
+        let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 1);
     }
 
@@ -1379,11 +1379,11 @@ mod tests {
     }
 
     #[test]
-    fn run_ls_multiple_mesh_names() {
+    fn run_list_multiple_mesh_names() {
         let (_td, repo) = seed_repo();
         create_mesh_ref(&repo, "mesh-a");
         create_mesh_ref(&repo, "mesh-b");
-        let args = LsArgs {
+        let args = ListArgs {
             targets: vec!["mesh-a".to_string(), "mesh-b".to_string()],
             porcelain: false,
             batch: false,
@@ -1391,7 +1391,7 @@ mod tests {
             offset: 0,
             limit: None,
         };
-        let exit_code = run_ls(&repo, args).unwrap();
+        let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
     }
 }
