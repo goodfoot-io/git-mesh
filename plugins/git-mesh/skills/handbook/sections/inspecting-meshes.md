@@ -69,13 +69,17 @@ Overlap semantics — a mesh is listed if any anchor touches the queried path or
 ```bash
 git mesh list src/Button.tsx
 git mesh list src/Button.tsx#L40-L60
+git mesh list src/Button.tsx src/Button.css     # multiple targets — unioned, deduped
+git mesh list checkout-request-flow src/api.ts  # mesh name + path mixed
 ```
+
+A target that resolves to no meshes is fine on its own — the command exits 0. The command only errors when a target names something that doesn't exist (missing file, missing mesh name, or a literal glob the shell didn't expand). The same rule applies to `git mesh stale [<target>...]`.
 
 ## Before a mesh's first commit
 
 A mesh ref does not exist until `git mesh commit <name>` succeeds once. Before that:
 
-- **`git mesh stale`** (no name) — workspace scan; shows staged ops for the not-yet-committed mesh in the trailing "staged mesh ops" section.
-- **`git mesh stale <new-name>`** — errors: mesh ref not found.
+- **`git mesh stale`** (no targets) — workspace scan; shows staged ops for the not-yet-committed mesh in the trailing "staged mesh ops" section.
+- **`git mesh stale <new-name>`** — resolves via staging if `<new-name>` has staged ops. If `<new-name>` is neither a mesh, a path-index entry, nor a file in the worktree, errors with `no such file or mesh: '<new-name>'`.
 - **`git mesh <new-name>`** — errors: mesh ref not found.
 - **`git mesh list`** — pending meshes (staging-only, no committed tip) appear with a `(pending)` marker.

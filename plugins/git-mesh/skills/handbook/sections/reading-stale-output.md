@@ -38,8 +38,15 @@ Non-zero if any of:
 - A finding has drift at HEAD / Index / Worktree with no matching staged re-anchor.
 - A terminal status (`ORPHANED`, `MERGE_CONFLICT`, `SUBMODULE`, `CONTENT_UNAVAILABLE`) isn't suppressed.
 - A staged `add`/`remove` op has a sidecar whose bytes disagree with the blob it anchors.
+- A positional `<target>` names a referent that doesn't exist (missing file, missing mesh name, unmatched literal glob). Stderr in that case is `git mesh stale: file not found: '<target>'`.
 
 `--no-exit-code` forces exit 0 regardless of findings. `--ignore-unavailable` downgrades `CONTENT_UNAVAILABLE` only.
+
+## No-news-is-good-news
+
+`git mesh stale` is silent on the clean path. A fully-fresh mesh produces no per-mesh header, no anchor list, no why — output is empty and exit code is 0. This applies to every form: the no-args sweep, a named mesh (`git mesh stale <name>`), and a path arg (`git mesh stale src/auth.ts`). To force a full listing of a mesh's anchors regardless of staleness, use `git mesh <name>` instead of `stale`.
+
+A target that resolves to zero meshes — for example `git mesh stale notes/readme.md` against a path no mesh tracks — also exits 0 silently. Only a missing referent (see above) drives a non-zero exit on the resolution path.
 
 ## Machine formats
 

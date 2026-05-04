@@ -9,18 +9,22 @@
 
 ```bash
 git mesh
-git mesh list [<path>|<path>#L<start>-L<end>]
+git mesh list [<target>...]
 git mesh <name>
 git mesh <name> --oneline
 git mesh <name> --format=<fmt>
 git mesh <name> --no-abbrev
 git mesh <name> --at <commit-ish>
 git mesh <name> --log [--limit <n>]
-git mesh stale [<name>] [--format=human|porcelain|json|junit|github-actions]
-git mesh stale [<name>] [--oneline|--stat|--patch] [--since <commit-ish>]
-git mesh stale [<name>] [--no-worktree] [--no-index] [--no-staged-mesh]
-git mesh stale [<name>] [--ignore-unavailable] [--no-exit-code]
+git mesh stale [<target>...] [--format=human|porcelain|json|junit|github-actions]
+git mesh stale [<target>...] [--oneline|--stat|--patch] [--since <commit-ish>]
+git mesh stale [<target>...] [--no-worktree] [--no-index] [--no-staged-mesh]
+git mesh stale [<target>...] [--ignore-unavailable] [--no-exit-code]
 ```
+
+Each `<target>` is one of: a mesh name, a file path, or — for `list` only — a line-range address `<path>#L<start>-L<end>`. Globs are expanded by the shell. Multiple targets are unioned and deduplicated.
+
+Resolution rule: bare words (no `/`, no `#L`) try mesh-name first; everything else is a path. A target that resolves to no meshes is fine on its own — `list` exits 0 with an empty result; `stale` exits 0 silently. The command only errors when a target names a referent that doesn't exist (missing file, missing mesh name, unmatched literal glob).
 
 ## Staging and committing
 
