@@ -17,27 +17,7 @@
   ],
   "main": "./dist/bundle.cjs",
   "contributes": {
-    "configuration": {
-      "title": "Git Mesh",
-      "properties": {
-        "gitMesh.binary.releaseBaseUrl": {
-          "type": "string",
-          "default": "https://github.com/goodfoot-io/git-mesh/releases/download",
-          "description": "Base URL used to download managed Git Mesh CLI release assets."
-        },
-        "gitMesh.binary.usePathFallback": {
-          "type": "boolean",
-          "default": false,
-          "description": "Allow the extension to use a git-mesh binary already on PATH instead of the managed install. Intended for development and advanced setups."
-        }
-      }
-    },
     "commands": [
-      {
-        "command": "gitMesh.retryInstall",
-        "title": "Retry CLI Install",
-        "category": "Git Mesh"
-      },
       {
         "command": "gitMesh.showVersion",
         "title": "Show CLI Version",
