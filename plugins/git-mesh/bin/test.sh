@@ -130,6 +130,24 @@ make_repo() {
   printf '%s' "$repo"
 }
 
+# Build a fresh repo with seed files but NO mesh.
+make_repo_nocommit() {
+  local name="$1"
+  local repo="$TMP_ROOT/$name"
+  mkdir -p "$repo"
+  (
+    cd "$repo"
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    printf 'one\ntwo\nthree\n' > a.txt
+    printf 'alpha\nbeta\ngamma\n' > b.txt
+    git add a.txt b.txt
+    git commit -q -m "seed"
+  )
+  printf '%s' "$repo"
+}
+
 payload() {
   # $1=event, $2=session_id, $3=cwd, [$4..]=jq -n --arg pairs to splice in
   local event="$1" sid="$2" cwd="$3"; shift 3
@@ -177,8 +195,10 @@ else
   bad "PostToolUse(Read): expected ranged read in $READS; got: $(cat "$READS" 2>/dev/null || echo MISSING)"
 fi
 # The `read` verb emits BasicOutput immediately for matching meshes. Since
-# b.txt#L1-L3 is in the demo mesh with a.txt, reading b.txt should surface a.txt.
-assert_stdout_contains "PostToolUse(Read)" "a.txt"
+# b.txt#L1-L3 is in the demo mesh with a.txt, reading b.txt would surface a.txt.
+# However, the demo mesh was created before this session (pre-existing), so
+# the same-session filter suppresses the advice.
+assert_stdout_empty "PostToolUse(Read)"
 
 # ---------------------------------------------------------------------------
 # Test 4: PostToolUse on a non-matching tool exits 0 silent.
@@ -307,8 +327,31 @@ elif ! { MESH_HELP="$("$MESH_BIN" --help 2>&1)"; printf '%s' "$MESH_HELP" | grep
 else
   SAVED_PATH="$PATH"
   export PATH="$(dirname "$MESH_BIN"):$PATH"
-REPO13="$(make_repo repo13)"
+REPO13="$(make_repo_nocommit repo13)"
 SID13="sess-thirteen"
+
+# Establish baseline before committing the mesh
+PRE13BASE="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t13-base", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE13BASE"
+assert_rc_zero "Test13: PreToolUse baseline"
+POST13BASE="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_response:{}, tool_use_id:"t13-base", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$POST13BASE"
+assert_rc_zero "Test13: PostToolUse baseline"
+
+# Create and commit the mesh within the session
+( cd "$REPO13" && git mesh add demo a.txt#L1-L3 b.txt#L1-L3 >/dev/null && git mesh why demo -m "a.txt and b.txt move in lockstep" >/dev/null && git mesh commit demo >/dev/null )
+
+# Observe the new mesh
+PRE13OBS="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t13-obs", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE13OBS"
+assert_rc_zero "Test13: PreToolUse observe"
+POST13OBS="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_response:{}, tool_use_id:"t13-obs", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$POST13OBS"
+assert_rc_zero "Test13: PostToolUse observe"
 
 # Read b.txt (meshed partner of a.txt) to trigger advice via the read verb.
 PAYLOAD13="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
@@ -337,5 +380,51 @@ fi  # end: MESH_BIN found
 
 # ---------------------------------------------------------------------------
 log ""
+# Test 14: Same-session mesh commit + read emits advice
+log "Test 14: Same-session mesh commit + read emits advice"
+REPO14="$(make_repo_nocommit repo14)"
+SID14="sess-fourteen"
+
+# Baseline: mark+flush establishes pre-mesh state
+PRE14="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t14-base", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE14"
+assert_rc_zero "Test14: PreToolUse baseline"
+POST14="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_response:{}, tool_use_id:"t14-base", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$POST14"
+assert_rc_zero "Test14: PostToolUse baseline"
+
+# Create and commit mesh via CLI
+( cd "$REPO14" && git mesh add demo a.txt#L1-L3 b.txt#L1-L3 >/dev/null && git mesh why demo -m "pair" >/dev/null && git mesh commit demo >/dev/null )
+
+# Observe: mark+flush detects new mesh ref
+PRE14OBS="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t14-obs", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE14OBS"
+assert_rc_zero "Test14: PreToolUse observe"
+POST14OBS="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_response:{}, tool_use_id:"t14-obs", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$POST14OBS"
+assert_rc_zero "Test14: PostToolUse observe"
+
+# Read b.txt#L1-L3 -> advice should contain a.txt
+PAYLOAD14="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"b.txt", offset:1, limit:3}, tool_response:{}, tool_use_id:"t14-read", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD14"
+assert_rc_zero "Test14: PostToolUse(Read)"
+assert_stdout_contains "Test14: same-session read" "a.txt"
+
+# Test 15: Prior-session mesh read is silent
+log "Test 15: Prior-session mesh read is silent"
+REPO15="$(make_repo repo15)"
+SID15="sess-fifteen"
+
+PAYLOAD15="$(jq -nc --arg s "$SID15" --arg c "$REPO15" \
+  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"b.txt", offset:1, limit:3}, tool_response:{}, tool_use_id:"t15", duration_ms:1}')"
+run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD15"
+assert_rc_zero "Test15: PostToolUse(Read)"
+assert_stdout_empty "Test15: prior-session read"
+
 log "Summary: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

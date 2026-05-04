@@ -240,6 +240,40 @@ where
     out
 }
 
+/// Discover meshes whose ref OID differs from the session baseline.
+/// Names not in the baseline, or with a changed OID, are appended to
+/// `meshes-committed.jsonl` (unless already committed this session).
+/// Returns the full committed set (including any newly appended names).
+///
+/// In `process_touches` (flush path), errors are swallowed via `let _ =`
+/// because observation is best-effort there. In `run_advice_read`, errors
+/// propagate via `?` to fail-closed (no advice emitted).
+fn discover_meshes_committed_this_session(
+    repo: &gix::Repository,
+    store: &crate::advice::session::SessionStore,
+) -> Result<std::collections::HashSet<String>> {
+    let baseline = store.mesh_baseline_map()?;
+    let mut committed = store.meshes_committed_set()?;
+    let current = crate::mesh::read::list_mesh_refs(repo)?;
+    let mut new_names: Vec<String> = Vec::new();
+    for (name, oid) in &current {
+        let is_new = match baseline.get(name) {
+            Some(prior_oid) => prior_oid != oid,
+            None => true,
+        };
+        if is_new && !committed.contains(name) {
+            new_names.push(name.clone());
+        }
+    }
+    if !new_names.is_empty() {
+        store.append_meshes_committed(&new_names)?;
+        for n in &new_names {
+            committed.insert(n.clone());
+        }
+    }
+    Ok(committed)
+}
+
 fn default_engine_options() -> crate::types::EngineOptions {
     crate::types::EngineOptions {
         layers: crate::types::LayerSet {
@@ -266,6 +300,7 @@ fn run_advice_mark(repo: &gix::Repository, session_id: String, id: String) -> Re
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
+    store.ensure_mesh_baseline(repo)?;
     let _ = store.snapshots_dir()?;
     // Opportunistic orphan sweep (30 minute threshold) so a `mark` without
     // its `flush` doesn't accumulate forever.
@@ -378,6 +413,8 @@ fn run_advice_flush(repo: &gix::Repository, session_id: String, id: String) -> R
     let wd = work_dir(repo)?;
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
+    store.ensure_initialized()?;
+    store.ensure_mesh_baseline(repo)?;
 
     if !store.snapshot_exists(&id) {
         return Ok(0);
@@ -710,6 +747,9 @@ fn process_touches(
         store.append_advice_seen(&emitted_fps)?;
     }
     store.write_flags(&flags)?;
+    // Eager observation: capture meshes committed via this tool call's
+    // `git commit` so subsequent reads hit the fast `meshes_committed_set()` path.
+    let _ = discover_meshes_committed_this_session(repo, store);
     store.discard_snapshot(id);
     Ok(0)
 }
@@ -779,6 +819,7 @@ fn run_advice_touch(
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
+    store.ensure_mesh_baseline(repo)?;
 
     // Parse anchor into (path, Option<(start, end)>).
     let (path_str, line_anchor) = match anchor.split_once("#L") {
@@ -1019,6 +1060,7 @@ fn run_advice_read(
     let gd = repo.git_dir().to_path_buf();
     let store = SessionStore::open(wd, &gd, &session_id)?;
     store.ensure_initialized()?;
+    store.ensure_mesh_baseline(repo)?;
 
     if anchor.is_empty() {
         bail!("git mesh advice <id> read: anchor must not be empty");
@@ -1064,6 +1106,7 @@ let action = action_from_spec(&anchor).ok_or_else(|| {
             .filter_map(|(_, r)| r.ok())
             .collect::<Vec<_>>()
     };
+    let meshes_committed = discover_meshes_committed_this_session(repo, &store)?;
     let meshes_seen = store.meshes_seen_set()?;
 
     let mut new_meshes_seen: Vec<String> = Vec::new();
@@ -1071,9 +1114,19 @@ let action = action_from_spec(&anchor).ok_or_else(|| {
     let mut blocks: Vec<String> = Vec::new();
 
     for mesh in &meshes {
+        // Step 1: overlap check
         let Some(active) = mesh.anchors.iter().find(|a| read_overlaps(&action, a)) else {
             continue;
         };
+        // Record ALL overlapping meshes as candidates BEFORE the same-session
+        // filter. mesh-candidates.jsonl is an operational log of which meshes
+        // were considered, not which were emitted.
+        new_mesh_candidates.push(mesh.name.clone());
+        // Step 2: same-session filter (NEW)
+        if !meshes_committed.contains(&mesh.name) {
+            continue;
+        }
+        // Step 3: meshes_seen dedup
         if meshes_seen.contains(&mesh.name) || new_meshes_seen.contains(&mesh.name) {
             continue;
         }
@@ -1098,7 +1151,6 @@ let action = action_from_spec(&anchor).ok_or_else(|| {
         };
         blocks.push(block.to_string());
         new_meshes_seen.push(mesh.name.clone());
-        new_mesh_candidates.push(mesh.name.clone());
     }
 
     let output = if blocks.is_empty() {

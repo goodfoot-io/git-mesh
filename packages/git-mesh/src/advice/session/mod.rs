@@ -51,6 +51,8 @@ const JSONL_FILES: &[&str] = &[
     "meshes-seen.jsonl",
     "mesh-candidates.jsonl",
     "pending_touches.jsonl",
+    "mesh-baseline.json",
+    "meshes-committed.jsonl",
 ];
 
 const SNAPSHOTS_SUBDIR: &str = "snapshots";
@@ -261,6 +263,62 @@ impl SessionStore {
 
     pub fn mesh_candidates_set(&self) -> Result<std::collections::HashSet<String>> {
         load_string_set(&self.dir.join("mesh-candidates.jsonl"))
+    }
+
+    /// Idempotent: snapshot `refs/meshes/v1/*` to `mesh-baseline.json`.
+    /// No-op if the file already exists and is non-empty.
+    pub fn ensure_mesh_baseline(&self, repo: &gix::Repository) -> Result<()> {
+        let path = self.dir.join("mesh-baseline.json");
+        if std::fs::metadata(&path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let refs = crate::mesh::read::list_mesh_refs(repo)?;
+        let map: std::collections::HashMap<String, String> = refs.into_iter().collect();
+        let json = serde_json::to_vec(&map)?;
+        store::atomic_write(&path, &json)
+    }
+
+    /// Load `mesh-baseline.json` as a name→OID map.
+    /// Returns an empty map if the file is absent or corrupt (fail-closed).
+    pub fn mesh_baseline_map(&self) -> Result<std::collections::HashMap<String, String>> {
+        let path = self.dir.join("mesh-baseline.json");
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(std::collections::HashMap::new());
+            }
+            Err(e) => return Err(e).with_context(|| format!("read `{}`", path.display())),
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(map) => Ok(map),
+            Err(_) => {
+                // Corrupt file: return empty map (fail-closed).
+                Ok(std::collections::HashMap::new())
+            }
+        }
+    }
+
+    /// Load `meshes-committed.jsonl` → `HashSet<String>`.
+    /// Mirrors `meshes_seen_set()`.
+    pub fn meshes_committed_set(&self) -> Result<std::collections::HashSet<String>> {
+        load_string_set(&self.dir.join("meshes-committed.jsonl"))
+    }
+
+    /// Append mesh names to `meshes-committed.jsonl`.
+    /// Mirrors `append_meshes_seen()`.
+    pub fn append_meshes_committed(&self, names: &[String]) -> Result<()> {
+        for n in names {
+            let line = serde_json::to_string(n).with_context(|| "serialize mesh name")?;
+            store::append_jsonl_line(
+                &self.dir.join("meshes-committed.jsonl"),
+                &self.lock,
+                &line,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn docs_seen_set(&self) -> Result<std::collections::HashSet<String>> {
