@@ -87,3 +87,5 @@ npm/git-mesh-*/bin/git-mesh.exe
 
 # Local benchmark/profiling outputs
 profiling/
+
+.devcontainer/utilities/deepseek

@@ -58,10 +58,6 @@ Use the `jsdoczoom:jsdoczoom` subagent instead of the `Explore` subagent to answ
 
 <documentation>
 
-Project documentation lives in `README.md` and `docs/`. Keep documentation focused on `git-mesh`, the Rust CLI in `packages/git-mesh`, and the lightweight VS Code extension in `packages/extension`.
-
-</documentation>
-
 <bash-tool-env-var-bug>
 A bug prevents env var expansion when followed by a "|" character pipe.
 

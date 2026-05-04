@@ -653,6 +653,7 @@ fn process_touches(
             }
         }
         if any_creation_emission && !flags.has_printed_creation_instructions {
+            output.push('\n');
             output.push_str(&creation_instructions(&[]));
             flags.has_printed_creation_instructions = true;
         }
