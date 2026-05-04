@@ -41,17 +41,25 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
         needs_all_layers: false,
     };
 
-    // Enumerate meshes to compact.
-    let mesh_names: Vec<String> = match &args.name {
-        Some(n) => {
-            // Verify the mesh exists.
+    // Enumerate meshes to compact. Compact only supports a single mesh
+    // name or the all-mesh sweep; path/glob positional args are rejected.
+    let mesh_names: Vec<String> = match args.paths.as_slice() {
+        [] => crate::mesh::read::list_mesh_names(repo)?,
+        [n] => {
             let wd = crate::git::work_dir(repo)?;
             let mesh_ref = format!("refs/meshes/v1/{n}");
             crate::git::resolve_ref_oid_optional(wd, &mesh_ref)?
-                .ok_or_else(|| crate::Error::MeshNotFound(n.clone()))?;
-            vec![n.clone()]
+                .ok_or_else(|| crate::Error::MeshNotFound((*n).clone()))?;
+            vec![(*n).clone()]
         }
-        None => crate::mesh::read::list_mesh_names(repo)?,
+        _ => {
+            anyhow::bail!(
+                "git mesh stale --compact: expected at most one mesh name, \
+                 got {} positional args (--compact only supports a single \
+                 mesh name or no args for all-mesh)",
+                args.paths.len()
+            );
+        }
     };
 
     // Per-mesh stream callback: NDJSON when --format=json. The batch
@@ -74,7 +82,7 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
 
     // Item 5: when invoked without an explicit name, share resolver
     // state across the all-mesh sweep. Named-mesh path stays simple.
-    let outcomes: Vec<MeshCompactOutcome> = if args.name.is_some() {
+    let outcomes: Vec<MeshCompactOutcome> = if args.paths.len() == 1 {
         let mut out = Vec::with_capacity(mesh_names.len());
         for name in &mesh_names {
             let outcome = crate::mesh::compact::compact_mesh(repo, name, options)

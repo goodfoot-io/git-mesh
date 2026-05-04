@@ -212,8 +212,9 @@ pub enum StaleFormat {
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct StaleArgs {
-    /// Optional mesh name; omit for a workspace-wide scan.
-    pub name: Option<String>,
+    /// File paths, globs, or mesh names to report staleness for.
+    /// Omit to scan all meshes.
+    pub paths: Vec<String>,
 
     #[arg(long, value_enum, default_value_t = StaleFormat::Human)]
     pub format: StaleFormat,

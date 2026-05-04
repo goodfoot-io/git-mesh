@@ -11,7 +11,7 @@
 use crate::cli::{StaleArgs, StaleFormat};
 use crate::git;
 use crate::mesh::follow::{FollowDecision, follow_moves};
-use crate::resolver::{build_pending_findings, resolve_mesh, stale_meshes};
+use crate::resolver::{build_pending_findings, resolve_named_meshes, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftSource, EngineOptions, Finding, LayerSet,
@@ -61,50 +61,121 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         needs_all_layers,
     };
 
-    let meshes = match &args.name {
-        Some(n) => {
-            let _perf = crate::perf::span("stale.resolve-mesh");
-            match resolve_mesh(repo, n, options) {
-                Ok(mesh) => vec![mesh],
-                Err(crate::Error::MeshNotFound(_)) if layers.staged_mesh => {
-                    let pending = build_pending_findings(repo, n);
-                    if pending.is_empty() {
-                        return Err(crate::Error::MeshNotFound(n.clone()).into());
-                    }
-                    vec![MeshResolved {
-                        name: n.clone(),
+    let meshes = if args.paths.is_empty() {
+        // No positional args: scan every mesh (preserves existing behavior).
+        let mut meshes = {
+            let _perf = crate::perf::span("stale.resolve-all-meshes");
+            stale_meshes(repo, options)?
+        };
+        if layers.staged_mesh {
+            let _perf = crate::perf::span("stale.resolve-staging-only");
+            for name in staging_only_mesh_names(repo)? {
+                if meshes.iter().any(|m| m.name == name) {
+                    continue;
+                }
+                let pending = build_pending_findings(repo, &name);
+                if !pending.is_empty() {
+                    meshes.push(MeshResolved {
+                        name,
                         message: String::new(),
                         anchors: Vec::new(),
                         pending,
-                    }]
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-        None => {
-            let mut meshes = {
-                let _perf = crate::perf::span("stale.resolve-all-meshes");
-                stale_meshes(repo, options)?
-            };
-            if layers.staged_mesh {
-                let _perf = crate::perf::span("stale.resolve-staging-only");
-                for name in staging_only_mesh_names(repo)? {
-                    if meshes.iter().any(|m| m.name == name) {
-                        continue;
-                    }
-                    let pending = build_pending_findings(repo, &name);
-                    if !pending.is_empty() {
-                        meshes.push(MeshResolved {
-                            name,
-                            message: String::new(),
-                            anchors: Vec::new(),
-                            pending,
-                        });
-                    }
+                    });
                 }
             }
-            meshes
         }
+        meshes
+    } else {
+        // Resolve each positional arg through mesh-name → path-index dispatch.
+        let _perf = crate::perf::span("stale.resolve-args");
+        let mut mesh_names: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut zero_match_args: Vec<String> = Vec::new();
+
+        for arg in &args.paths {
+            let mut found = false;
+
+            // Step 1: try mesh name first (mesh names never contain '/').
+            if !arg.contains('/') {
+                let mesh_ref = format!("refs/meshes/v1/{arg}");
+                if crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)
+                    .unwrap_or(None)
+                    .is_some()
+                {
+                    if seen.insert(arg.clone()) {
+                        mesh_names.push(arg.clone());
+                    }
+                    found = true;
+                } else if layers.staged_mesh
+                    && !build_pending_findings(repo, arg).is_empty()
+                {
+                    // Staging-only mesh: no committed ref, but has pending staging
+                    // entries. Treated as a valid mesh reference like the original
+                    // single-mesh path did for `resolve_mesh` → MeshNotFound.
+                    if seen.insert(arg.clone()) {
+                        mesh_names.push(arg.clone());
+                    }
+                    found = true;
+                }
+            }
+
+            // Step 2: fall back to path index.
+            if !found {
+                let names =
+                    crate::mesh::path_index::matching_mesh_names(repo, arg, None)
+                        .unwrap_or_default();
+                for name in names {
+                    if seen.insert(name.clone()) {
+                        mesh_names.push(name);
+                    }
+                    found = true;
+                }
+            }
+
+            // Step 3: track zero-match args for diagnostics.
+            if !found {
+                zero_match_args.push(arg.clone());
+            }
+        }
+
+        // Step 4: zero-match → exit 1 with a diagnostic per failed arg.
+        if !zero_match_args.is_empty() {
+            for failed in &zero_match_args {
+                eprintln!("git mesh stale: no mesh or file found for '{}'", failed);
+            }
+            return Ok(1);
+        }
+
+        // Step 5: resolve candidate mesh names through one shared EngineState.
+        let resolved = {
+            let _perf = crate::perf::span("stale.resolve-named-meshes");
+            resolve_named_meshes(repo, &mesh_names, options)?
+        };
+        let mut meshes: Vec<MeshResolved> = resolved
+            .into_iter()
+            .filter_map(|(_, r)| r.ok())
+            .collect();
+
+        // Step 6: surface staging-only meshes for names that had no committed ref.
+        if layers.staged_mesh {
+            let _perf = crate::perf::span("stale.resolve-staging-only");
+            for name in &mesh_names {
+                if meshes.iter().any(|m| m.name == *name) {
+                    continue;
+                }
+                let pending = build_pending_findings(repo, name);
+                if !pending.is_empty() {
+                    meshes.push(MeshResolved {
+                        name: name.clone(),
+                        message: String::new(),
+                        anchors: Vec::new(),
+                        pending,
+                    });
+                }
+            }
+        }
+
+        meshes
     };
 
     // Adapter: engine output (`MeshResolved`) → renderer input
