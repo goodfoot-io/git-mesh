@@ -122,7 +122,23 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
                 });
             }
             OpKind::Edit => {
-                if let (Some(inf_s), Some(inf_e)) = (op.inferred_start, op.inferred_end) {
+                if op.ranged
+                    && let (Some(s), Some(e)) = (op.start_line, op.end_line)
+                {
+                    out.push(Participant {
+                        path: op.path.clone(),
+                        start: s,
+                        end: e,
+                        op_index: op.op_index,
+                        kind: ParticipantKind::Edit,
+                        m_start: s,
+                        m_end: e,
+                        anchored: true,
+                        locator_distance: op.locator_distance,
+                        locator_forward: op.locator_forward,
+                        extent_source: ExtentSource::Edit,
+                    });
+                } else if let (Some(inf_s), Some(inf_e)) = (op.inferred_start, op.inferred_end) {
                     out.push(Participant {
                         path: op.path.clone(),
                         start: inf_s,
@@ -297,6 +313,70 @@ mod tests {
         assert_eq!(parts[0].kind, ParticipantKind::Edit);
         assert_eq!(parts[0].m_start, WHOLE_FILE_START);
         assert_eq!(parts[0].m_end, WHOLE_FILE_END);
+    }
+
+    fn make_ranged_edit_op(path: &str, start: u32, end: u32, idx: usize) -> Op {
+        Op {
+            path: path.to_string(),
+            start_line: Some(start),
+            end_line: Some(end),
+            ts_ms: idx as i64,
+            op_index: idx,
+            kind: OpKind::Edit,
+            ranged: true,
+            count: 1,
+            inferred_start: None,
+            inferred_end: None,
+            locator_distance: None,
+            locator_forward: None,
+        }
+    }
+
+    #[test]
+    fn ranged_edit_op_becomes_ranged_edit_participant() {
+        // Phase B.2: an Edit op carrying op.ranged + start/end produces a
+        // Participant with extent_source=Edit and the hunk's exact range.
+        let ops = vec![make_ranged_edit_op("foo.rs", 88, 120, 0)];
+        let parts = participants(&ops);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].kind, ParticipantKind::Edit);
+        assert_eq!(parts[0].start, 88);
+        assert_eq!(parts[0].end, 120);
+        assert_eq!(parts[0].m_start, 88);
+        assert_eq!(parts[0].m_end, 120);
+        assert_eq!(parts[0].extent_source, ExtentSource::Edit);
+        assert!(parts[0].anchored);
+    }
+
+    #[test]
+    fn ranged_touch_drives_ranged_edit_participant_end_to_end() {
+        // Phase B Spike 1: drive a ranged TouchInterval through
+        // build_op_stream → participants and assert the resulting participant
+        // carries the hunk extent with extent_source=Edit.
+        use crate::advice::session::state::{TouchInterval, TouchKind};
+        use crate::advice::suggest::op_stream::{SessionRecord, build_op_stream};
+
+        let touch = TouchInterval {
+            path: "foo.rs".to_string(),
+            kind: TouchKind::Modified,
+            id: "tuid-1".to_string(),
+            ts: "2024-01-01T00:00:01Z".to_string(),
+            start: Some(10),
+            end: Some(20),
+        };
+        let session = SessionRecord {
+            sid: "s".to_string(),
+            reads: vec![],
+            touches: vec![touch],
+        };
+        let ops = build_op_stream(&session, &cfg());
+        let parts = participants(&ops);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].path, "foo.rs");
+        assert_eq!(parts[0].start, 10);
+        assert_eq!(parts[0].end, 20);
+        assert_eq!(parts[0].kind, ParticipantKind::Edit);
+        assert_eq!(parts[0].extent_source, ExtentSource::Edit);
     }
 
     #[test]

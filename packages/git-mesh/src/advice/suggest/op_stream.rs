@@ -155,7 +155,10 @@ fn parse_digits(bytes: &[u8]) -> Option<i64> {
     Some(v)
 }
 
-/// Touches always represent whole-file changes attributed to one tool call.
+/// All touches are treated as edit events. Per-hunk touches now carry
+/// `start`/`end` line ranges forwarded from `structuredPatch` hunks (see
+/// the `Edit`/`MultiEdit` branch of `advice-post-tool-use.sh`); whole-file
+/// `Modified` touches still arrive with `start`/`end` unset.
 fn is_edit_touch(_t: &TouchInterval) -> bool {
     true
 }
@@ -181,7 +184,15 @@ fn read_event_key(r: &ReadRecord) -> String {
 }
 
 fn touch_event_key(t: &TouchInterval) -> String {
-    format!("{}|0-0|{}", t.path, t.ts)
+    let s = t
+        .start
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "n".to_string());
+    let e = t
+        .end
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "n".to_string());
+    format!("{}|{}-{}|{}", t.path, s, e, t.ts)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -286,13 +297,14 @@ pub fn build_op_stream(session: &SessionRecord, cfg: &SuggestConfig) -> Vec<Op> 
         if dump_edits.contains(&touch_event_key(t)) {
             continue;
         }
+        let ranged = matches!((t.start, t.end), (Some(s), Some(e)) if s > 0 && e > 0);
         evs.push(RawEv {
             ts_ms: parse_ts_ms(&t.ts),
             kind: OpKind::Edit,
             path: t.path.clone(),
-            start_line: None,
-            end_line: None,
-            ranged: false,
+            start_line: t.start,
+            end_line: t.end,
+            ranged,
         });
     }
 
@@ -313,6 +325,10 @@ pub fn build_op_stream(session: &SessionRecord, cfg: &SuggestConfig) -> Vec<Op> 
             && let Some(last) = ops.last_mut()
             && last.kind == OpKind::Edit
             && last.path == ev.path
+            // Skip coalescing when either side carries a per-hunk range —
+            // merging counts would lose the distinct hunk extents.
+            && !last.ranged
+            && !ev.ranged
         {
             last.count += 1;
             continue;
@@ -370,6 +386,18 @@ mod tests {
             ts: ts.to_string(),
             start: None,
             end: None,
+        }
+    }
+
+    fn ranged_touch(path: &str, start: u32, end: u32, ts: &str) -> TouchInterval {
+        use crate::advice::session::state::TouchKind;
+        TouchInterval {
+            path: path.to_string(),
+            kind: TouchKind::Modified,
+            id: "test".to_string(),
+            ts: ts.to_string(),
+            start: Some(start),
+            end: Some(end),
         }
     }
 
@@ -481,6 +509,57 @@ mod tests {
         let ops = build_op_stream(&s, &cfg());
         assert_eq!(ops[0].kind, OpKind::Read);
         assert_eq!(ops[1].kind, OpKind::Edit);
+    }
+
+    #[test]
+    fn ranged_touch_becomes_ranged_edit_op() {
+        // Phase B: TouchInterval.start/end propagate through to Op.
+        let ts = "2024-01-01T00:00:01Z";
+        let s = session(vec![], vec![ranged_touch("foo.rs", 10, 20, ts)]);
+        let ops = build_op_stream(&s, &cfg());
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, OpKind::Edit);
+        assert!(ops[0].ranged);
+        assert_eq!(ops[0].start_line, Some(10));
+        assert_eq!(ops[0].end_line, Some(20));
+    }
+
+    #[test]
+    fn same_ts_distinct_hunks_survive_dedup() {
+        // Phase B Spike 2: two TouchIntervals with the same ts and path but
+        // different (start, end) must yield two distinct Edit ops; the old
+        // touch_event_key collapsed them.
+        let ts = "2024-01-01T00:00:01Z";
+        let s = session(
+            vec![],
+            vec![
+                ranged_touch("foo.rs", 10, 20, ts),
+                ranged_touch("foo.rs", 50, 80, ts),
+            ],
+        );
+        let ops = build_op_stream(&s, &cfg());
+        assert_eq!(ops.len(), 2, "got {:?}", ops);
+        assert!(ops.iter().all(|o| o.ranged && o.kind == OpKind::Edit));
+        let mut ranges: Vec<_> = ops.iter().map(|o| (o.start_line, o.end_line)).collect();
+        ranges.sort();
+        assert_eq!(ranges, vec![(Some(10), Some(20)), (Some(50), Some(80))]);
+    }
+
+    #[test]
+    fn ranged_edits_not_coalesced() {
+        // Phase B.3: ranged Edit ops must not coalesce via count++.
+        let ts1 = "2024-01-01T00:00:01Z";
+        let ts2 = "2024-01-01T00:00:02Z";
+        let s = session(
+            vec![],
+            vec![
+                ranged_touch("foo.rs", 10, 20, ts1),
+                ranged_touch("foo.rs", 30, 40, ts2),
+            ],
+        );
+        let ops = build_op_stream(&s, &cfg());
+        assert_eq!(ops.len(), 2);
+        assert!(ops.iter().all(|o| o.count == 1));
     }
 
     #[test]
