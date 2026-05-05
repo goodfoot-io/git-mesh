@@ -3,6 +3,7 @@
 use crate::cli::{ListArgs, ShowArgs, parse_range_address};
 use crate::staging::{list_staged_mesh_names, read_staging};
 use crate::types::{Anchor, AnchorExtent};
+use crate::validation::validate_mesh_name_shape;
 use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
 use anyhow::Result;
 use regex::RegexBuilder;
@@ -883,17 +884,10 @@ pub(crate) fn resolve_targets(
             } else if !file_exists_in_workdir(repo, std::path::Path::new(&path)) {
                 missing_args.push(arg);
             }
-        } else if arg.contains('/') {
-            // Path with `/`: skip mesh-name check, go straight to path index.
-            let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
-            if !names.is_empty() {
-                result.extend(names);
-            } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
-                missing_args.push(arg);
-            }
-        } else {
-            // Bare arg: try mesh name first (committed → staging), fall back
-            // to path index, then fall back to a worktree existence check.
+        } else if validate_mesh_name_shape(arg).is_ok() {
+            // Mesh-name shape (bare slug or hierarchical): try mesh name
+            // first (committed → staging), fall back to path index, then
+            // fall back to a worktree existence check.
             let ref_name = format!("refs/meshes/v1/{arg}");
             if crate::git::resolve_ref_oid_optional_repo(repo, &ref_name)?.is_some() {
                 result.insert(arg.clone());
@@ -908,6 +902,15 @@ pub(crate) fn resolve_targets(
                 } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
                     missing_args.push(arg);
                 }
+            }
+        } else {
+            // Not mesh-name shape (path with extension, glob): go straight
+            // to path index.
+            let names = crate::mesh::path_index::matching_mesh_names(repo, arg, None)?;
+            if !names.is_empty() {
+                result.extend(names);
+            } else if !file_exists_in_workdir(repo, std::path::Path::new(arg)) {
+                missing_args.push(arg);
             }
         }
     }
@@ -1224,12 +1227,25 @@ mod tests {
     }
 
     #[test]
-    fn resolve_targets_slash_skips_mesh_name_check() {
+    fn resolve_targets_non_mesh_name_shape_goes_to_path_index() {
+        // src/lib.rs contains `.rs` which fails mesh-name shape validation,
+        // so it must go straight to path index even though it contains `/`.
         let (_td, repo) = seed_repo();
         create_path_index_entry(&repo, "mesh-from-path", "src/lib.rs", 1, 10);
         let result =
             resolve_targets(&repo, &["src/lib.rs".to_string()]).unwrap();
         assert_eq!(result, vec!["mesh-from-path"]);
+    }
+
+    #[test]
+    fn resolve_targets_hierarchical_name_falls_through_when_no_mesh() {
+        let (_td, repo) = seed_repo();
+        // "category/slug" matches mesh-name shape but no mesh ref or
+        // staging entry exists. Must fall through to path index.
+        create_path_index_entry(&repo, "some-mesh", "category/slug", 1, 5);
+        let result =
+            resolve_targets(&repo, &["category/slug".to_string()]).unwrap();
+        assert_eq!(result, vec!["some-mesh"]);
     }
 
     #[test]
@@ -1421,9 +1437,12 @@ mod tests {
     fn resolve_targets_hierarchical_name_staging_only() {
         let (_td, repo) = seed_repo();
         let staging_dir = repo.git_dir().join("mesh").join("staging");
-        let mesh_file = staging_dir.join("billing/payments/checkout");
-        std::fs::create_dir_all(mesh_file.parent().unwrap()).unwrap();
-        std::fs::write(&mesh_file, "add a.txt#L1-L5\n").unwrap();
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(
+            staging_dir.join("billing%2Fpayments%2Fcheckout"),
+            "add a.txt#L1-L5\n",
+        )
+        .unwrap();
         let result =
             resolve_targets(&repo, &["billing/payments/checkout".to_string()]).unwrap();
         assert_eq!(result, vec!["billing/payments/checkout"]);

@@ -47,7 +47,7 @@ pub fn validate_anchor_id(id: &str) -> Result<()> {
     validate_ref_component(id)
 }
 
-fn validate_mesh_name_shape(value: &str) -> Result<()> {
+pub(crate) fn validate_mesh_name_shape(value: &str) -> Result<()> {
     fn bad(msg: impl Into<String>) -> Error {
         Error::InvalidName(msg.into())
     }

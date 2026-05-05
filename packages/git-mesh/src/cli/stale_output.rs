@@ -10,6 +10,7 @@
 
 use crate::cli::{StaleArgs, StaleFormat};
 use crate::git;
+use crate::validation::validate_mesh_name_shape;
 use crate::mesh::follow::{FollowDecision, follow_moves};
 use crate::resolver::{build_pending_findings, resolve_named_meshes, stale_meshes};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
@@ -95,8 +96,8 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         for arg in &args.paths {
             let mut found = false;
 
-            // Step 1: try mesh name first (mesh names never contain '/').
-            if !arg.contains('/') {
+            // Step 1: try mesh name first when arg matches mesh-name shape.
+            if validate_mesh_name_shape(arg).is_ok() {
                 let mesh_ref = format!("refs/meshes/v1/{arg}");
                 match crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)? {
                     Some(_oid) => {
@@ -1372,9 +1373,12 @@ mod tests {
     fn run_stale_hierarchical_name_staging_only() {
         let (_td, repo) = seed_repo();
         let staging_dir = repo.git_dir().join("mesh").join("staging");
-        let mesh_file = staging_dir.join("billing/payments/checkout");
-        std::fs::create_dir_all(mesh_file.parent().unwrap()).unwrap();
-        std::fs::write(&mesh_file, "add a.txt#L1-L5\n").unwrap();
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        std::fs::write(
+            staging_dir.join("billing%2Fpayments%2Fcheckout"),
+            "add a.txt#L1-L5\n",
+        )
+        .unwrap();
         let args = StaleArgs {
             paths: vec!["billing/payments/checkout".to_string()],
             format: StaleFormat::Human,

@@ -26,7 +26,7 @@ git mesh stale [<target>...] [--ignore-unavailable] [--no-exit-code]
 
 Each `<target>` is one of: a mesh name, a file path, or — for `list` only — a line-range address `<path>#L<start>-L<end>`. Globs are expanded by the shell. Multiple targets are unioned and deduplicated.
 
-Resolution rule: each argument is tried as a mesh name first when it has the mesh-name shape (kebab-case segments, optionally separated by `/` — e.g. `auth-token`, `billing/payments/checkout-request-flow`). It falls through to path-index lookup when no mesh matches, then to a worktree existence check. A `#L<start>-L<end>` suffix marks a range address. A target that resolves to no meshes is fine on its own — `list` exits 0 with an empty result; `stale` exits 0 silently. The command only errors when a target names a referent that doesn't exist (missing file, missing mesh name, unmatched literal glob).
+Resolution rule: arguments containing `#L` are line-range addresses. Arguments that match mesh-name shape — one or more kebab-case segments separated by `/` — try mesh-name resolution first (committed ref, then staging) and fall through to path-index lookup when no mesh matches. Arguments that don't match mesh-name shape (paths with extensions, globs) go straight to path-index lookup. A target that resolves to no meshes is fine on its own — `list` exits 0 with an empty result; `stale` exits 0 silently. The command only errors when a target names a referent that doesn't exist (missing file, missing mesh name, unmatched literal glob).
 
 Silent exit-0 from `git mesh stale` (and `list`) means the queried scope is clean. See `./reading-stale-output.md` § "No-news-is-good-news".
 
