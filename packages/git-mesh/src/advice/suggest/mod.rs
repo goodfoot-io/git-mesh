@@ -39,7 +39,8 @@ pub use history::{CommitChanges, HistoryIndex, load_git_history, pair_history_sc
 pub use locator::{Atom, attach_locators, prior_context_atoms};
 pub use op_stream::{Op, OpKind, SessionRecord, build_op_stream};
 pub use participants::{
-    Participant, ParticipantKind, merge_ranges_per_file, participants as build_participants,
+    ExtentSource, Participant, ParticipantKind, merge_ranges_per_file,
+    participants as build_participants, resolve_extent_precedence,
 };
 
 use std::collections::BTreeMap;

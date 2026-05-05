@@ -32,6 +32,8 @@ pub struct Participant {
     pub anchored: bool,
     pub locator_distance: Option<u32>,
     pub locator_forward: Option<bool>,
+    /// Which evidence branch produced this participant's extent.
+    pub extent_source: ExtentSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +41,17 @@ pub enum ParticipantKind {
     Read,
     TouchRead,
     Edit,
+}
+
+/// Origin of a participant's line-range extent. Resolved by precedence
+/// `Symbol > Edit > Read > Whole` per `(session, path)` in
+/// `resolve_extent_precedence`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExtentSource {
+    Symbol,
+    Edit,
+    Read,
+    Whole,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -83,6 +96,7 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
                     anchored: false,
                     locator_distance: None,
                     locator_forward: None,
+                    extent_source: ExtentSource::Read,
                 });
             }
             OpKind::Read | OpKind::TouchRead => {
@@ -104,6 +118,7 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
                     anchored: false,
                     locator_distance: None,
                     locator_forward: None,
+                    extent_source: ExtentSource::Whole,
                 });
             }
             OpKind::Edit => {
@@ -119,6 +134,7 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
                         anchored: true,
                         locator_distance: op.locator_distance,
                         locator_forward: op.locator_forward,
+                        extent_source: ExtentSource::Edit,
                     });
                 } else {
                     // Whole-file Modified touch with no inferable anchor.
@@ -135,12 +151,23 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
                         anchored: false,
                         locator_distance: None,
                         locator_forward: None,
+                        extent_source: ExtentSource::Whole,
                     });
                 }
             }
         }
     }
     out
+}
+
+/// Apply precedence: Symbol > Edit > Read > Whole per (session, path).
+///
+/// Phase A delivers the signature only; Phase C implements the per-path
+/// resolution that drops whole-file siblings when a narrower source exists.
+/// Until then this is a passthrough so the suggester pipeline behaves
+/// identically to before the `ExtentSource` plumbing landed.
+pub fn resolve_extent_precedence(parts: Vec<Participant>) -> Vec<Participant> {
+    parts
 }
 
 /// Merge near-touching ranges of the same file within a single session.
@@ -319,6 +346,122 @@ mod tests {
         assert_eq!(merged[0].m_end, 10);
         assert_eq!(merged[1].m_start, 20);
         assert_eq!(merged[1].m_end, 30);
+    }
+
+    fn make_whole_read_op(path: &str, idx: usize) -> Op {
+        Op {
+            path: path.to_string(),
+            start_line: None,
+            end_line: None,
+            ts_ms: idx as i64,
+            op_index: idx,
+            kind: OpKind::Read,
+            ranged: false,
+            count: 1,
+            inferred_start: None,
+            inferred_end: None,
+            locator_distance: None,
+            locator_forward: None,
+        }
+    }
+
+    #[test]
+    fn extent_source_assigned_correctly_per_branch() {
+        // Phase A delivers: each construction branch tags the right source.
+        let ops = vec![
+            make_read_op("ranged_read.rs", 1, 10, 0),
+            make_whole_read_op("whole_read.rs", 1),
+            make_edit_op("ranged_edit.rs", Some(5), Some(15), 2),
+            make_edit_op("whole_edit.rs", None, None, 3),
+        ];
+        let parts = participants(&ops);
+        let by_path = |path: &str| {
+            parts
+                .iter()
+                .find(|p| p.path == path)
+                .expect("participant for path")
+                .extent_source
+        };
+        assert_eq!(by_path("ranged_read.rs"), ExtentSource::Read);
+        assert_eq!(by_path("whole_read.rs"), ExtentSource::Whole);
+        assert_eq!(by_path("ranged_edit.rs"), ExtentSource::Edit);
+        assert_eq!(by_path("whole_edit.rs"), ExtentSource::Whole);
+    }
+
+    #[test]
+    #[ignore = "Phase C: precedence resolution"]
+    fn whole_file_read_dropped_when_ranged_read_present_for_same_path() {
+        let ops = vec![
+            make_read_op("foo.rs", 1, 80, 0),
+            make_whole_read_op("foo.rs", 1),
+        ];
+        let parts = participants(&ops);
+        let resolved = resolve_extent_precedence(parts);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].extent_source, ExtentSource::Read);
+        assert_eq!(resolved[0].m_start, 1);
+        assert_eq!(resolved[0].m_end, 80);
+    }
+
+    #[test]
+    #[ignore = "Phase C: precedence resolution (depends on Phase B ranged Edit ops)"]
+    fn whole_file_edit_dropped_when_ranged_edit_present_for_same_path() {
+        let ops = vec![
+            make_edit_op("foo.rs", Some(88), Some(120), 0),
+            make_edit_op("foo.rs", None, None, 1),
+        ];
+        let parts = participants(&ops);
+        let resolved = resolve_extent_precedence(parts);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].extent_source, ExtentSource::Edit);
+        assert_eq!(resolved[0].m_start, 88);
+        assert_eq!(resolved[0].m_end, 120);
+    }
+
+    #[test]
+    #[ignore = "Phase C: precedence resolution (Edit beats Read on same path)"]
+    fn ranged_read_dropped_when_ranged_edit_present_for_same_path() {
+        let ops = vec![
+            make_read_op("foo.rs", 1, 50, 0),
+            make_edit_op("foo.rs", Some(20), Some(30), 1),
+        ];
+        let parts = participants(&ops);
+        let resolved = resolve_extent_precedence(parts);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].extent_source, ExtentSource::Edit);
+    }
+
+    #[test]
+    #[ignore = "Phase C: precedence resolution (whole-only path keeps sentinel)"]
+    fn whole_file_only_path_keeps_whole_sentinel() {
+        let ops = vec![make_whole_read_op("foo.rs", 0)];
+        let parts = participants(&ops);
+        let resolved = resolve_extent_precedence(parts);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].extent_source, ExtentSource::Whole);
+        assert_eq!(resolved[0].m_start, WHOLE_FILE_START);
+        assert_eq!(resolved[0].m_end, WHOLE_FILE_END);
+    }
+
+    #[test]
+    #[ignore = "Phase E: empty-hull defense + extent-drop debug line"]
+    fn empty_hull_falls_back_to_whole_with_debug_line() {
+        // TODO Phase E: construct corrupt participants whose convex hull
+        // computes start > end, run through canonical-range step, and assert
+        // the result is whole-file with a `git-mesh-advice-debug` line of
+        // event=extent-drop, reason=empty-hull.
+    }
+
+    #[test]
+    #[ignore = "Phase B/C: end-to-end suggester carries narrow ranges through"]
+    fn end_to_end_suggester_emits_per_path_extents() {
+        // TODO Phase B/C: drive the suggester with one whole-file Read of
+        // compact.rs, one ranged Read of stale_output.rs#L1-L80, one whole-file
+        // Read of mod.rs, plus a structuredPatch Edit on compact.rs#L88-L120,
+        // and assert the emitted Suggestion participants are
+        //   - compact.rs#L88-L120 (extent_source=Edit)
+        //   - stale_output.rs#L1-L80 (extent_source=Read)
+        //   - mod.rs (whole, extent_source=Whole)
     }
 
     #[test]

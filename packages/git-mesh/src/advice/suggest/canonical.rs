@@ -150,7 +150,7 @@ pub fn build_canonical_ranges(all_parts: &[Participant], cfg: &SuggestConfig) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::advice::suggest::participants::{Participant, ParticipantKind};
+    use crate::advice::suggest::participants::{ExtentSource, Participant, ParticipantKind};
 
     fn cfg() -> SuggestConfig {
         SuggestConfig::default()
@@ -168,6 +168,7 @@ mod tests {
             anchored: false,
             locator_distance: None,
             locator_forward: None,
+            extent_source: ExtentSource::Read,
         }
     }
 

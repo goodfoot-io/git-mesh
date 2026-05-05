@@ -1,8 +1,8 @@
 //! Integration tests for the edge-scoring stage.
 
 use git_mesh::advice::suggest::{
-    HistoryIndex, Op, OpKind, Participant, ParticipantKind, SessionParticipants, SuggestConfig,
-    build_canonical_ranges, build_pair_evidence, is_cross_cutting_path, score_edges,
+    ExtentSource, HistoryIndex, Op, OpKind, Participant, ParticipantKind, SessionParticipants,
+    SuggestConfig, build_canonical_ranges, build_pair_evidence, is_cross_cutting_path, score_edges,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,6 +42,7 @@ fn make_part(path: &str, start: u32, end: u32, _sid: &str, op_index: usize) -> P
         anchored: false,
         locator_distance: None,
         locator_forward: None,
+        extent_source: ExtentSource::Read,
     }
 }
 

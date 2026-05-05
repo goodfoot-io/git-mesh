@@ -1,8 +1,8 @@
 //! Integration tests for the pair-evidence stage.
 
 use git_mesh::advice::suggest::{
-    Op, OpKind, Participant, ParticipantKind, SessionParticipants, SuggestConfig, Technique,
-    build_canonical_ranges, build_pair_evidence,
+    ExtentSource, Op, OpKind, Participant, ParticipantKind, SessionParticipants, SuggestConfig,
+    Technique, build_canonical_ranges, build_pair_evidence,
 };
 
 fn cfg() -> SuggestConfig {
@@ -38,6 +38,7 @@ fn make_part(path: &str, start: u32, end: u32, _sid: &str, op_index: usize) -> P
         anchored: false,
         locator_distance: None,
         locator_forward: None,
+        extent_source: ExtentSource::Read,
     }
 }
 

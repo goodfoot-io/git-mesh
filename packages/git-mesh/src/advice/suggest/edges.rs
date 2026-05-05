@@ -249,7 +249,7 @@ mod tests {
     use crate::advice::suggest::evidence::{SessionParticipants, build_pair_evidence};
     use crate::advice::suggest::history::HistoryIndex;
     use crate::advice::suggest::op_stream::{Op, OpKind};
-    use crate::advice::suggest::participants::{Participant, ParticipantKind};
+    use crate::advice::suggest::participants::{ExtentSource, Participant, ParticipantKind};
     use std::collections::BTreeSet;
 
     fn cfg() -> SuggestConfig {
@@ -289,6 +289,7 @@ mod tests {
             anchored: false,
             locator_distance: None,
             locator_forward: None,
+            extent_source: ExtentSource::Read,
         }
     }
 
