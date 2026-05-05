@@ -51,7 +51,6 @@ const JSONL_FILES: &[&str] = &[
     "meshes-seen.jsonl",
     "mesh-candidates.jsonl",
     "pending_touches.jsonl",
-    "mesh-baseline.json",
     "meshes-committed.jsonl",
 ];
 
@@ -282,7 +281,8 @@ impl SessionStore {
     }
 
     /// Load `mesh-baseline.json` as a name→OID map.
-    /// Returns an empty map if the file is absent or corrupt (fail-closed).
+    /// Returns an empty map if the file is absent or corrupt (fail-open within the session:
+    /// empty map → all meshes appear new → advice surfaces for everything).
     pub fn mesh_baseline_map(&self) -> Result<std::collections::HashMap<String, String>> {
         let path = self.dir.join("mesh-baseline.json");
         let bytes = match std::fs::read(&path) {
