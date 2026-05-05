@@ -10,6 +10,7 @@ pub mod compact;
 pub mod follow;
 pub(crate) mod path_index;
 pub mod read;
+pub mod rewrite;
 pub mod structural;
 
 pub use commit::commit_mesh;

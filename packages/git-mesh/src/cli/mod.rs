@@ -20,6 +20,7 @@ pub mod advice;
 pub mod commit;
 pub mod compact;
 pub mod pre_commit;
+pub mod rewrite;
 pub mod show;
 pub mod stale_output;
 pub mod structural;
@@ -116,6 +117,12 @@ pub enum Commands {
 
     /// Append events and flush session-scoped advice.
     Advice(advice::AdviceArgs),
+
+    /// Advance anchor SHAs after a history rewrite (post-rewrite hook).
+    ///
+    /// Reads `<old_sha> <new_sha>` pairs from stdin (git's post-rewrite
+    /// protocol) and advances matching anchor_sha values via CAS.
+    Rewrite(RewriteArgs),
 }
 
 /// `git mesh <name>` / `git mesh show <name>`.
@@ -433,6 +440,20 @@ pub struct DoctorArgs {
     pub gc_trail_cache: bool,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum RewriteFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RewriteArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = RewriteFormat::Human)]
+    pub format: RewriteFormat,
+}
+
 /// Parse a `<path>#L<start>-L<end>` anchor address.
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
@@ -523,6 +544,10 @@ pub fn dispatch(repo: &gix::Repository, command: Commands) -> anyhow::Result<i32
         Commands::Advice(args) => {
             let _perf = crate::perf::span("command.advice");
             advice::run_advice(repo, args)
+        }
+        Commands::Rewrite(args) => {
+            let _perf = crate::perf::span("command.rewrite");
+            rewrite::run_rewrite(repo, args)
         }
     }
 }
