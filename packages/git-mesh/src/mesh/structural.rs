@@ -3,6 +3,7 @@
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
+use crate::staging;
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
 
@@ -15,6 +16,20 @@ pub fn delete_mesh(repo: &gix::Repository, name: &str) -> Result<()> {
     let ref_name = mesh_ref(name);
     let current =
         resolve_ref_oid_optional(wd, &ref_name)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
+
+    // Check staging before deletion — refuse if any staged work exists.
+    let staging = staging::read_staging(repo, name)?;
+    let staging_count = staging.adds.len()
+        + staging.removes.len()
+        + staging.configs.len()
+        + staging.why.as_ref().map_or(0, |_| 1);
+    if staging_count > 0 {
+        return Err(Error::StagingResidueOnDelete {
+            name: name.into(),
+            count: staging_count,
+        });
+    }
+
     let mesh = super::read::read_mesh_at(repo, name, Some(&current))?;
     let mut updates = super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors_v2, &[])?;
     updates.push(RefUpdate::Delete {

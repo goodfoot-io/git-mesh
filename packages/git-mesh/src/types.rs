@@ -227,6 +227,13 @@ pub enum Error {
     )]
     WhyRequired(String),
 
+    /// `git mesh delete` refused while staging is non-empty (§6.8).
+    #[error(
+        "cannot delete `{name}`: {count} staged operation(s) remain.\n\
+         Run `git mesh restore {name}` to discard them, then retry the delete."
+    )]
+    StagingResidueOnDelete { name: String, count: usize },
+
     /// The staged why begins with a prefix reserved for internal mesh
     /// machinery (e.g. `"mesh: follow "`). Reject at the writer so the
     /// parent-walk in `why_walking_past_follows` cannot be confused.
