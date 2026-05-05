@@ -29,6 +29,7 @@ pub use engine::pending::build_pending_findings;
 pub(crate) use engine::{
     EngineStateHandle, new_engine_state, resolve_loaded_mesh_with_engine_state,
     resolve_mesh_at_with_engine_state, resolve_meshes_in_order, resolve_named_meshes,
+    sort_meshes_by_anchor_path,
 };
 pub use engine::{resolve_anchor, resolve_mesh, resolve_mesh_at, stale_meshes};
 

@@ -504,7 +504,7 @@ pub(crate) fn resolve_meshes_in_order(
     Ok(out)
 }
 
-fn sort_meshes_by_anchor_path(meshes: &mut [MeshResolved]) {
+pub(crate) fn sort_meshes_by_anchor_path(meshes: &mut [MeshResolved]) {
     let _perf = crate::perf::span("resolver.sort-meshes");
     if meshes.len() <= 1 {
         return;

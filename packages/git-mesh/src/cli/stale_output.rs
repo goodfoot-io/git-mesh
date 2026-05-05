@@ -12,7 +12,9 @@ use crate::cli::{StaleArgs, StaleFormat};
 use crate::git;
 use crate::validation::validate_mesh_name_shape;
 use crate::mesh::follow::{FollowDecision, follow_moves};
-use crate::resolver::{build_pending_findings, resolve_named_meshes, stale_meshes};
+use crate::resolver::{
+    build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
+};
 use crate::staging::{StagedAdd, StagedConfig, StagedRemove};
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftSource, EngineOptions, Finding, LayerSet,
@@ -62,7 +64,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         needs_all_layers,
     };
 
-    let meshes = if args.paths.is_empty() {
+    let mut meshes = if args.paths.is_empty() {
         // No positional args: scan every mesh (preserves existing behavior).
         let mut meshes = {
             let _perf = crate::perf::span("stale.resolve-all-meshes");
@@ -196,6 +198,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
 
         meshes
     };
+
+    // Sort all collected meshes (including staging-only meshes with empty
+    // anchors) by anchor path for deterministic output regardless of whether
+    // they came from a full scan, positional args, or staging-only discovery.
+    sort_meshes_by_anchor_path(&mut meshes);
 
     // Adapter: engine output (`MeshResolved`) → renderer input
     // (`Finding` / `PendingFinding`). The adapter is a pure data shape
