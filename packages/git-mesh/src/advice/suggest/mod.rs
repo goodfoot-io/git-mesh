@@ -189,7 +189,12 @@ pub fn run_suggest_pipeline(
         let mut ops = build_op_stream(rec, cfg);
         attach_locators(&mut ops, cfg);
         let raw_parts = build_participants(&ops);
-        let merged = merge_ranges_per_file(&raw_parts, cfg);
+        // Per-session precedence: drop whole-file siblings on paths that also
+        // carry narrower (Edit/Read/Symbol) evidence so the cross-session
+        // canonicalizer below sees the narrow ranges and not the (1, u32::MAX)
+        // sentinel that would collapse them in the bounding-box step.
+        let resolved = resolve_extent_precedence(raw_parts);
+        let merged = merge_ranges_per_file(&resolved, cfg);
         all_parts.extend(merged.clone());
         session_participants.push(SessionParticipants {
             sid: rec.sid.clone(),

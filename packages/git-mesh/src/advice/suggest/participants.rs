@@ -178,12 +178,49 @@ pub fn participants(ops: &[Op]) -> Vec<Participant> {
 
 /// Apply precedence: Symbol > Edit > Read > Whole per (session, path).
 ///
-/// Phase A delivers the signature only; Phase C implements the per-path
-/// resolution that drops whole-file siblings when a narrower source exists.
-/// Until then this is a passthrough so the suggester pipeline behaves
-/// identically to before the `ExtentSource` plumbing landed.
+/// Groups participants by `path`, picks the highest-precedence
+/// `ExtentSource` present in the group, and drops every participant tagged
+/// with a lower-precedence source. Whole-file sentinels are dropped whenever
+/// any narrower evidence (Symbol/Edit/Read) exists for the same path; a
+/// path reached only through whole-file evidence keeps its sentinel.
+///
+/// Output ordering is stable on `op_index` to keep downstream stages
+/// deterministic regardless of the per-path grouping order.
 pub fn resolve_extent_precedence(parts: Vec<Participant>) -> Vec<Participant> {
-    parts
+    let mut by_path: BTreeMap<String, Vec<Participant>> = BTreeMap::new();
+    for p in parts {
+        by_path.entry(p.path.clone()).or_default().push(p);
+    }
+    let mut out = Vec::new();
+    for (_path, group) in by_path {
+        let best = best_source(&group);
+        let kept: Vec<Participant> = group
+            .into_iter()
+            .filter(|p| p.extent_source == best)
+            .collect();
+        out.extend(kept);
+    }
+    out.sort_by_key(|p| p.op_index);
+    out
+}
+
+/// Return the highest-precedence `ExtentSource` present in `group`.
+///
+/// Precedence order: `Symbol > Edit > Read > Whole`. Panics if `group` is
+/// empty — callers (`resolve_extent_precedence`) only invoke this for
+/// non-empty per-path groups.
+fn best_source(group: &[Participant]) -> ExtentSource {
+    let rank = |s: ExtentSource| match s {
+        ExtentSource::Symbol => 3,
+        ExtentSource::Edit => 2,
+        ExtentSource::Read => 1,
+        ExtentSource::Whole => 0,
+    };
+    group
+        .iter()
+        .map(|p| p.extent_source)
+        .max_by_key(|s| rank(*s))
+        .expect("best_source called with empty group")
 }
 
 /// Merge near-touching ranges of the same file within a single session.
@@ -469,7 +506,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase C: precedence resolution"]
     fn whole_file_read_dropped_when_ranged_read_present_for_same_path() {
         let ops = vec![
             make_read_op("foo.rs", 1, 80, 0),
@@ -484,7 +520,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase C: precedence resolution (depends on Phase B ranged Edit ops)"]
     fn whole_file_edit_dropped_when_ranged_edit_present_for_same_path() {
         let ops = vec![
             make_edit_op("foo.rs", Some(88), Some(120), 0),
@@ -499,7 +534,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase C: precedence resolution (Edit beats Read on same path)"]
     fn ranged_read_dropped_when_ranged_edit_present_for_same_path() {
         let ops = vec![
             make_read_op("foo.rs", 1, 50, 0),
@@ -512,7 +546,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase C: precedence resolution (whole-only path keeps sentinel)"]
     fn whole_file_only_path_keeps_whole_sentinel() {
         let ops = vec![make_whole_read_op("foo.rs", 0)];
         let parts = participants(&ops);
@@ -533,15 +566,73 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase B/C: end-to-end suggester carries narrow ranges through"]
     fn end_to_end_suggester_emits_per_path_extents() {
-        // TODO Phase B/C: drive the suggester with one whole-file Read of
-        // compact.rs, one ranged Read of stale_output.rs#L1-L80, one whole-file
-        // Read of mod.rs, plus a structuredPatch Edit on compact.rs#L88-L120,
-        // and assert the emitted Suggestion participants are
-        //   - compact.rs#L88-L120 (extent_source=Edit)
-        //   - stale_output.rs#L1-L80 (extent_source=Read)
-        //   - mod.rs (whole, extent_source=Whole)
+        // Card example: a session that
+        //   - whole-file reads compact.rs
+        //   - ranged-reads stale_output.rs#L1-L80
+        //   - whole-file reads mod.rs
+        //   - ranged-edits compact.rs#L88-L120 (structuredPatch hunk)
+        // must, after participants() → resolve_extent_precedence() →
+        // merge_ranges_per_file() → build_canonical_ranges(), produce three
+        // canonical anchors: compact.rs#L88-L120 (from Edit), stale_output.rs
+        // #L1-L80 (from Read), and mod.rs whole-file (from Whole sentinel).
+        use crate::advice::suggest::canonical::build_canonical_ranges;
+
+        let ops = vec![
+            make_whole_read_op("compact.rs", 0),
+            make_read_op("stale_output.rs", 1, 80, 1),
+            make_whole_read_op("mod.rs", 2),
+            make_ranged_edit_op("compact.rs", 88, 120, 3),
+        ];
+        let raw = participants(&ops);
+        let resolved = resolve_extent_precedence(raw);
+
+        // Per-path precedence: compact.rs has Edit + Whole → keep Edit only.
+        // stale_output.rs has Read only. mod.rs has Whole only.
+        let by_path = |path: &str| -> Vec<&Participant> {
+            resolved.iter().filter(|p| p.path == path).collect()
+        };
+        let compact = by_path("compact.rs");
+        assert_eq!(compact.len(), 1, "compact.rs whole-file dropped by Edit");
+        assert_eq!(compact[0].extent_source, ExtentSource::Edit);
+        assert_eq!(compact[0].start, 88);
+        assert_eq!(compact[0].end, 120);
+
+        let stale = by_path("stale_output.rs");
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].extent_source, ExtentSource::Read);
+        assert_eq!(stale[0].start, 1);
+        assert_eq!(stale[0].end, 80);
+
+        let modrs = by_path("mod.rs");
+        assert_eq!(modrs.len(), 1);
+        assert_eq!(modrs[0].extent_source, ExtentSource::Whole);
+        assert_eq!(modrs[0].m_start, WHOLE_FILE_START);
+        assert_eq!(modrs[0].m_end, WHOLE_FILE_END);
+
+        // After merge + canonicalize, the bounding boxes should not collapse
+        // compact.rs to whole-file — that was the bug. Each path has exactly
+        // one canonical range carrying its narrow extent (or whole sentinel).
+        let merged = merge_ranges_per_file(&resolved, &cfg());
+        let canonical = build_canonical_ranges(&merged, &cfg());
+
+        let canon_for = |path: &str| -> Vec<&crate::advice::suggest::CanonicalRange> {
+            canonical.ranges.iter().filter(|r| r.path == path).collect()
+        };
+        let c = canon_for("compact.rs");
+        assert_eq!(c.len(), 1, "compact.rs canonical not collapsed to whole");
+        assert_eq!(c[0].start, 88);
+        assert_eq!(c[0].end, 120);
+
+        let s = canon_for("stale_output.rs");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].start, 1);
+        assert_eq!(s[0].end, 80);
+
+        let m = canon_for("mod.rs");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].start, WHOLE_FILE_START);
+        assert_eq!(m[0].end, WHOLE_FILE_END);
     }
 
     #[test]
