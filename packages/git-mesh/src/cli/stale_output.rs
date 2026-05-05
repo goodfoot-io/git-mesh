@@ -1267,3 +1267,131 @@ fn effective_follow_moves(repo: &gix::Repository, mesh_name: &str) -> bool {
     );
     fm
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::StaleFormat;
+    use crate::git::{apply_ref_transaction_repo, RefUpdate};
+    use crate::mesh::path_index::ref_updates_for_mesh;
+    use crate::types::{Anchor, AnchorExtent};
+    use std::path::Path;
+    use std::process::Command;
+
+    fn seed_repo() -> (tempfile::TempDir, gix::Repository) {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let repo = gix::open(dir).unwrap();
+        (td, repo)
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn anchor(path: &str, start: u32, end: u32) -> Anchor {
+        Anchor {
+            anchor_sha: "0000000000000000000000000000000000000000".to_string(),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            path: path.to_string(),
+            extent: AnchorExtent::LineRange { start, end },
+            blob: "0000000000000000000000000000000000000000".to_string(),
+        }
+    }
+
+    fn create_mesh_ref(repo: &gix::Repository, name: &str) {
+        let head_oid = repo.head_id().unwrap().detach().to_string();
+        let updates = vec![RefUpdate::Create {
+            name: format!("refs/meshes/v1/{name}"),
+            new_oid: head_oid,
+        }];
+        apply_ref_transaction_repo(repo, &updates).unwrap();
+    }
+
+    fn create_path_index_entry(
+        repo: &gix::Repository,
+        mesh_name: &str,
+        path: &str,
+        start: u32,
+        end: u32,
+    ) {
+        let anchors = vec![("a1".to_string(), anchor(path, start, end))];
+        let updates = ref_updates_for_mesh(repo, mesh_name, &[], &anchors).unwrap();
+        apply_ref_transaction_repo(repo, &updates).unwrap();
+    }
+
+    // --- hierarchical mesh name reproduction tests ---
+
+    #[test]
+    fn run_stale_hierarchical_mesh_name_resolves() {
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "billing/payments/checkout");
+        create_path_index_entry(&repo, "billing/payments/checkout", "a.txt", 1, 5);
+        let args = StaleArgs {
+            paths: vec!["billing/payments/checkout".to_string()],
+            format: StaleFormat::Human,
+            no_exit_code: false,
+            no_worktree: false,
+            no_index: false,
+            no_staged_mesh: false,
+            ignore_unavailable: false,
+            oneline: false,
+            stat: false,
+            patch: false,
+            since: None,
+            compact: false,
+            verbose: false,
+            auto_follow: false,
+        };
+        let exit_code = run_stale(&repo, args).unwrap();
+        assert_eq!(exit_code, 0);
+    }
+
+    #[test]
+    fn run_stale_hierarchical_name_staging_only() {
+        let (_td, repo) = seed_repo();
+        let staging_dir = repo.git_dir().join("mesh").join("staging");
+        let mesh_file = staging_dir.join("billing/payments/checkout");
+        std::fs::create_dir_all(mesh_file.parent().unwrap()).unwrap();
+        std::fs::write(&mesh_file, "add a.txt#L1-L5\n").unwrap();
+        let args = StaleArgs {
+            paths: vec!["billing/payments/checkout".to_string()],
+            format: StaleFormat::Human,
+            no_exit_code: false,
+            no_worktree: false,
+            no_index: false,
+            no_staged_mesh: false,
+            ignore_unavailable: false,
+            oneline: false,
+            stat: false,
+            patch: false,
+            since: None,
+            compact: false,
+            verbose: false,
+            auto_follow: false,
+        };
+        let exit_code = run_stale(&repo, args).unwrap();
+        assert_eq!(exit_code, 0);
+    }
+}

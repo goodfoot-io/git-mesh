@@ -1405,4 +1405,27 @@ mod tests {
         let exit_code = run_list(&repo, args).unwrap();
         assert_eq!(exit_code, 0);
     }
+
+    // --- hierarchical mesh name reproduction tests ---
+
+    #[test]
+    fn resolve_targets_hierarchical_name_resolves_to_mesh() {
+        let (_td, repo) = seed_repo();
+        create_mesh_ref(&repo, "billing/payments/checkout");
+        let result =
+            resolve_targets(&repo, &["billing/payments/checkout".to_string()]).unwrap();
+        assert_eq!(result, vec!["billing/payments/checkout"]);
+    }
+
+    #[test]
+    fn resolve_targets_hierarchical_name_staging_only() {
+        let (_td, repo) = seed_repo();
+        let staging_dir = repo.git_dir().join("mesh").join("staging");
+        let mesh_file = staging_dir.join("billing/payments/checkout");
+        std::fs::create_dir_all(mesh_file.parent().unwrap()).unwrap();
+        std::fs::write(&mesh_file, "add a.txt#L1-L5\n").unwrap();
+        let result =
+            resolve_targets(&repo, &["billing/payments/checkout".to_string()]).unwrap();
+        assert_eq!(result, vec!["billing/payments/checkout"]);
+    }
 }
