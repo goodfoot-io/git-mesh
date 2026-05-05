@@ -33,7 +33,7 @@ Matcher: `Read|Edit|Write|MultiEdit|Bash|mcp__.*`. Script: `bin/advice-post-tool
 
 Per tool, it picks the right `git mesh advice` verb:
 
-- **`Read`** → `git mesh advice <sid> read <path>[#L<offset>-L<end>] [<tool_use_id>]`. The session records the read; if the read intersects an anchor in any mesh, the renderer surfaces the rest of the mesh (other anchors, the why) so the assistant sees what the read just touched.
+- **`Read`** → `git mesh advice <sid> read <path>[#L<offset>-L<end>] [<tool_use_id>]`. The session records the read; if the read intersects an anchor in a mesh that was *committed during the current session*, the renderer surfaces the rest of the mesh (other anchors, the why) so the assistant sees what the read just touched. Meshes inherited from prior sessions stay silent on plain reads — their rationale is too far removed from working memory to be actionable. Edit / Write / MultiEdit advice paths are not session-scoped: a deliberate change to a tracked anchor still surfaces any matching mesh.
 - **`Edit` / `MultiEdit`** → For each hunk in the structured patch, `git mesh advice <sid> touch <tuid> <path>#L<new_start>-L<new_end> modified`. If a hunk has `newLines == 0` (whole-file deletion), or no structured patch is present, falls back to a whole-file `touch <tuid> <path> modified` once.
 - **`Write`** → `git mesh advice <sid> touch <tuid> <path> {added|modified}` (`added` when the response reports `type=create`, `modified` otherwise).
 - **`Bash`, `mcp__*`, anything else** → `git mesh advice <sid> flush <tuid>`. This is where the PreToolUse snapshot pair pays off: `flush` diffs the before/after snapshots and routes advice for any anchor the side effects crossed.
