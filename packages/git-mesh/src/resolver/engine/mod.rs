@@ -476,7 +476,7 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.trail-cache-misses", state.session.trail_cache_misses);
     state.finish(repo);
     if out.len() > 1 {
-        sort_meshes_worst_first(&mut out);
+        sort_meshes_by_anchor_path(&mut out);
     }
     Ok(out)
 }
@@ -504,38 +504,116 @@ pub(crate) fn resolve_meshes_in_order(
     Ok(out)
 }
 
-fn status_rank(a: &AnchorStatus, b: &AnchorStatus) -> std::cmp::Ordering {
-    fn rank(s: &AnchorStatus) -> u8 {
-        match s {
-            AnchorStatus::Fresh => 0,
-            AnchorStatus::Moved => 1,
-            AnchorStatus::Changed => 2,
-            AnchorStatus::MergeConflict => 3,
-            AnchorStatus::Submodule => 4,
-            AnchorStatus::ContentUnavailable(_) => 5,
-            AnchorStatus::Orphaned => 6,
+fn sort_meshes_by_anchor_path(meshes: &mut [MeshResolved]) {
+    let _perf = crate::perf::span("resolver.sort-meshes");
+    if meshes.len() <= 1 {
+        return;
+    }
+
+    // Build sort keys: sorted anchor paths per mesh
+    let keys: Vec<Vec<PathBuf>> = meshes
+        .iter()
+        .map(|m| {
+            let mut paths: Vec<PathBuf> =
+                m.anchors.iter().map(|a| a.anchored.path.clone()).collect();
+            paths.sort();
+            paths
+        })
+        .collect();
+
+    // Precompute overlap: does this mesh have extent overlap with any other
+    // mesh that shares the exact same path tuple?
+    let has_overlap: Vec<bool> = (0..meshes.len())
+        .map(|i| {
+            for j in 0..meshes.len() {
+                if i != j && keys[i] == keys[j] && meshes_share_extent_overlap(&meshes[i], &meshes[j], &keys[i]) {
+                    return true;
+                }
+            }
+            false
+        })
+        .collect();
+
+    // Sort indices by path tuple comparison + overlap sub-grouping
+    let mut indices: Vec<usize> = (0..meshes.len()).collect();
+    indices.sort_by(|&a, &b| {
+        let paths_a = &keys[a];
+        let paths_b = &keys[b];
+
+        // Primary: lexicographic comparison of path tuples
+        for (pa, pb) in paths_a.iter().zip(paths_b.iter()) {
+            match pa.cmp(pb) {
+                std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+                std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+                std::cmp::Ordering::Equal => continue,
+            }
+        }
+        match paths_a.len().cmp(&paths_b.len()) {
+            std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+            std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+            std::cmp::Ordering::Equal => {}
+        }
+
+        // Path tuples identical. Sub-group by extent overlap.
+        match (has_overlap[a], has_overlap[b]) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
+
+    // Apply permutation via cycle descent (convert from "from-permutation"
+    // to "to-permutation" first)
+    let mut perm: Vec<usize> = vec![0; meshes.len()];
+    for (sorted_pos, &orig_pos) in indices.iter().enumerate() {
+        perm[orig_pos] = sorted_pos;
+    }
+    for i in 0..meshes.len() {
+        while perm[i] != i {
+            let k = perm[i];
+            meshes.swap(i, k);
+            perm.swap(i, k);
         }
     }
-    rank(a).cmp(&rank(b))
 }
 
-fn sort_meshes_worst_first(meshes: &mut [MeshResolved]) {
-    let _perf = crate::perf::span("resolver.sort-meshes");
-    meshes.sort_by(|a, b| {
-        let max_a = a
-            .anchors
-            .iter()
-            .map(|r| r.status.clone())
-            .max_by(status_rank)
-            .unwrap_or(AnchorStatus::Fresh);
-        let max_b = b
-            .anchors
-            .iter()
-            .map(|r| r.status.clone())
-            .max_by(status_rank)
-            .unwrap_or(AnchorStatus::Fresh);
-        status_rank(&max_b, &max_a)
-    });
+fn extents_overlap(a: &AnchorExtent, b: &AnchorExtent) -> bool {
+    match (a, b) {
+        (AnchorExtent::WholeFile, _) | (_, AnchorExtent::WholeFile) => true,
+        (
+            AnchorExtent::LineRange {
+                start: sa,
+                end: ea,
+            },
+            AnchorExtent::LineRange {
+                start: sb,
+                end: eb,
+            },
+        ) => *sa <= *eb && *sb <= *ea,
+    }
+}
+
+fn meshes_share_extent_overlap(
+    a: &MeshResolved,
+    b: &MeshResolved,
+    paths: &[PathBuf],
+) -> bool {
+    for path in paths {
+        for anc_a in &a.anchors {
+            if anc_a.anchored.path != *path {
+                continue;
+            }
+            for anc_b in &b.anchors {
+                if anc_b.anchored.path != *path {
+                    continue;
+                }
+                if extents_overlap(&anc_a.anchored.extent, &anc_b.anchored.extent) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn can_skip_clean_head_pinned_mesh(
@@ -613,5 +691,133 @@ fn orphaned_placeholder(anchor_id: &str) -> AnchorResolved {
         layer_sources: vec![],
         acknowledged_by: None,
         culprit: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::*;
+
+    fn make_mesh(name: &str, anchors: &[(&str, AnchorExtent)]) -> MeshResolved {
+        MeshResolved {
+            name: name.to_string(),
+            message: String::new(),
+            anchors: anchors
+                .iter()
+                .map(|(path, extent)| AnchorResolved {
+                    anchor_id: String::new(),
+                    anchor_sha: String::new(),
+                    anchored: AnchorLocation {
+                        path: PathBuf::from(path),
+                        extent: *extent,
+                        blob: None,
+                    },
+                    current: None,
+                    status: AnchorStatus::Fresh,
+                    source: None,
+                    layer_sources: vec![],
+                    acknowledged_by: None,
+                    culprit: None,
+                })
+                .collect(),
+            pending: vec![],
+        }
+    }
+
+    #[test]
+    fn single_mesh_no_op() {
+        let m = make_mesh("m1", &[]);
+        let mut meshes = vec![m];
+        sort_meshes_by_anchor_path(&mut meshes);
+        assert_eq!(meshes.len(), 1);
+        assert_eq!(meshes[0].name, "m1");
+    }
+
+    #[test]
+    fn primary_path_ordering() {
+        let m1 = make_mesh("m1", &[("b.ts", AnchorExtent::WholeFile)]);
+        let m2 = make_mesh("m2", &[("a.ts", AnchorExtent::WholeFile)]);
+        let mut meshes = vec![m1, m2];
+        sort_meshes_by_anchor_path(&mut meshes);
+        assert_eq!(meshes[0].name, "m2");
+        assert_eq!(meshes[1].name, "m1");
+    }
+
+    #[test]
+    fn multi_path_tie_breaking() {
+        let m1 = make_mesh(
+            "m1",
+            &[
+                ("a.ts", AnchorExtent::WholeFile),
+                ("c.ts", AnchorExtent::WholeFile),
+            ],
+        );
+        let m2 = make_mesh(
+            "m2",
+            &[
+                ("a.ts", AnchorExtent::WholeFile),
+                ("b.ts", AnchorExtent::WholeFile),
+            ],
+        );
+        let mut meshes = vec![m1, m2];
+        sort_meshes_by_anchor_path(&mut meshes);
+        assert_eq!(meshes[0].name, "m2");
+        assert_eq!(meshes[1].name, "m1");
+    }
+
+    #[test]
+    fn prefix_ordering() {
+        let m1 = make_mesh("m1", &[("a.ts", AnchorExtent::WholeFile)]);
+        let m2 = make_mesh(
+            "m2",
+            &[
+                ("a.ts", AnchorExtent::WholeFile),
+                ("b.ts", AnchorExtent::WholeFile),
+            ],
+        );
+        let mut meshes = vec![m1, m2];
+        sort_meshes_by_anchor_path(&mut meshes);
+        assert_eq!(meshes[0].name, "m1");
+        assert_eq!(meshes[1].name, "m2");
+    }
+
+    #[test]
+    fn identical_paths_overlapping_extents() {
+        let m1 = make_mesh(
+            "m1",
+            &[("a.ts", AnchorExtent::LineRange { start: 1, end: 10 })],
+        );
+        let m2 = make_mesh(
+            "m2",
+            &[("a.ts", AnchorExtent::LineRange { start: 5, end: 20 })],
+        );
+        let m3 = make_mesh(
+            "m3",
+            &[("a.ts", AnchorExtent::LineRange {
+                start: 50,
+                end: 100,
+            })],
+        );
+        let mut meshes = vec![m1, m2, m3];
+        sort_meshes_by_anchor_path(&mut meshes);
+        // m1 and m2 overlap on a.ts, so they should be adjacent.
+        // m3 has no overlap with either, so it sorts after the overlapping cluster.
+        // Within the overlap cluster, stable sort preserves input order (m1 before m2).
+        assert_eq!(meshes[0].name, "m1");
+        assert_eq!(meshes[1].name, "m2");
+        assert_eq!(meshes[2].name, "m3");
+    }
+
+    #[test]
+    fn determinism() {
+        let m1 = make_mesh("m1", &[("b.ts", AnchorExtent::WholeFile)]);
+        let m2 = make_mesh("m2", &[("a.ts", AnchorExtent::WholeFile)]);
+        let m3 = make_mesh("m3", &[("c.ts", AnchorExtent::WholeFile)]);
+        let mut meshes_a = vec![m1.clone(), m2.clone(), m3.clone()];
+        let mut meshes_b = vec![m1, m2, m3];
+        sort_meshes_by_anchor_path(&mut meshes_a);
+        sort_meshes_by_anchor_path(&mut meshes_b);
+        assert_eq!(meshes_a, meshes_b);
     }
 }
