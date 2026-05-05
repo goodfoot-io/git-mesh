@@ -80,6 +80,11 @@ git mesh why billing/checkout-request-flow \
 
 # The post-commit hook runs `git mesh commit`
 git commit -m "Wire checkout to charge API"
+
+# Later ...
+
+# Run `git mesh stale [--patch] [glob]` and carefully examine the files in each mesh to identify drift
+git mesh stale
 ```
 
 </git-mesh>

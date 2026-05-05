@@ -16,13 +16,15 @@ git mesh stale <name>     # re-check
 
 **If the anchor is still ORPHANED, the goal is not to dig up the lost commit. It is to confirm the relationship still holds and re-anchor at current bytes.** Do not script a bulk "add every anchor as-is" loop over `git mesh list --porcelain`; that erases the prompt without doing the work the prompt exists for. Each mesh needs its own decision.
 
+A user instruction like *"just re-add the anchors"* or *"skip recovery"* removes the fetch/recovery step — it does **not** remove the per-mesh confirmation below. If the shorthand sounds like a license to batch, that is the moment to slow down and surface the conflict, not the moment to script the loop.
+
 **Per-mesh process.** For each ORPHANED mesh:
 
 1. **Read the why.** What relationship does this mesh claim?
    ```bash
    git mesh why <name>
    ```
-2. **Inspect each current anchor.** Open the file at the recorded path and line range. For whole-file anchors, read the file. The recorded line range may no longer correspond to the same content the mesh was originally pinned to — the orphan status means that history is unverifiable from refs.
+2. **Inspect each current anchor and write the relationship in one sentence.** Open the file at the recorded path and line range with `Read` (whole file, for whole-file anchors). The recorded line range may no longer correspond to the same content the mesh was originally pinned to — the orphan status means that history is unverifiable from refs. After reading, state in one sentence what relationship the *current* bytes at those anchors form. If you cannot write that sentence, you have not confirmed; do not re-anchor. Either inspect further, or `git mesh delete <name>`.
    ```bash
    git mesh <name> --oneline           # list anchors compactly
    # then read each path / range in the editor or via Read

@@ -2,6 +2,20 @@
 
 A `CHANGED` or `MOVED` finding is a prompt, not a verdict. Decide whether the relationship the mesh describes still holds before reaching for any command — including when many meshes drift at once. Per-mesh judgment is required even when the same mechanism appears to apply to all of them; bulk loops that re-add every recorded anchor verbatim convert "this needs review" into a clean exit code without anyone confirming the relationship survived. See `./terminal-statuses.md` § "ORPHANED" for the same warning in the orphan case.
 
+## Confirming the relationship is a concrete step, not a state of mind
+
+Before any re-anchor command, do this:
+
+1. Run `git mesh why <name>` and read the recorded relationship.
+2. Read the file at each recorded `path#L<start>-L<end>` (whole file, for whole-file anchors). Use the `Read` tool — do not infer from filenames or memory.
+3. **Write one sentence** stating what relationship the current bytes at those anchors form. If you cannot write that sentence from what you just read, you have not confirmed; stop and inspect further, or `delete` the mesh.
+
+Only after that sentence exists does a re-anchor command apply. The commands below assume this step is done.
+
+### User shorthand does not skip this step
+
+Instructions like "just re-add the anchors", "don't try to recover orphans, re-anchor at current bytes", or "this is taking too long, batch it" remove the *recovery* step (fetch, dig up the lost commit), not the *per-mesh confirmation* step. Bulk re-add over `git mesh list --porcelain` is still the anti-pattern even when the user's phrasing sounds like a green light for it. If the user's instruction and this section appear to conflict, surface the conflict — do not resolve it silently by dropping the confirmation.
+
 ```mermaid
 graph TD
     A[CHANGED or MOVED] --> B{Does the relationship<br/>still hold?}
