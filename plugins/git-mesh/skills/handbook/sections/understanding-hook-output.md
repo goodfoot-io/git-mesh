@@ -73,14 +73,17 @@ A new-mesh suggestion (cross-cutting candidate the suggest pipeline scored High 
 
 ```
 Detected possible implicit semantic dependency between:
-  - web/checkout.tsx#L88-L120
-  - api/charge.ts#L30-L76
+- web/checkout.tsx#L88-L120
+- api/charge.ts#L30-L76
 
 If this is a real implicit semantic dependency, document it with `git mesh`:
-  git mesh add <name> \
-    web/checkout.tsx#L88-L120 \
-    api/charge.ts#L30-L76
-  git mesh why <name> -m [The subsystem, flow, or concern the anchors form, and what it does across them]
+
+```bash
+git mesh add <mesh-name> \
+  web/checkout.tsx#L88-L120 \
+  api/charge.ts#L30-L76
+git mesh why <mesh-name> -m [The subsystem, flow, or concern the anchors form, and what it does across them]
+```
 ```
 
 Multiple stanzas in one injection are separated by `\n---\n\n`.

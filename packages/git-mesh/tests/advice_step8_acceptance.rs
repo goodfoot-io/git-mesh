@@ -199,7 +199,7 @@ fn flush_existing_files_emits_suggestion() -> Result<()> {
         "expected coupling stanza in flush stdout.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     );
     assert!(
-        stdout.contains("git mesh add <name>"),
+        stdout.contains("git mesh add <mesh-name>"),
         "expected `git mesh add` template in coupling stanza.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     );
     Ok(())
