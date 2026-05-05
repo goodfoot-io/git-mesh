@@ -76,11 +76,11 @@ Detected possible implicit semantic dependency between:
   - web/checkout.tsx#L88-L120
   - api/charge.ts#L30-L76
 
-Record the link if real:
+If this is a real implicit semantic dependency, document it with `git mesh`:
   git mesh add <name> \
     web/checkout.tsx#L88-L120 \
     api/charge.ts#L30-L76
-  git mesh why <name> -m "What these anchors do together."
+  git mesh why <name> -m [The subsystem, flow, or concern the anchors form, and what it does across them]
 ```
 
 Multiple stanzas in one injection are separated by `\n---\n\n`.

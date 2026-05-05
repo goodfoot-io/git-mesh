@@ -695,7 +695,7 @@ fn process_touches(
                 for a in &anchors {
                     stanza.push_str(&format!("  - {a}\n"));
                 }
-                stanza.push_str("\nRecord the link if real:\n");
+                stanza.push_str("\nIf this is a real implicit semantic dependency, document it with `git mesh`:\n");
                 stanza.push_str("  git mesh add <name> \\\n");
                 let last = anchors.len() - 1;
                 for (i, anchor) in anchors.iter().enumerate() {
@@ -705,7 +705,7 @@ fn process_touches(
                         stanza.push_str(&format!("    {anchor} \\\n"));
                     }
                 }
-                stanza.push_str("  git mesh why <name> -m \"What these anchors do together.\"\n");
+                stanza.push_str("  git mesh why <name> -m [The subsystem, flow, or concern the anchors form, and what it does across them]\n");
                 creation_stanzas.push(stanza);
                 emitted_fps.push(fp);
             }
