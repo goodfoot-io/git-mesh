@@ -16,4 +16,5 @@ description: Use with `git mesh` or meshes.
 - **A question asks what meshes exist, what a mesh currently says, its history, or which meshes touch a given path/anchor**: Read `./sections/inspecting-meshes.md`
 - **Text in `additionalContext` / `systemMessage` carries an `<anchor> is in the <mesh> mesh with:` header, `(CHANGED)`/`(MOVED)`/`(ORPHANED)`/`(CONFLICT)`/`(SUBMODULE)`/`(DELETED)`/`(RENAMED)` clauses, or a `Detected possible implicit semantic dependency between:` stanza; or a question is about when the PreToolUse / PostToolUse / SessionEnd hooks fire or why an injection appeared / didn't appear**: Read `./sections/understanding-hook-output.md`
 - **Exact flag, subcommand, anchor grammar, or reserved-name lookup is needed**: Read `./sections/command-reference.md`
+- **Git hooks (`post-commit`, `post-rewrite`) need installing in a fresh repo so `git mesh commit` / `git mesh rewrite` / `git mesh stale --compact` run automatically, or `git mesh doctor` reports `MissingPostCommitHook` / `MissingPostRewriteHook`**: Read `./sections/git-hook-setup.md`
 </instructions>
