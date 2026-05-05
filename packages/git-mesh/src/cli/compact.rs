@@ -5,7 +5,8 @@
 
 use crate::cli::{StaleArgs, StaleFormat};
 use crate::mesh::compact::{AnchorCompactOutcome, MeshCompactOutcome};
-use crate::types::{EngineOptions, LayerSet};
+use crate::resolver::{resolve_named_meshes, stale_meshes};
+use crate::types::{EngineOptions, LayerSet, MeshResolved};
 use anyhow::Result;
 use std::io::Write as _;
 
@@ -27,6 +28,34 @@ pub fn run_compact(repo: &gix::Repository, args: &StaleArgs) -> Result<i32> {
             );
             return Ok(2);
         }
+    }
+
+    // Sequenced auto-follow + compact: when `--auto-follow` is set (or any
+    // mesh has follow-moves=true configured), rewrite Moved anchors first
+    // so the subsequent HEAD-only compact resolution sees the updated mesh
+    // refs. Auto-follow needs Worktree+Index layers to detect Moved
+    // anchors; compact below resolves HEAD-only. The two phases share the
+    // gix repository handle and emit one batched mesh commit each, with
+    // distinct reserved prefixes (`mesh: follow …` then the compact
+    // commit).
+    if args.auto_follow {
+        let af_layers = LayerSet { worktree: true, index: true, staged_mesh: true };
+        let af_options = EngineOptions {
+            layers: af_layers,
+            ignore_unavailable: args.ignore_unavailable,
+            since: None,
+            needs_all_layers: false,
+        };
+        let meshes: Vec<MeshResolved> = if args.paths.is_empty() {
+            stale_meshes(repo, af_options)?
+        } else {
+            let names: Vec<String> = args.paths.clone();
+            resolve_named_meshes(repo, &names, af_options)?
+                .into_iter()
+                .filter_map(|(_, r)| r.ok())
+                .collect()
+        };
+        let _followed = super::stale_output::run_auto_follow_pass(repo, args, &meshes);
     }
 
     // HEAD-only resolution: no worktree, no index, no staged-mesh layer.

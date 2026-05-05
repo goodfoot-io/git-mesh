@@ -195,7 +195,7 @@ fn flush_existing_files_emits_suggestion() -> Result<()> {
     // implementations bailed early when canonical.ranges was empty (no ranged
     // participants from a whole-file Modified touch).
     assert!(
-        stdout.contains("Possible implicit semantic dependency between:"),
+        stdout.contains("Detected possible implicit semantic dependency between:"),
         "expected coupling stanza in flush stdout.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     );
     assert!(
@@ -260,7 +260,7 @@ fn flush_current_touch_joins_prior_turn_read_in_seed() -> Result<()> {
     let stdout = String::from_utf8_lossy(&flush_out.stdout);
     let stderr = String::from_utf8_lossy(&flush_out.stderr);
     assert!(
-        stdout.contains("Possible implicit semantic dependency between:"),
+        stdout.contains("Detected possible implicit semantic dependency between:"),
         "current-flush touch must join the SessionRecord seed alongside prior-turn reads.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     );
     Ok(())

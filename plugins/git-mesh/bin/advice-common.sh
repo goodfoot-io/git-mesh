@@ -90,6 +90,7 @@ run_advice_verb() {
 emit_advice_text() {
   local event="$1" text="$2"
   [ -n "$text" ] || return 0
+  text=$'<git-mesh>\n'"${text}"$'\n</git-mesh>'
   local sys="$text"
   if [ "${GIT_MESH_ADVICE_DEBUG:-0}" = "1" ] && [ -n "${_ADVICE_DEBUG_FILE:-}" ] && [ -s "${_ADVICE_DEBUG_FILE}" ]; then
     local debug_content

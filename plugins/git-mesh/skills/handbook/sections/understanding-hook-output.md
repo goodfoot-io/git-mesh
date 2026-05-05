@@ -72,14 +72,14 @@ src/checkout.tsx#L88-L120 is in the billing/checkout-request-flow mesh with:
 A new-mesh suggestion (cross-cutting candidate the suggest pipeline scored High or High+):
 
 ```
-Possible implicit semantic dependency between:
+Detected possible implicit semantic dependency between:
   - web/checkout.tsx#L88-L120
   - api/charge.ts#L30-L76
 
 Record the link if real:
   git mesh add <name> \
-    web/checkout.tsx \
-    api/charge.ts
+    web/checkout.tsx#L88-L120 \
+    api/charge.ts#L30-L76
   git mesh why <name> -m "What these anchors do together."
 ```
 

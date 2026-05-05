@@ -686,24 +686,19 @@ fn process_touches(
                         }
                     })
                     .collect();
-                let paths: Vec<String> = sug
-                    .participants
-                    .iter()
-                    .map(|p| p.path.to_string_lossy().into_owned())
-                    .collect();
                 let mut stanza = String::new();
-                stanza.push_str("Possible implicit semantic dependency between:\n");
+                stanza.push_str("Detected possible implicit semantic dependency between:\n");
                 for a in &anchors {
                     stanza.push_str(&format!("  - {a}\n"));
                 }
                 stanza.push_str("\nRecord the link if real:\n");
                 stanza.push_str("  git mesh add <name> \\\n");
-                let last = paths.len() - 1;
-                for (i, path) in paths.iter().enumerate() {
+                let last = anchors.len() - 1;
+                for (i, anchor) in anchors.iter().enumerate() {
                     if i == last {
-                        stanza.push_str(&format!("    {path}\n"));
+                        stanza.push_str(&format!("    {anchor}\n"));
                     } else {
-                        stanza.push_str(&format!("    {path} \\\n"));
+                        stanza.push_str(&format!("    {anchor} \\\n"));
                     }
                 }
                 stanza.push_str("  git mesh why <name> -m \"What these anchors do together.\"\n");

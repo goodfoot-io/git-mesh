@@ -269,7 +269,7 @@ pub struct StaleArgs {
     /// Automatically rewrite Moved anchors that pass all four guardrails
     /// (verbatim blob, same path, no Changed sibling, opt-in active).
     /// One batched mesh commit per mesh: `mesh: follow N moved anchors`.
-    #[arg(long, conflicts_with_all = ["patch", "stat", "oneline", "compact"])]
+    #[arg(long, conflicts_with_all = ["patch", "stat", "oneline"])]
     pub auto_follow: bool,
 }
 

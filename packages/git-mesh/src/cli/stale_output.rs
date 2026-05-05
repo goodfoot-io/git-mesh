@@ -274,98 +274,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // count here (same run). Per spec the "next run reports Fresh" guarantee
     // is what matters; within this run we subtract rather than re-resolve to
     // keep the implementation simple and avoid a second round-trip.
-    let mut followed_ids: HashSet<String> = HashSet::new();
-    if args.auto_follow || meshes.iter().any(|m| effective_follow_moves(repo, &m.name)) {
-        let _perf = crate::perf::span("stale.auto-follow");
-        for m in &meshes {
-            // Resolve effective opt-in: --auto-follow flag OR mesh config
-            // (committed or staged).
-            if !args.auto_follow && !effective_follow_moves(repo, &m.name) {
-                continue;
-            }
-
-            // Guardrail: any Changed anchor in this mesh suppresses the
-            // entire mesh.
-            let has_changed_sibling = m
-                .anchors
-                .iter()
-                .any(|r| r.status == AnchorStatus::Changed);
-            if has_changed_sibling {
-                continue;
-            }
-
-            // Collect eligible Moved anchors.
-            let mut decisions: Vec<FollowDecision> = Vec::new();
-            for r in &m.anchors {
-                if r.status != AnchorStatus::Moved {
-                    continue;
-                }
-                let Some(cur) = &r.current else { continue };
-                // Guardrail: LineRange extents only — whole-file anchors are
-                // excluded from auto-follow.
-                if !matches!(r.anchored.extent, AnchorExtent::LineRange { .. })
-                    || !matches!(cur.extent, AnchorExtent::LineRange { .. })
-                {
-                    continue;
-                }
-                // Guardrail: path must not have been renamed.
-                if cur.path != r.anchored.path {
-                    continue;
-                }
-                // Guardrail: the move must be committed to HEAD (fail-closed).
-                // Compare HEAD's file-level blob OID for this path against the
-                // anchored file blob.  If they are equal the file is unchanged
-                // at HEAD — the shift exists only in the worktree or index and
-                // we must not rewrite the mesh against uncommitted content.
-                // If current.blob is None (uncommitted) we also skip.
-                let Some(anchored_file_blob) = r.anchored.blob else {
-                    continue;
-                };
-                let head_sha = match git::head_oid(repo) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let head_file_blob = match git::path_blob_at(
-                    repo,
-                    &head_sha,
-                    cur.path.to_str().unwrap_or(""),
-                ) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                // If HEAD file blob == anchored file blob, the file is
-                // unchanged at HEAD — this is a worktree-only shift.
-                if head_file_blob
-                    == anchored_file_blob.to_string()
-                {
-                    continue;
-                }
-                decisions.push(FollowDecision {
-                    anchor_id: r.anchor_id.clone(),
-                    new_path: cur.path.clone(),
-                    new_extent: cur.extent,
-                });
-            }
-
-            if decisions.is_empty() {
-                continue;
-            }
-
-            // Rewrite the mesh.
-            match follow_moves(repo, &m.name, &decisions) {
-                Ok(_commit) => {
-                    for d in &decisions {
-                        followed_ids.insert(d.anchor_id.clone());
-                    }
-                }
-                Err(e) => {
-                    // Rewrite failure is non-fatal: log to stderr and
-                    // continue. The anchor still renders as Moved.
-                    eprintln!("git mesh stale: auto-follow failed for {}: {e}", m.name);
-                }
-            }
-        }
-    }
+    let followed_ids: HashSet<String> = run_auto_follow_pass(repo, &args, &meshes);
 
     // Plan §B3: an acknowledged finding does not drive exit code; nor
     // does a `ContentUnavailable` finding under `--ignore-unavailable`.
@@ -1255,12 +1164,98 @@ fn plural(n: i64) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// Auto-follow pass shared by `git mesh stale` and `git mesh stale --compact`.
+///
+/// Computes `FollowDecision`s for each mesh and rewrites it via
+/// `follow_moves` when opt-in is active (`--auto-follow` flag or
+/// `follow-moves=true` in mesh config) and all guardrails hold. Returns
+/// the set of anchor_ids that were successfully followed in this run.
+///
+/// Failures are non-fatal: they are logged to stderr; the mesh is left
+/// unchanged. The exit-code accounting in the stale renderer subtracts
+/// followed anchor_ids from the stale count for the same run.
+pub(super) fn run_auto_follow_pass(
+    repo: &gix::Repository,
+    args: &StaleArgs,
+    meshes: &[MeshResolved],
+) -> HashSet<String> {
+    let mut followed_ids: HashSet<String> = HashSet::new();
+    if !(args.auto_follow || meshes.iter().any(|m| effective_follow_moves(repo, &m.name))) {
+        return followed_ids;
+    }
+    let _perf = crate::perf::span("stale.auto-follow");
+    for m in meshes {
+        if !args.auto_follow && !effective_follow_moves(repo, &m.name) {
+            continue;
+        }
+        // Guardrail: any Changed anchor in this mesh suppresses the entire mesh.
+        if m.anchors.iter().any(|r| r.status == AnchorStatus::Changed) {
+            continue;
+        }
+        let mut decisions: Vec<FollowDecision> = Vec::new();
+        for r in &m.anchors {
+            if r.status != AnchorStatus::Moved {
+                continue;
+            }
+            let Some(cur) = &r.current else { continue };
+            // Guardrail: LineRange extents only — whole-file anchors are excluded.
+            if !matches!(r.anchored.extent, AnchorExtent::LineRange { .. })
+                || !matches!(cur.extent, AnchorExtent::LineRange { .. })
+            {
+                continue;
+            }
+            // Guardrail: path must not have been renamed.
+            if cur.path != r.anchored.path {
+                continue;
+            }
+            // Guardrail: the move must be committed to HEAD (fail-closed).
+            let Some(anchored_file_blob) = r.anchored.blob else {
+                continue;
+            };
+            let head_sha = match git::head_oid(repo) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let head_file_blob = match git::path_blob_at(
+                repo,
+                &head_sha,
+                cur.path.to_str().unwrap_or(""),
+            ) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if head_file_blob == anchored_file_blob.to_string() {
+                continue;
+            }
+            decisions.push(FollowDecision {
+                anchor_id: r.anchor_id.clone(),
+                new_path: cur.path.clone(),
+                new_extent: cur.extent,
+            });
+        }
+        if decisions.is_empty() {
+            continue;
+        }
+        match follow_moves(repo, &m.name, &decisions) {
+            Ok(_commit) => {
+                for d in &decisions {
+                    followed_ids.insert(d.anchor_id.clone());
+                }
+            }
+            Err(e) => {
+                eprintln!("git mesh stale: auto-follow failed for {}: {e}", m.name);
+            }
+        }
+    }
+    followed_ids
+}
+
 /// Resolve whether auto-follow is active for a mesh via its config.
 ///
 /// Reads the committed mesh config and overlays any staged config so that
 /// `git mesh config <name> follow-moves true` (which only stages the change)
 /// is honoured without a separate `git mesh commit` step.
-fn effective_follow_moves(repo: &gix::Repository, mesh_name: &str) -> bool {
+pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh_name: &str) -> bool {
     let committed_fm = crate::mesh::read::read_mesh(repo, mesh_name)
         .map(|m| m.config.follow_moves)
         .unwrap_or(false);
