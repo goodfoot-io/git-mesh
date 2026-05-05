@@ -69,6 +69,17 @@ git mesh fetch
 
 If the remote lacks refspecs, `git mesh fetch` or `git mesh push` bootstraps them on first use. The default remote is `origin` unless `mesh.defaultRemote` is set.
 
+## Delete refuses while staging is non-empty
+
+`git mesh delete <name>` refuses when `.git/mesh/staging/<name>*` holds staged operations:
+
+```
+cannot delete `mymesh`: 3 staged operation(s) remain.
+Run `git mesh restore mymesh` to discard them, then retry the delete.
+```
+
+This is not `WhyRequired` — the mesh already exists and has history. The refusal prevents staged residue from outliving the ref, which would cause a phantom `WhyRequired` on the next `git mesh commit`. Recovery: `git mesh restore <name>` clears staging, then `git mesh delete <name>` succeeds.
+
 ## `git mesh doctor`
 
 Repository-health check, not a semantic-drift check. Verifies hooks, staging files, refspecs, anchor references, dangling anchor refs, and the file index. Regenerates `.git/mesh/file-index` if missing or corrupt. Run it when local behavior looks wrong or in a developer setup step.

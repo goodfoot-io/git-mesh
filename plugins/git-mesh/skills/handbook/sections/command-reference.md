@@ -67,7 +67,7 @@ Config is mesh state: staged, committed, and shared by every consumer of the mes
 ```bash
 git mesh restore <name>
 git mesh revert  <name> <commit-ish>
-git mesh delete  <name>
+git mesh delete  <name>            # refuses while staging is non-empty
 git mesh move      <old> <new>
 ```
 
