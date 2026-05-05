@@ -57,7 +57,32 @@ git mesh stale --format=junit
 git mesh stale --format=github-actions
 ```
 
-JSON carries `{ "schema_version": 1, ... }`. Parse the `source` field for the layer (`(index)` / `(worktree)` / `(staged)`); do not read the culprit column as a SHA. `CONTENT_UNAVAILABLE` findings carry a `reason`.
+### JSON schema (schema_version: 2)
+
+Top-level: `{ "schema_version": 2, "findings": [...], "staged_ops": [...] }`.
+
+Each finding carries:
+- `status.code` — `"FRESH"`, `"CHANGED"`, `"MOVED"`, `"ORPHANED"`, `"MERGE_CONFLICT"`, `"SUBMODULE"`, `"CONTENT_UNAVAILABLE"`, `"SidecarTampered"`
+- `status.detail` — empty for `FRESH`/`MERGE_CONFLICT`; reason tag for `CONTENT_UNAVAILABLE` (e.g. `"LfsNotFetched"`); tamper detail for `SidecarTampered`
+- `anchor.kind` — `"lines"` or `"whole"`
+- `anchor.path`, `anchor.line_start`, `anchor.line_end` (null for whole-file)
+- `current.blob` — the live blob OID, or `null` when the file is deleted
+- `current.path`, `current.line_start`, `current.line_end` — live location (may differ from anchor for `MOVED`)
+- `moved_to` — present only for `MOVED`; null for all other statuses
+- `source` — `"(index)"`, `"(worktree)"`, `"(staged)"`, or absent for HEAD
+
+`current.blob: null` with `status.code: "CHANGED"` means the file was deleted — the same condition that text output renders as `MOVED` with an arrow. See § "Text vs JSON disagreements" below.
+
+`CONTENT_UNAVAILABLE` findings carry a `status.detail` with the reason tag.
+
+### Text vs JSON disagreements
+
+The text renderer and JSON encoder do not always agree on status codes for the same anchor. The most common discrepancy:
+
+- **Text output shows `MOVED` (arrow)** — per-mesh `git mesh stale <name>` prints a `→` arrow when bytes match at a new location.
+- **JSON output shows `"code": "CHANGED"` with `moved_to: null`** — the full-sweep JSON encodes the same condition differently.
+
+When scripting against stale output, pick one format and test against it. Do not mix text and JSON interpretations in the same workflow. The JSON schema is the canonical encoding; the text renderer optimizes for human skimmability.
 
 ## Hook injections vs. CLI stale output
 

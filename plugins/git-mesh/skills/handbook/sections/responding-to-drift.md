@@ -1,6 +1,6 @@
 # Responding to drift
 
-A `CHANGED` or `MOVED` finding is a prompt, not a verdict. Decide whether the relationship the mesh describes still holds before reaching for any command — including when many meshes drift at once. Per-mesh judgment is required even when the same mechanism appears to apply to all of them; bulk loops that re-add every recorded anchor verbatim convert "this needs review" into a clean exit code without anyone confirming the relationship survived. See `./terminal-statuses.md` § "ORPHANED" for the same warning in the orphan case.
+A `CHANGED` or `MOVED` finding is a prompt, not a verdict. Decide whether the relationship the mesh describes still holds before reaching for any command. When many meshes drift at once, use the structured batch approach in § "Batch recovery" below — per-mesh confirmation is still required, but categorization and ordering make it tractable. Bulk loops that re-add every recorded anchor verbatim are an anti-pattern: they convert "this needs review" into a clean exit code without anyone confirming the relationship survived. See `./terminal-statuses.md` § "ORPHANED" for the same warning in the orphan case.
 
 ## Confirming the relationship is a concrete step, not a state of mind
 
@@ -24,6 +24,31 @@ graph TD
     B -->|Subsystem itself changed| E[New why,<br/>then re-anchor]
     B -->|Relationship gone| F[delete or revert]
 ```
+
+## Batch recovery
+
+When `git mesh stale` surfaces dozens or hundreds of findings (e.g. after a force-push orphans most meshes), process them in structured passes rather than one-at-a-time:
+
+**1. Export to JSON and categorize.** Parse `git mesh stale --format=json` into a script. Group findings by mesh name and tag each mesh by its anchor types: whole-file-only, line-range-only, or mixed.
+
+**2. Order by difficulty.** Process in this order:
+- **Line-range-only meshes first** — fastest to confirm and re-add.
+- **MOVED anchors next** — `git mesh remove` the old span, `git mesh add` the new one.
+- **Whole-file-only meshes last** — require reading the full file to confirm the relationship.
+
+**3. Stage all anchors for a mesh in one command.** `git mesh add <name> <anchor1> <anchor2> ...` accepts multiple anchors. One staging command per mesh, not one per anchor.
+
+**4. Run independent `git mesh add` calls in parallel.** Meshes that don't share files can be staged concurrently (up to ~6 at a time). A mesh that fails staging won't affect others.
+
+**5. Commit in bulk.** After all meshes are staged and confirmed, `git mesh commit` (no name) commits every mesh with non-empty staging in one pass.
+
+**6. Recover from conflicting staged adds with `git mesh restore`.** If you batch re-add at old line positions for anchors the system already auto-followed, the staging area will hold conflicting state. Clear it per-mesh and re-stage:
+```bash
+git mesh restore <name>
+git mesh add <name> '<path>#L<new-start>-L<new-end>'
+```
+
+The per-mesh confirmation step (§ "Confirming the relationship") still applies. Categorization and ordering reduce the overhead of applying it at scale; they do not replace it.
 
 ## When the relationship still holds: re-anchor
 

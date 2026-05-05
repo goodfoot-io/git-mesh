@@ -17,17 +17,6 @@ git mesh commit <name>
 
 This only applies to the *first* commit of a mesh. Later commits inherit the previous why automatically.
 
-## `git mesh delete` refuses while staging is non-empty
-
-`delete` removes the mesh ref but does not touch `.git/mesh/staging/<name>*`. To prevent residue from outliving the ref (which would otherwise surface as a phantom "first commit requires a why" on the next `git mesh commit`), `delete` refuses while staging is non-empty:
-
-```
-git mesh delete: cannot delete `<name>`: <n> staged operation(s) remain.
-Run `git mesh restore <name>` to discard them, then retry the delete.
-```
-
-Run `git mesh restore <name>` to drop the staged work, then retry `git mesh delete <name>`.
-
 ## A staged anchor drifted from the worktree
 
 Not an error — it's feedback. `git mesh stale` reports the staged `add` with a `drift` note when the sidecar bytes no longer match current content. Re-stage to refresh the sidecar:
@@ -79,6 +68,22 @@ Run `git mesh restore mymesh` to discard them, then retry the delete.
 ```
 
 This is not `WhyRequired` — the mesh already exists and has history. The refusal prevents staged residue from outliving the ref, which would cause a phantom `WhyRequired` on the next `git mesh commit`. Recovery: `git mesh restore <name>` clears staging, then `git mesh delete <name>` succeeds.
+
+## Symlink accepted at `add` but rejected at `commit`
+
+`git mesh add` accepts a symlink path, but `git mesh commit` rejects it:
+
+```
+error: mesh <name>: <path>: beyond a symbolic link
+```
+
+The anchor must point at the real path, not the symlink. Use `readlink -f` to resolve it:
+
+```bash
+readlink -f public/codex                # → public/claude/codex
+git mesh remove <name> public/codex
+git mesh add <name> public/claude/codex
+```
 
 ## `git mesh doctor`
 

@@ -6,7 +6,14 @@ Terminal statuses short-circuit the resolver — no slice math, no diff. Each on
 
 **Cause.** The anchor commit or anchor data is unreachable from current refs. Usually a force-push that rewrote history, a `git gc` that pruned an unreferenced commit, or a partial clone that never fetched the anchor.
 
-**First, try to recover the missing history** — a missing fetch is the only fix that doesn't require human judgment:
+**First, check whether the anchored files still exist on disk.** ORPHANED means the anchor commit is unreachable from current refs — it does not mean the files were deleted. In practice, most orphans come from history rewriting (force-push), and the files are still present. Use `ls` (or `Read` for content) on each anchored path. If the files exist, the strategy is re-anchor, not delete.
+
+```bash
+git mesh <name> --oneline    # list anchor paths compactly
+ls path/to/file1 path/to/file2   # check existence
+```
+
+If files are missing, try to recover the history:
 
 ```bash
 git fetch --all
@@ -14,7 +21,7 @@ git mesh fetch
 git mesh stale <name>     # re-check
 ```
 
-**If the anchor is still ORPHANED, the goal is not to dig up the lost commit. It is to confirm the relationship still holds and re-anchor at current bytes.** Do not script a bulk "add every anchor as-is" loop over `git mesh list --porcelain`; that erases the prompt without doing the work the prompt exists for. Each mesh needs its own decision.
+**When the files exist but the anchor is still ORPHANED, the goal is to confirm the relationship still holds and re-anchor at current bytes.** Do not script a bulk "add every anchor as-is" loop over `git mesh list --porcelain`; that erases the prompt without doing the work the prompt exists for. Each mesh needs its own decision.
 
 A user instruction like *"just re-add the anchors"* or *"skip recovery"* removes the fetch/recovery step — it does **not** remove the per-mesh confirmation below. If the shorthand sounds like a license to batch, that is the moment to slow down and surface the conflict, not the moment to script the loop.
 
