@@ -14,7 +14,7 @@ git mesh advice my-session snapshot
 
 # 2. (Optional) Record reads as they happen. A read crosses a dependency
 #    even when no edit is made, so editors and agents should log opens.
-git mesh advice my-session read web/checkout.tsx#L88-L120 api/charge.ts
+git mesh advice my-session read 'web/checkout.tsx#L88-L120' api/charge.ts
 
 # 3. Bare render. Diffs the current tree against the baseline and the
 #    last flush, walks staging and recorded reads, and emits candidates.

@@ -29,7 +29,7 @@ git mesh stale <name>     # re-check
    ```
    `git mesh stale <name> --patch` is the right tool for `CHANGED` anchors but produces nothing useful for true orphans (there are no anchored bytes to diff against). Read the live content directly.
 3. **Decide per the drift rules in `./responding-to-drift.md`:**
-   - Relationship still holds at the current location → re-anchor at the current span (`git mesh add <name> <path>#L<start>-L<end>`).
+   - Relationship still holds at the current location → re-anchor at the current span (`git mesh add <name> '<path>#L<start>-L<end>'`).
    - Lines have shifted → re-anchor at the *new* span (`git mesh remove` the old line range, then `git mesh add` the new one). Do **not** copy the old range forward without checking it still points at the right code.
    - The related code has diverged → fix it first, then re-anchor. Both sides land in the same commit.
    - The subsystem itself changed → stage a new why (`git mesh why <name> -m "..."`), then re-anchor.
@@ -53,7 +53,7 @@ Bulk loops that re-add every recorded anchor verbatim are an anti-pattern: they 
 
 **Fix.** Remove the anchor and re-pin at the appropriate level:
 ```bash
-git mesh remove <name> <submodule-path>/inner/file.ts#L10-L20
+git mesh remove <name> '<submodule-path>/inner/file.ts#L10-L20'
 # Either: whole-file pin on the submodule root
 git mesh add <name> <submodule-path>
 # Or: pin a parent-repo path that witnesses the same relationship

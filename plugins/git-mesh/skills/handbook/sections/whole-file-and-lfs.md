@@ -34,7 +34,7 @@ Line-range anchors on `filter=lfs` paths behave like non-LFS anchors as long as 
 
 ```bash
 git lfs fetch
-git mesh add perf-notes benchmarks/results.tsv#L1-L200
+git mesh add perf-notes 'benchmarks/results.tsv#L1-L200'
 ```
 
 If content is not cached:

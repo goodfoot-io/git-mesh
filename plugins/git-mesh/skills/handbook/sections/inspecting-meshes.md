@@ -13,14 +13,15 @@ This is the primary use of `git mesh list`. Always scope the query — a path, a
 Overlap semantics — a mesh is listed if any anchor touches the queried path or range. The full anchor list of each matching mesh is always shown.
 
 ```bash
-git mesh list src/Button.tsx
-git mesh list src/Button.tsx#L40-L60
-git mesh list src/Button.tsx src/Button.css     # multiple targets — unioned, deduped
-git mesh list checkout-request-flow src/api.ts  # mesh name + path mixed
-git mesh list 'src/billing/**/*.ts'             # glob (quote to defer to git mesh, or let the shell expand)
+git mesh list 'src/Button.tsx'
+git mesh list 'src/Button.tsx#L40-L60'
+git mesh list 'src/Button.tsx' 'src/Button.css'        # multiple targets — unioned, deduped
+git mesh list checkout-request-flow 'src/api.ts'       # mesh name + path mixed
+git mesh list billing/payments/checkout-request-flow   # hierarchical mesh name resolves as a name
+git mesh list 'src/billing/**/*.ts'                    # glob (quote to defer to git mesh, or let the shell expand)
 ```
 
-A target that resolves to no meshes is fine on its own — the command exits 0. The command only errors when a target names something that doesn't exist (missing file, missing mesh name, or a literal glob the shell didn't expand). The same rule applies to `git mesh stale [<target>...]`.
+Each argument is tried as a mesh name first when it has the mesh-name shape (kebab-case segments, optionally separated by `/`); it falls through to path-index lookup when no mesh matches, then to a worktree existence check. A target that resolves to no meshes is fine on its own — the command exits 0. The command only errors when a target names something that doesn't exist (missing file, missing mesh name, or a literal glob the shell didn't expand). The same rule applies to `git mesh stale [<target>...]`.
 
 ## Narrow by name or content with `--search`
 

@@ -60,16 +60,7 @@ git mesh why billing/checkout-request-flow -m "Don't change amount without updat
 git mesh why billing/checkout-request-flow -m "Charge flow. Owner: team-billing. Review on body changes."   # metadata — belongs in CODEOWNERS / PR
 ```
 
-Re-anchor after drift; do not rewrite the why:
-
-```bash
-# Same (path, extent), bytes changed: re-add is a re-anchor (last-write-wins)
-git mesh add billing/checkout-request-flow api/charge.ts#L30-L76
-
-# Different line span: rm the old, add the new
-git mesh remove  billing/checkout-request-flow api/charge.ts#L30-L76
-git mesh add billing/checkout-request-flow api/charge.ts#L34-L82
-```
+Re-anchor after drift; do not rewrite the why. See `./responding-to-drift.md` § "Re-anchoring" for the grammar.
 
 ## Line-range anchor vs whole-file anchor
 
@@ -82,8 +73,8 @@ git mesh add billing/checkout-request-flow api/charge.ts#L34-L82
 
 ```bash
 git mesh add billing/checkout-request-flow \
-  web/checkout.tsx#L88-L120 \
-  api/charge.ts#L30-L76
+  'web/checkout.tsx#L88-L120' \
+  'api/charge.ts#L30-L76'
 git mesh why billing/checkout-request-flow \
   -m "Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server."
 git commit -m "Wire checkout to charge API"   # post-commit hook runs `git mesh commit`
@@ -97,14 +88,12 @@ When the relationship already exists in history:
 
 ```bash
 git mesh add auth/token-contract \
-  packages/auth/token.ts#L88-L104 \
-  packages/auth/crypto.ts#L12-L40
+  'packages/auth/token.ts#L88-L104' \
+  'packages/auth/crypto.ts#L12-L40'
 git mesh why auth/token-contract -m "Token verification depends on signature verification."
 git mesh commit auth/token-contract
 ```
 
 Use `--at <commit-ish>` (any ref, tag, or SHA) only when the anchor should be a specific historical commit other than the current one.
 
-## First-commit requirements
-
-A new mesh has no parent to inherit a why from. The first `git mesh commit <name>` fails if no why is staged. Set one with `git mesh why <name> -m "..."` before committing.
+The first commit on a new mesh requires a staged why. See `./command-quirks-and-errors.md` § "First commit requires a why".

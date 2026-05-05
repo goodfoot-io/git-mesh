@@ -5,7 +5,7 @@ description: Use with `git mesh` or meshes.
 
 <instructions>
 - **`git mesh stale` output shows mesh anchors with `[CHANGED]`, `[MOVED]`, `FRESH`, `(ack)`, or `src=…` and the markers need interpreting**: Read `./sections/reading-stale-output.md`
-- **A mesh anchor on a file just edited is drifting and a decision is needed (re-anchor, fix the related anchor, update the why, leave it), or resolver config / `mv` / `delete` / `revert` is in play**: Read `./sections/responding-to-drift.md`
+- **A mesh anchor on a file just edited is drifting and a decision is needed (re-anchor, fix the related anchor, update the why, leave it), or resolver config / `move` / `delete` / `revert` is in play**: Read `./sections/responding-to-drift.md`
 - **A new relationship needs a mesh, or a mesh needs a name, why, anchor shape, or commit sequence**: Read `./sections/creating-a-mesh.md`
 - **An advice session needs setting up, baselining, or interpreting; `git mesh advice <id> snapshot|read` or a bare render is in play; or session state seems stale or absent**: Read `./sections/using-advice.md`
 - **A finding is `ORPHANED`, `MERGE_CONFLICT`, `SUBMODULE`, or `SidecarTampered`**: Read `./sections/terminal-statuses.md`
