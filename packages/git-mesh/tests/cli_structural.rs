@@ -287,3 +287,91 @@ fn doctor_flags_missing_refspec() -> Result<()> {
     assert!(combined.contains("refspec") || combined.to_lowercase().contains("remote"));
     Ok(())
 }
+
+#[test]
+
+fn delete_mesh_refuses_with_staged_adds() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    repo.mesh_stdout(["add", "m", "file2.txt#L1-L3"])?;
+    let out = repo.run_mesh(["delete", "m"])?;
+    assert!(
+        !out.status.success(),
+        "delete should refuse with staged adds; got exit code {:?}",
+        out.status.code()
+    );
+    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    Ok(())
+}
+
+#[test]
+
+fn delete_mesh_refuses_with_staged_why() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    repo.mesh_stdout(["why", "m", "-m", "staged why"])?;
+    let out = repo.run_mesh(["delete", "m"])?;
+    assert!(
+        !out.status.success(),
+        "delete should refuse with staged why; got exit code {:?}",
+        out.status.code()
+    );
+    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    Ok(())
+}
+
+#[test]
+
+fn delete_mesh_refuses_with_staged_configs() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    repo.mesh_stdout(["config", "m", "ignore-whitespace", "true"])?;
+    let out = repo.run_mesh(["delete", "m"])?;
+    assert!(
+        !out.status.success(),
+        "delete should refuse with staged configs; got exit code {:?}",
+        out.status.code()
+    );
+    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    Ok(())
+}
+
+#[test]
+
+fn delete_mesh_refuses_with_staged_removes() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    repo.mesh_stdout(["remove", "m", "file1.txt#L1-L5"])?;
+    let out = repo.run_mesh(["delete", "m"])?;
+    assert!(
+        !out.status.success(),
+        "delete should refuse with staged removes; got exit code {:?}",
+        out.status.code()
+    );
+    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    Ok(())
+}
+
+#[test]
+
+fn delete_mesh_succeeds_after_restore_clears_staging() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed(&repo, "m")?;
+    repo.mesh_stdout(["add", "m", "file2.txt#L1-L3"])?;
+    repo.mesh_stdout(["why", "m", "-m", "staged why"])?;
+    repo.mesh_stdout(["config", "m", "ignore-whitespace", "true"])?;
+    repo.mesh_stdout(["remove", "m", "file1.txt#L1-L5"])?;
+    // Before restore, delete must refuse with non-empty staging.
+    let out = repo.run_mesh(["delete", "m"])?;
+    assert!(
+        !out.status.success(),
+        "delete should refuse with non-empty staging; got exit code {:?}",
+        out.status.code()
+    );
+    assert!(repo.ref_exists("refs/meshes/v1/m"));
+    // After restore clears staging, delete succeeds.
+    repo.mesh_stdout(["restore", "m"])?;
+    repo.mesh_stdout(["delete", "m"])?;
+    assert!(!repo.ref_exists("refs/meshes/v1/m"));
+    Ok(())
+}
