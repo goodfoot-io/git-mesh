@@ -273,3 +273,6 @@ fn bootstrap_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .map_err(|e| crate::Error::Git(format!("set user_version: {e}")))
 }
+
+#[cfg(test)]
+mod tests;
