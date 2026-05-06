@@ -296,7 +296,6 @@ fn grouped_walk_replace_evicts_old_head_in_one_txn() {
 /// Manually corrupt `user_version` in an existing DB, reopen via `Cache::open`,
 /// and assert that the tables are freshly empty (schema was dropped and rebuilt).
 #[test]
-#[ignore]
 fn version_mismatch_drops_and_rebuilds() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
@@ -421,7 +420,6 @@ fn gc_drops_unreachable_rows_only() {
 /// With `GIT_MESH_CACHE=0`, puts are silently skipped.  After re-enabling the
 /// env var, the row must be absent (confirming the put was a no-op).
 #[test]
-#[ignore]
 fn cache_disabled_env_var_skips_reads_and_writes() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
