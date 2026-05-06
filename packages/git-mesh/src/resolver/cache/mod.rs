@@ -317,15 +317,63 @@ impl Cache {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn grouped_walk_get_ancestor(
         &self,
-        _anchor: &str,
-        _cd: CopyDetection,
-        _head: &str,
-        _repo: &gix::Repository,
+        anchor: &str,
+        cd: CopyDetection,
+        seed_hash: &[u8],
+        replace_refs_hash: &[u8],
+        git_config_hash: &[u8],
+        rename_budget: i64,
+        head: &str,
+        repo: &gix::Repository,
     ) -> Option<(String /* cached_head */, GroupedWalk)> {
         if !self.enabled {
             return None;
+        }
+        let cd_int = copy_detection_to_int(cd);
+        // Query all candidate rows for this anchor + CopyDetection + key hashes.
+        let mut stmt = self.conn.prepare(
+            "SELECT head_sha, walk_blob FROM grouped_walk_cache \
+             WHERE anchor_sha = ?1 AND copy_detection = ?2 \
+               AND seed_hash = ?3 AND replace_refs_hash = ?4 \
+               AND git_config_hash = ?5 AND rename_budget = ?6",
+        ).ok()?;
+        let rows: Vec<(String, Vec<u8>)> = stmt.query_map(
+            rusqlite::params![anchor, cd_int, seed_hash, replace_refs_hash, git_config_hash, rename_budget],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        ).ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+
+        use std::str::FromStr;
+        let head_oid = gix::ObjectId::from_str(head).ok()?;
+
+        for (cached_head_sha, walk_blob) in rows {
+            let cached_oid = match gix::ObjectId::from_str(&cached_head_sha) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            // Skip if cached_head == head (that's an exact hit, not ancestor).
+            if cached_oid == head_oid {
+                continue;
+            }
+            // Check: is cached_head an ancestor of head?
+            // merge_base(A, B) == A means A is an ancestor of B.
+            let is_ancestor = match repo.merge_base(cached_oid, head_oid) {
+                Ok(base) => base.detach() == cached_oid,
+                Err(_) => false,
+            };
+            if !is_ancestor {
+                continue;
+            }
+            // Decode the walk; skip on failure.
+            let walk = match bincode::deserialize::<GroupedWalk>(&walk_blob) {
+                Ok(w) => w,
+                Err(_) => continue,
+            };
+            return Some((cached_head_sha, walk));
         }
         None
     }
@@ -333,11 +381,56 @@ impl Cache {
     pub(crate) fn grouped_walk_replace(
         &self,
         txn: &Transaction,
-        _old_head: Option<&str>,
+        old_head: Option<&str>,
         key: &GroupedWalkKey,
         walk: &GroupedWalk,
     ) -> Result<()> {
-        self.grouped_walk_put_exact(txn, key, walk)
+        if !self.enabled {
+            return Ok(());
+        }
+        let cd_int = copy_detection_to_int(key.copy_detection);
+        let rename_budget = key.rename_budget as i64;
+        // DELETE old row if old_head is provided.
+        if let Some(old_h) = old_head {
+            txn.execute(
+                "DELETE FROM grouped_walk_cache \
+                 WHERE anchor_sha = ?1 AND copy_detection = ?2 \
+                   AND seed_hash = ?3 AND replace_refs_hash = ?4 \
+                   AND git_config_hash = ?5 AND rename_budget = ?6 \
+                   AND head_sha = ?7",
+                rusqlite::params![
+                    key.anchor_sha,
+                    cd_int,
+                    key.seed_hash.as_ref(),
+                    key.replace_refs_hash.as_ref(),
+                    key.git_config_hash.as_ref(),
+                    rename_budget,
+                    old_h,
+                ],
+            )
+            .map_err(|e| crate::Error::Git(format!("grouped_walk delete old: {e}")))?;
+        }
+        // INSERT new row.
+        let blob = bincode::serialize(walk)
+            .map_err(|e| crate::Error::Git(format!("bincode serialize grouped_walk: {e}")))?;
+        txn.execute(
+            "INSERT OR REPLACE INTO grouped_walk_cache \
+             (anchor_sha, head_sha, copy_detection, seed_hash, replace_refs_hash, \
+              git_config_hash, rename_budget, walk_blob) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                key.anchor_sha,
+                key.head_sha,
+                cd_int,
+                key.seed_hash.as_ref(),
+                key.replace_refs_hash.as_ref(),
+                key.git_config_hash.as_ref(),
+                rename_budget,
+                blob,
+            ],
+        )
+        .map_err(|e| crate::Error::Git(format!("grouped_walk insert: {e}")))?;
+        Ok(())
     }
 
     // ── GC ──────────────────────────────────────────────────────────────────

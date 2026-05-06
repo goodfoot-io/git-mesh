@@ -95,7 +95,7 @@ fn whole_only_path_still_produces_canonical() {
     assert_eq!(bar[0].source, ExtentSource::Whole);
 
     // canonical_id_of indices are dense within 0..ranges.len().
-    for (_k, &id) in &canonical.canonical_id_of {
+    for &id in canonical.canonical_id_of.values() {
         assert!(id < canonical.ranges.len());
     }
 }

@@ -35,14 +35,14 @@ fn make_compact_rs() -> String {
     s.push_str("//\n"); // 2
     s.push_str("// The body of `run_compact` spans lines 13..=156. Lines 88..=120\n"); // 3
     s.push_str("// sit inside that body — the Edit hunk fixture targets that range.\n"); // 4
-    s.push_str("\n"); // 5
+    s.push('\n'); // 5
     s.push_str("use std::io;\n"); // 6
     s.push_str("use std::path::Path;\n"); // 7
-    s.push_str("\n"); // 8
+    s.push('\n'); // 8
     s.push_str("pub struct CompactOpts {\n"); // 9
     s.push_str("    pub dry_run: bool,\n"); // 10
     s.push_str("}\n"); // 11
-    s.push_str("\n"); // 12
+    s.push('\n'); // 12
 
     // Line 13: `pub fn run_compact(...)` opens.
     s.push_str("pub fn run_compact(opts: &CompactOpts, root: &Path) -> io::Result<()> {\n"); // 13
@@ -56,7 +56,7 @@ fn make_compact_rs() -> String {
         let stmt = match line % 6 {
             0 => format!("    let _value_{line}: usize = {line};\n"),
             1 => format!("    let _name_{line} = String::from(\"line_{line}\");\n"),
-            2 => format!("    if opts.dry_run {{ let _ = root; }}\n"),
+            2 => "    if opts.dry_run { let _ = root; }\n".to_string(),
             3 => format!("    for _i_{line} in 0..{line} {{ let _ = _i_{line}; }}\n"),
             4 => format!("    let _path_{line} = root.join(\"file_{line}.txt\");\n"),
             _ => format!("    let _ = ({line}u32, opts.dry_run);\n"),
@@ -74,10 +74,10 @@ fn make_compact_rs() -> String {
 fn make_mod_rs() -> String {
     let mut s = String::new();
     s.push_str("//! cli/mod.rs — fixture for Phase F.4 end-to-end test.\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str("pub mod compact;\n");
     s.push_str("pub mod stale_output;\n");
-    s.push_str("\n");
+    s.push('\n');
     for i in 0..50 {
         s.push_str(&format!("pub const ITEM_{i}: u32 = {i};\n"));
     }
@@ -87,7 +87,7 @@ fn make_mod_rs() -> String {
 fn make_stale_output_rs() -> String {
     let mut s = String::new();
     s.push_str("//! cli/stale_output.rs — fixture for Phase F.4 end-to-end test.\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str("pub fn render_stale_summary(count: usize) -> String {\n");
     s.push_str("    let mut out = String::new();\n");
     for i in 0..70 {

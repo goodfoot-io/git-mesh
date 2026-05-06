@@ -205,7 +205,6 @@ fn grouped_walk_exact_hit_returns_same_walk() {
 /// which is a descendant of `head_v1`. The cache returns the cached head
 /// and the walk.
 #[test]
-#[ignore]
 fn grouped_walk_ancestor_hit_returns_cached_head_and_walk() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
@@ -231,6 +230,10 @@ fn grouped_walk_ancestor_hit_returns_cached_head_and_walk() {
     let result = cache2.grouped_walk_get_ancestor(
         &anchor,
         CopyDetection::Off,
+        key_v1.seed_hash.as_ref(),
+        key_v1.replace_refs_hash.as_ref(),
+        key_v1.git_config_hash.as_ref(),
+        key_v1.rename_budget as i64,
         &head_v2,
         &repo,
     );
@@ -243,7 +246,6 @@ fn grouped_walk_ancestor_hit_returns_cached_head_and_walk() {
 /// `grouped_walk_replace` with `old_head` set deletes the old row and
 /// inserts the new one atomically.
 #[test]
-#[ignore]
 fn grouped_walk_replace_evicts_old_head_in_one_txn() {
     let (_td, repo) = init_repo();
     let dir = _td.path();

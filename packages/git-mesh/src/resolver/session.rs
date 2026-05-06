@@ -113,6 +113,8 @@ pub(crate) struct ResolveSession {
     pub(crate) trail_cache_misses: u64,
     /// Counter: Tier 3 grouped_walk cache hits (exact key).
     pub(crate) grouped_walk_cache_hits: u64,
+    /// Counter: Tier 3 grouped_walk cache hits (ancestor key).
+    pub(crate) grouped_walk_ancestor_hits: u64,
     /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
     /// wired in Phase 3 step 2.
     pub(crate) cache: Cache,
@@ -134,6 +136,7 @@ impl ResolveSession {
             trail_cache_hits: 0,
             trail_cache_misses: 0,
             grouped_walk_cache_hits: 0,
+            grouped_walk_ancestor_hits: 0,
             cache,
         }
     }
@@ -170,6 +173,7 @@ impl ResolveSession {
             &mut self.trail_cache_hits,
             &mut self.trail_cache_misses,
             &mut self.grouped_walk_cache_hits,
+            &mut self.grouped_walk_ancestor_hits,
             &self.cache,
         )?;
         self.walks.insert(key, walk);
@@ -213,6 +217,7 @@ impl ResolveSession {
                 &mut self.trail_cache_hits,
                 &mut self.trail_cache_misses,
                 &mut self.grouped_walk_cache_hits,
+                &mut self.grouped_walk_ancestor_hits,
                 &self.cache,
             )?;
             self.walks.insert(key.clone(), walk);
@@ -243,22 +248,116 @@ fn build_grouped_walk(
     trail_cache_hits_counter: &mut u64,
     trail_cache_misses_counter: &mut u64,
     grouped_walk_cache_hits_counter: &mut u64,
+    grouped_walk_ancestor_hits_counter: &mut u64,
     cache: &Cache,
 ) -> Result<GroupedWalk> {
     let head_sha = git::head_oid(repo)?;
 
     // Tier 3 exact-hit probe: skip the entire walk on cache hit.
-    if cache.is_enabled() {
+    // Compute the trail_key once so we can reuse for ancestor probe + persist.
+    let cached_trail_key = if cache.is_enabled() {
         let empty_seed = HashSet::<String>::new();
         let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
-        if let Ok(trail_key) = trail_cache::compute_key(
+        trail_cache::compute_key(
             repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
+        ).ok()
+    } else {
+        None
+    };
+
+    if let Some(trail_key) = &cached_trail_key {
+        let gw_key = GroupedWalkKey::from_trail_key(trail_key, head_sha.clone());
+        if let Some(cached_walk) = cache.grouped_walk_get_exact(&gw_key) {
+            *grouped_walk_cache_hits_counter += 1;
+            return Ok(cached_walk);
+        }
+
+        // Tier 3 ancestor-hit probe: a cached walk exists for the same
+        // anchor + key whose head is an ancestor of HEAD. Walk only
+        // `cached_head..HEAD` and append per-commit deltas, then replace.
+        if let Some((cached_head, cached_walk)) = cache.grouped_walk_get_ancestor(
+            anchor_sha,
+            copy_detection,
+            trail_key.candidate_seed_hash.as_ref(),
+            trail_key.replace_refs_hash.as_ref(),
+            trail_key.git_config_hash.as_ref(),
+            trail_key.rename_budget as i64,
+            &head_sha,
+            repo,
         ) {
-            let gw_key = GroupedWalkKey::from_trail_key(&trail_key, head_sha.clone());
-            if let Some(cached_walk) = cache.grouped_walk_get_exact(&gw_key) {
-                *grouped_walk_cache_hits_counter += 1;
-                return Ok(cached_walk);
+            // Walk only cached_head..HEAD and append.
+            let mut new_commits =
+                git::rev_walk_excluding(repo, &[&head_sha], &[&cached_head], None)
+                    .unwrap_or_default();
+            new_commits.reverse();
+
+            let mut deltas = cached_walk.commits.clone();
+            let mut ns_cache_buffer: Vec<(String, String, CopyDetection, Vec<NS>)> = Vec::new();
+            let mut parent = cached_head.clone();
+            let prior_warning_count = warnings.len();
+
+            for commit in &new_commits {
+                // No interesting filter for the incremental tail — we don't
+                // have a trail closure for the new commits and re-running
+                // Pass 1 here would defeat the cache.  Treat every new
+                // commit as interesting (same fallback Pass 1 uses on
+                // budget exhaustion).
+                *interesting_counter += 1;
+                let entries = if let Some(cached) =
+                    cache.name_status_get(&parent, commit, copy_detection)
+                {
+                    cached
+                } else {
+                    let result =
+                        walker::name_status(repo, &parent, commit, copy_detection, warnings)?;
+                    ns_cache_buffer.push((
+                        parent.clone(),
+                        commit.clone(),
+                        copy_detection,
+                        result.clone(),
+                    ));
+                    result
+                };
+                deltas.push(CommitDelta {
+                    parent: parent.clone(),
+                    commit: commit.clone(),
+                    entries,
+                });
+                parent = commit.clone();
             }
+            let new_renames_disabled =
+                cached_walk.renames_disabled || warnings.len() > prior_warning_count;
+
+            // Batch insert name_status misses.
+            if !ns_cache_buffer.is_empty() {
+                let rows: Vec<(&str, &str, CopyDetection, Vec<NS>)> = ns_cache_buffer
+                    .iter()
+                    .map(|(p, c, cd, entries)| (p.as_str(), c.as_str(), *cd, entries.clone()))
+                    .collect();
+                if let Err(e) =
+                    cache.with_write_txn(|txn| cache.name_status_put_batch(txn, &rows))
+                {
+                    eprintln!("name_status cache write error (ignored): {e}");
+                }
+            }
+
+            let updated_walk = GroupedWalk {
+                anchor_sha: anchor_sha.to_string(),
+                head_sha: head_sha.clone(),
+                commits: deltas,
+                renames_disabled: new_renames_disabled,
+                closed_paths: cached_walk.closed_paths.clone(),
+            };
+
+            let new_key = GroupedWalkKey::from_trail_key(trail_key, head_sha.clone());
+            if let Err(e) = cache.with_write_txn(|txn| {
+                cache.grouped_walk_replace(txn, Some(&cached_head), &new_key, &updated_walk)
+            }) {
+                eprintln!("grouped_walk cache replace error (ignored): {e}");
+            }
+
+            *grouped_walk_ancestor_hits_counter += 1;
+            return Ok(updated_walk);
         }
     }
 
@@ -436,16 +535,10 @@ fn build_grouped_walk(
     };
 
     // Tier 3 persist: store walk for future exact-hit probes.
-    if cache.is_enabled() {
-        let empty_seed = HashSet::<String>::new();
-        let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
-        if let Ok(trail_key) = trail_cache::compute_key(
-            repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
-        ) {
-            let gw_key = GroupedWalkKey::from_trail_key(&trail_key, head_sha);
-            if let Err(e) = cache.with_write_txn(|txn| cache.grouped_walk_put_exact(txn, &gw_key, &walk)) {
-                eprintln!("grouped_walk cache write error (ignored): {e}");
-            }
+    if let Some(trail_key) = &cached_trail_key {
+        let gw_key = GroupedWalkKey::from_trail_key(trail_key, head_sha);
+        if let Err(e) = cache.with_write_txn(|txn| cache.grouped_walk_put_exact(txn, &gw_key, &walk)) {
+            eprintln!("grouped_walk cache write error (ignored): {e}");
         }
     }
 

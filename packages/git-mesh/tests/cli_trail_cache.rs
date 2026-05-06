@@ -131,18 +131,23 @@ fn stale_head_advance_invalidates() -> Result<()> {
     repo.write_file("unrelated.txt", "content\n")?;
     repo.commit_all("advance HEAD")?;
 
-    // After HEAD moves, the cache key changes → miss.
+    // After HEAD moves, the trail cache key changes → exact-key miss. Either
+    // the trail cache misses outright (the resolver runs Pass 1 + walk), or
+    // the Tier 3 ancestor probe hits and the resolver walks only the new
+    // tail. Both are correct — the failure case is "exact trail-cache hit
+    // at the new HEAD", which would mean the cache served stale data.
     let stderr = run_stale_all_with_perf(&repo)?;
     let hits = parse_counter(&stderr, "session.trail-cache-hits");
     let misses = parse_counter(&stderr, "session.trail-cache-misses");
+    let ancestor_hits = parse_counter(&stderr, "session.grouped-walk-ancestor-hits");
 
     assert_eq!(
         hits, 0,
         "expected 0 cache hits after HEAD advance, got {hits}; stderr:\n{stderr}"
     );
     assert!(
-        misses > 0,
-        "expected at least one miss after HEAD advance, got {misses}; stderr:\n{stderr}"
+        misses > 0 || ancestor_hits > 0,
+        "expected at least one trail-cache miss or grouped-walk ancestor hit after HEAD advance; got misses={misses}, ancestor_hits={ancestor_hits}; stderr:\n{stderr}"
     );
 
     Ok(())
