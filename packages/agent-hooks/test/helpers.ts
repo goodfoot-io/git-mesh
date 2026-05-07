@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AdviceExecutor, AdviceInvocation } from "../src/advice-common.js";
+import type { AdviceExecutor, AdviceInvocation, CapturingAdviceExecutor } from "../src/advice-common.js";
 
 /**
  * Recording fake `AdviceExecutor`. Tests inspect `invocations` to assert the
@@ -28,6 +28,30 @@ export function createRecordingExecutor(): {
     invocations,
     failNext: (error) => {
       pendingError = error;
+    },
+  };
+}
+
+/**
+ * Recording fake `CapturingAdviceExecutor`. Each invocation is recorded and
+ * the configured stdout (default `""`) is returned to the caller.
+ */
+export function createCapturingExecutor(stdout: string = ""): {
+  executor: CapturingAdviceExecutor;
+  invocations: AdviceInvocation[];
+  setStdout: (next: string) => void;
+} {
+  const invocations: AdviceInvocation[] = [];
+  let next = stdout;
+  const executor: CapturingAdviceExecutor = (inv) => {
+    invocations.push(inv);
+    return next;
+  };
+  return {
+    executor,
+    invocations,
+    setStdout: (s) => {
+      next = s;
     },
   };
 }

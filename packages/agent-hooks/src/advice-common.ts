@@ -51,6 +51,23 @@ export function createDefaultAdviceExecutor(timeoutMs: number = ADVICE_TIMEOUT_M
 }
 
 /**
+ * Variant of `AdviceExecutor` that captures the subprocess stdout. Used by
+ * the Stop hook to surface `flush` output as a `systemMessage`.
+ */
+export type CapturingAdviceExecutor = (invocation: AdviceInvocation) => string;
+
+export function createDefaultCapturingAdviceExecutor(timeoutMs: number = ADVICE_TIMEOUT_MS): CapturingAdviceExecutor {
+  return ({ repoRoot, sid, verb, args }) => {
+    return execFileSync("git", ["mesh", "advice", sid, verb, ...args], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "inherit"],
+      timeout: timeoutMs,
+      encoding: "utf8",
+    });
+  };
+}
+
+/**
  * Resolve a directory to its containing git repo toplevel. Returns null if
  * the directory does not exist or is not inside a working tree.
  */

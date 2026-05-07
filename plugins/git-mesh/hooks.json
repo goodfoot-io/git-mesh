@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node $CLAUDE_PLUGIN_ROOT/bin/stop.e6483191.mjs",
+            "timeout": 15000
+          }
+        ],
+        "matcher": "*"
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -39,10 +51,11 @@
   },
   "__generated": {
     "files": [
+      "stop.e6483191.mjs",
       "session-end.bc2b3fd7.mjs",
       "pre-tool-use.19106788.mjs",
       "post-tool-use.2593c65b.mjs"
     ],
-    "timestamp": "2026-05-07T17:20:32.766Z"
+    "timestamp": "2026-05-07T17:47:02.101Z"
   }
 }
