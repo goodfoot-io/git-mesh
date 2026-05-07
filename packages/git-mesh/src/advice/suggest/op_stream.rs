@@ -157,7 +157,7 @@ fn parse_digits(bytes: &[u8]) -> Option<i64> {
 
 /// All touches are treated as edit events. Per-hunk touches now carry
 /// `start`/`end` line ranges forwarded from `structuredPatch` hunks (see
-/// the `Edit`/`MultiEdit` branch of `advice-post-tool-use.sh`); whole-file
+/// the `Edit`/`MultiEdit` branch of `packages/agent-hooks/src/post-tool-use.ts`); whole-file
 /// `Modified` touches still arrive with `start`/`end` unset.
 fn is_edit_touch(_t: &TouchInterval) -> bool {
     true

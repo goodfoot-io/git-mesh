@@ -86,7 +86,7 @@ When scripting against stale output, pick one format and test against it. Do not
 
 ## Hook injections vs. CLI stale output
 
-The PostToolUse hook in `plugins/git-mesh/hooks/hooks.json` does **not** call `git mesh stale`. It calls `git mesh advice <sid> read|touch|flush`, whose render shape and marker set are different. See `./understanding-hook-output.md` for the advice render. Notable differences when reading text in `additionalContext` / `systemMessage`:
+The PostToolUse hook in `plugins/git-mesh/hooks.json` does **not** call `git mesh stale`. It calls `git mesh advice <sid> read|touch|flush`, whose render shape and marker set are different. See `./understanding-hook-output.md` for the advice render. Notable differences when reading text in `additionalContext` / `systemMessage`:
 
 - Header line: `<active-anchor> is in the <mesh> mesh with:` (advice) vs. per-mesh status header (`stale`).
 - Status clauses appear in **parentheses** in advice (`(CHANGED)`, `(MOVED)`, `(ORPHANED)`, `(CONFLICT)`, `(SUBMODULE)`, `(DELETED)`, `(RENAMED)`); `stale` uses **square brackets** (`[CHANGED]`, `[MOVED]`) plus `FRESH`, `(ack)`, and `src=…` annotations that advice does not emit.

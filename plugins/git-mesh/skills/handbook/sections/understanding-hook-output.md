@@ -15,11 +15,11 @@ The hook layer fails closed: if the workspace is not a git repository, if the ho
 
 ## When each hook fires
 
-Three events drive the delivery layer (`plugins/git-mesh/hooks/hooks.json`). Only one of them produces user-visible output; the other two manage the per-session state the renderer reads from.
+Three events drive the delivery layer (`plugins/git-mesh/hooks.json`, generated from `packages/agent-hooks/src/`). Only one of them produces user-visible output; the other two manage the per-session state the renderer reads from.
 
 ### PreToolUse — capture a snapshot pair
 
-Matcher: `Edit|Write|MultiEdit|Bash|mcp__.*`. Script: `bin/advice-pre-tool-use.sh`.
+Matcher: `Edit|Write|MultiEdit|Bash|mcp__.*`. Source: `packages/agent-hooks/src/pre-tool-use.ts`.
 
 For tools whose effects on the workspace are not visible from their structured input — `Bash` and any `mcp__*` tool — the hook calls `git mesh advice <sid> mark <tool_use_id>` to capture a before snapshot of the working tree. PostToolUse then captures the after snapshot and diffs the pair, so file changes produced as side effects of a shell command or MCP call can be attributed back to the exact tool call that caused them.
 
@@ -29,7 +29,7 @@ PreToolUse never injects text. Its only job is to leave a snapshot pair on disk 
 
 ### PostToolUse — render advice for what just happened
 
-Matcher: `Read|Edit|Write|MultiEdit|Bash|mcp__.*`. Script: `bin/advice-post-tool-use.sh`. **The only injection point.**
+Matcher: `Read|Edit|Write|MultiEdit|Bash|mcp__.*`. Source: `packages/agent-hooks/src/post-tool-use.ts`. **The only injection point.**
 
 Per tool, it picks the right `git mesh advice` verb:
 
@@ -42,7 +42,7 @@ The output of the chosen verb is JSON-wrapped into `{hookSpecificOutput: {hookEv
 
 ### SessionEnd — clean up session state
 
-Matcher: `*`. Script: `bin/advice-session-end.sh`.
+Matcher: `*`. Source: `packages/agent-hooks/src/session-end.ts`.
 
 Calls `git mesh advice <sid> end`, which removes the per-session advice directory and any leftover snapshot pairs left under `.git/mesh/advice/<sid>/`. SessionEnd does not inject text; it exists so the on-disk session store does not grow without bound across many sessions.
 
