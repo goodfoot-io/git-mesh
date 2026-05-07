@@ -54,9 +54,32 @@ pub(crate) fn compute_key(
     copy_detection: CopyDetection,
     seed: &HashSet<String>,
 ) -> Result<TrailCacheKey> {
-    let candidate_seed_hash = hash_sorted_paths(seed);
     let replace_refs_hash = hash_replace_refs(repo)?;
     let git_config_hash = hash_git_config(repo)?;
+    compute_key_with_hashes(
+        anchor_sha,
+        head_sha,
+        copy_detection,
+        seed,
+        replace_refs_hash,
+        git_config_hash,
+    )
+}
+
+/// Compute the cache key using pre-computed `replace_refs_hash` and
+/// `git_config_hash`. Both must be the same bytes that `hash_replace_refs` and
+/// `hash_git_config` would produce — semantics are unchanged. Use this variant
+/// when those hashes are memoized for the duration of a single `stale` run so
+/// the subprocess forks are paid exactly once.
+pub(crate) fn compute_key_with_hashes(
+    anchor_sha: &str,
+    head_sha: &str,
+    copy_detection: CopyDetection,
+    seed: &HashSet<String>,
+    replace_refs_hash: [u8; 32],
+    git_config_hash: [u8; 32],
+) -> Result<TrailCacheKey> {
+    let candidate_seed_hash = hash_sorted_paths(seed);
     let rename_budget = crate::resolver::walker::rename_budget();
 
     Ok(TrailCacheKey {
@@ -68,6 +91,19 @@ pub(crate) fn compute_key(
         replace_refs_hash,
         git_config_hash,
     })
+}
+
+/// Compute the hashes that are constant for the duration of one `stale` run:
+/// the `git for-each-ref refs/replace/` snapshot and the diff/rename config
+/// values. Returns `None` on subprocess failure (the caller degrades to
+/// per-anchor `compute_key` which re-runs the forks and propagates errors
+/// the normal way).
+pub(crate) fn compute_session_hashes(
+    repo: &gix::Repository,
+) -> Option<([u8; 32], [u8; 32])> {
+    let replace = hash_replace_refs(repo).ok()?;
+    let config = hash_git_config(repo).ok()?;
+    Some((replace, config))
 }
 
 /// Load a cache entry. Returns `Ok(Some(entry))` on hit, `Ok(None)` on

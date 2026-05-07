@@ -118,6 +118,12 @@ pub(crate) struct ResolveSession {
     /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
     /// wired in Phase 3 step 2.
     pub(crate) cache: Cache,
+    /// Session-wide memoized hashes: `(replace_refs_hash, git_config_hash)`.
+    /// Both are constant for the duration of one `git mesh stale` run — they
+    /// depend on git refs and config, not on any anchor or HEAD. Computed once
+    /// in `new()` and reused by every `build_grouped_walk` call, eliminating
+    /// 8 subprocess forks per unique anchor SHA.
+    session_hashes: Option<([u8; 32], [u8; 32])>,
 }
 
 impl ResolveSession {
@@ -126,6 +132,9 @@ impl ResolveSession {
             // Cache failures degrade silently to a disabled cache.
             Cache::open_disabled()
         });
+        // Compute session-wide hashes once. Failure degrades to None; each
+        // build_grouped_walk call then falls back to per-call compute_key.
+        let session_hashes = trail_cache::compute_session_hashes(repo);
         Self {
             walks: HashMap::new(),
             ensure_calls: 0,
@@ -138,6 +147,7 @@ impl ResolveSession {
             grouped_walk_cache_hits: 0,
             grouped_walk_ancestor_hits: 0,
             cache,
+            session_hashes,
         }
     }
 
@@ -175,6 +185,7 @@ impl ResolveSession {
             &mut self.grouped_walk_cache_hits,
             &mut self.grouped_walk_ancestor_hits,
             &self.cache,
+            self.session_hashes,
         )?;
         self.walks.insert(key, walk);
         Ok(())
@@ -219,6 +230,7 @@ impl ResolveSession {
                 &mut self.grouped_walk_cache_hits,
                 &mut self.grouped_walk_ancestor_hits,
                 &self.cache,
+                self.session_hashes,
             )?;
             self.walks.insert(key.clone(), walk);
         } else {
@@ -250,6 +262,11 @@ fn build_grouped_walk(
     grouped_walk_cache_hits_counter: &mut u64,
     grouped_walk_ancestor_hits_counter: &mut u64,
     cache: &Cache,
+    // Pre-computed session-wide hashes: `(replace_refs_hash, git_config_hash)`.
+    // When `Some`, these are reused for every `compute_key` call in this
+    // function, avoiding 8 subprocess forks per anchor. When `None`, falls
+    // back to per-call `compute_key` (same behavior as before memoization).
+    session_hashes: Option<([u8; 32], [u8; 32])>,
 ) -> Result<GroupedWalk> {
     let head_sha = git::head_oid(repo)?;
 
@@ -258,9 +275,16 @@ fn build_grouped_walk(
     let cached_trail_key = if cache.is_enabled() {
         let empty_seed = HashSet::<String>::new();
         let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
-        trail_cache::compute_key(
-            repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
-        ).ok()
+        if let Some((replace_refs_hash, git_config_hash)) = session_hashes {
+            trail_cache::compute_key_with_hashes(
+                anchor_sha, &head_sha, copy_detection, seed_for_key,
+                replace_refs_hash, git_config_hash,
+            ).ok()
+        } else {
+            trail_cache::compute_key(
+                repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
+            ).ok()
+        }
     } else {
         None
     };
@@ -404,13 +428,23 @@ fn build_grouped_walk(
                 Hit(HashSet<String>, HashSet<String>),
                 Miss,
             }
-            let probe = match trail_cache::compute_key(
-                repo,
-                anchor_sha,
-                &head_sha,
-                copy_detection,
-                seed,
-            ) {
+            let compute_key_local = |seed: &HashSet<String>| -> Result<trail_cache::TrailCacheKey> {
+                if let Some((replace_refs_hash, git_config_hash)) = session_hashes {
+                    trail_cache::compute_key_with_hashes(
+                        anchor_sha,
+                        &head_sha,
+                        copy_detection,
+                        seed,
+                        replace_refs_hash,
+                        git_config_hash,
+                    )
+                } else {
+                    trail_cache::compute_key(
+                        repo, anchor_sha, &head_sha, copy_detection, seed,
+                    )
+                }
+            };
+            let probe = match compute_key_local(seed) {
                 Err(e) => {
                     eprintln!("trail_cache compute_key error: {e}");
                     CacheProbe::Miss
@@ -443,13 +477,7 @@ fn build_grouped_walk(
 
                     if !fell_back {
                         // Attempt to store; failure is logged and ignored.
-                        if let Ok(key) = trail_cache::compute_key(
-                            repo,
-                            anchor_sha,
-                            &head_sha,
-                            copy_detection,
-                            seed,
-                        ) {
+                        if let Ok(key) = compute_key_local(seed) {
                             let mut sorted_seed: Vec<String> = seed.iter().cloned().collect();
                             sorted_seed.sort();
                             let entry = TrailCacheEntry {
