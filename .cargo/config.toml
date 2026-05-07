@@ -1,8 +1,9 @@
 [build]
 # Redirect cargo's default target dir away from the ./target symlink (which all
 # card worktrees share) and away from $HOME/.cache/... defaults.
+# Relative to the workspace root; resolves into the single Rust package.
 # CARGO_TARGET_DIR env var (set by yarn scripts) overrides this value.
-target-dir = "target-cache"
+target-dir = "packages/git-mesh/target-cache"
 
 # Wire sccache at the config.toml level so it applies to direct `cargo`
 # invocations and IDE rust-analyzer regardless of shell environment.

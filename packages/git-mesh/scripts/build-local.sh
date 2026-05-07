@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+
 target_root="${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}"
 built="$target_root/build/release/git-mesh"
 

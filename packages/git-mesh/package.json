@@ -7,14 +7,15 @@
   ],
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "build:man": "env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/build\" cargo run --quiet --bin gen-manpage -- man/git-mesh.1",
+    "prebuild": "bash scripts/cleanup-stale-target.sh",
+    "build:man": "bash scripts/cleanup-stale-target.sh && env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/build\" cargo run --quiet --bin gen-manpage -- man/git-mesh.1",
     "build": "yarn build:man && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/build\" cargo build --release",
     "build:local": "bash scripts/build-local.sh",
-    "build:clean": "rm -rf \"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}\" && yarn build:man && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/build\" cargo build --release",
-    "test": "env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/test\" cargo nextest run --build-jobs 1",
-    "lint": "env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/lint\" cargo clippy --quiet -- -D warnings",
-    "typecheck": "env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/typecheck\" cargo check --quiet --locked",
-    "udeps": "env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/udeps\" cargo +nightly udeps"
+    "build:clean": "bash scripts/cleanup-stale-target.sh && rm -rf \"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}\" && yarn build:man && env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/build\" cargo build --release",
+    "test": "bash scripts/cleanup-stale-target.sh && env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/test\" cargo nextest run --build-jobs 1",
+    "lint": "bash scripts/cleanup-stale-target.sh && env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/lint\" cargo clippy --quiet -- -D warnings",
+    "typecheck": "bash scripts/cleanup-stale-target.sh && env CARGO_BUILD_JOBS=1 RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/typecheck\" cargo check --quiet --locked",
+    "udeps": "bash scripts/cleanup-stale-target.sh && env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/udeps\" cargo +nightly udeps"
   },
   "files": [
     "bin/",
