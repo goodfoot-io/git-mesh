@@ -162,7 +162,7 @@ payload() {
 # Write is no longer in the PostToolUse matcher; instead a Bash PostToolUse
 # dispatches to `milestone`, which detects file edits via snapshot diff.
 # ---------------------------------------------------------------------------
-log "Test 2: PreToolUse mark + edit + PostToolUse flush surfaces meshed partner"
+log "Test 2: PreToolUse mark + edit + PostToolUse diff records; on-demand flush surfaces meshed partner"
 REPO2="$(make_repo repo2)"
 SID2="sess-two"
 PRE2="$(jq -nc --arg s "$SID2" --arg c "$REPO2" \
@@ -174,8 +174,14 @@ CMD2="echo done"
 PAYLOAD2="$(jq -nc --arg s "$SID2" --arg c "$REPO2" --arg cmd "$CMD2" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t2", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD2"
-assert_rc_zero "PostToolUse(Bash flush)"
-assert_stdout_contains "PostToolUse(Bash flush)" "b.txt"
+assert_rc_zero "PostToolUse(Bash diff)"
+assert_stdout_empty "PostToolUse(Bash diff)"
+FLUSH2_OUT="$(cd "$REPO2" && git mesh advice "$SID2" flush 2>&1)"
+if printf '%s' "$FLUSH2_OUT" | grep -qF -- "b.txt"; then
+  ok "on-demand flush: stdout contains b.txt"
+else
+  bad "on-demand flush: stdout missing b.txt; got: ${FLUSH2_OUT:-<empty>}"
+fi
 
 # ---------------------------------------------------------------------------
 # Test 3: PostToolUse on Read with offset/limit records a ranged read.
@@ -221,13 +227,20 @@ assert_stdout_empty "PostToolUse(Glob)"
 # without any prior `mark`. Edit/Write/MultiEdit are exempt from the mark
 # snapshot — `tool_response.type` (absent here) defaults to `modified`.
 # ---------------------------------------------------------------------------
-log "Test 8: PostToolUse Write emits advice via touch with no prior mark"
+log "Test 8: PostToolUse Write records via touch silently; on-demand flush surfaces advice"
 REPO8="$(make_repo repo8)"
+SID8="never-marked"
 PAYLOAD8="$(jq -nc --arg c "$REPO8" \
   '{session_id:"never-marked", transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Write", tool_input:{file_path:"a.txt"}, tool_response:{}, tool_use_id:"t8", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD8"
 assert_rc_zero "PostToolUse(no mark)"
-assert_stdout_contains "PostToolUse(no mark)" "demo"
+assert_stdout_empty "PostToolUse(no mark)"
+FLUSH8_OUT="$(cd "$REPO8" && git mesh advice "$SID8" flush 2>&1)"
+if printf '%s' "$FLUSH8_OUT" | grep -qF -- "demo"; then
+  ok "on-demand flush after touch: stdout contains demo"
+else
+  bad "on-demand flush after touch: stdout missing demo; got: ${FLUSH8_OUT:-<empty>}"
+fi
 
 # Test 9 is deleted: it tested PostToolUse Write resolving the repo from the
 # file path — Write is no longer in the PostToolUse matcher and has no
@@ -237,7 +250,7 @@ assert_stdout_contains "PostToolUse(no mark)" "demo"
 # Test 10: PostToolUse Bash dispatches milestone against cwd (no per-tool
 # path parsing). The hook uses the payload cwd to find the repo.
 # ---------------------------------------------------------------------------
-log "Test 10: PreToolUse mark + edit + PostToolUse flush against cwd"
+log "Test 10: PreToolUse mark + edit + PostToolUse diff against cwd; flush surfaces advice"
 REPO10="$(make_repo repo10)"
 SID10="sess-ten"
 PRE10="$(jq -nc --arg s "$SID10" --arg c "$REPO10" \
@@ -249,13 +262,19 @@ PAYLOAD10="$(jq -nc --arg s "$SID10" --arg c "$REPO10" --arg cmd "$CMD10" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:$cmd}, tool_response:{}, tool_use_id:"t10", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD10"
 assert_rc_zero "PostToolUse(Bash cwd)"
-assert_stdout_contains "PostToolUse(Bash cwd)" "b.txt"
+assert_stdout_empty "PostToolUse(Bash cwd)"
+FLUSH10_OUT="$(cd "$REPO10" && git mesh advice "$SID10" flush 2>&1)"
+if printf '%s' "$FLUSH10_OUT" | grep -qF -- "b.txt"; then
+  ok "on-demand flush (cwd): stdout contains b.txt"
+else
+  bad "on-demand flush (cwd): stdout missing b.txt; got: ${FLUSH10_OUT:-<empty>}"
+fi
 
 # ---------------------------------------------------------------------------
 # Test 11: PostToolUse on a non-Read tool (mcp__*-style name) dispatches
 # milestone against cwd — no separate mcp arm exists.
 # ---------------------------------------------------------------------------
-log "Test 11: PreToolUse mark + edit + PostToolUse flush for mcp__ tool"
+log "Test 11: PreToolUse mark + edit + PostToolUse diff for mcp__ tool; flush surfaces advice"
 REPO11="$(make_repo repo11)"
 SID11="sess-eleven"
 PRE11="$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
@@ -266,7 +285,13 @@ PAYLOAD11="$(jq -nc --arg s "$SID11" --arg c "$REPO11" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"mcp__filesystem__write_file", tool_input:{}, tool_response:{}, tool_use_id:"t11", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD11"
 assert_rc_zero "PostToolUse(mcp__ cwd)"
-assert_stdout_contains "PostToolUse(mcp__ cwd)" "b.txt"
+assert_stdout_empty "PostToolUse(mcp__ cwd)"
+FLUSH11_OUT="$(cd "$REPO11" && git mesh advice "$SID11" flush 2>&1)"
+if printf '%s' "$FLUSH11_OUT" | grep -qF -- "b.txt"; then
+  ok "on-demand flush (mcp__): stdout contains b.txt"
+else
+  bad "on-demand flush (mcp__): stdout missing b.txt; got: ${FLUSH11_OUT:-<empty>}"
+fi
 
 # ---------------------------------------------------------------------------
 # Test 12: CLI exit-code split — operational failures (exit 1) vs
@@ -295,97 +320,19 @@ assert_mesh_exit "fetch --bogus (usage: bad flag)" 2 "$REPO12" fetch --bogus
 assert_mesh_exit "delete missing (runtime: mesh not found)" 1 "$REPO12" delete missing-mesh
 assert_mesh_exit "commit empty (runtime: nothing staged)" 1 "$REPO12" commit no-such-mesh
 
-# ---------------------------------------------------------------------------
-# Test 13: GIT_MESH_ADVICE_DEBUG=1 — systemMessage gets trace marker,
-# additionalContext does not.
-#
-# This test requires the debug-instrumented build. Locate the binary by
-# searching common cargo target dirs; skip gracefully if unavailable.
-# ---------------------------------------------------------------------------
-log "Test 13: GIT_MESH_ADVICE_DEBUG=1 trace appears in systemMessage only"
-MESH_BIN=""
-WORKSPACE_ROOT="$(git -C "$BIN_DIR" rev-parse --show-toplevel 2>/dev/null)"
-for candidate in \
-    "${WORKSPACE_ROOT}/packages/git-mesh/target/debug/git-mesh" \
-    "${WORKSPACE_ROOT}/packages/git-mesh/target/release/git-mesh" \
-    "${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/test/debug/git-mesh" \
-    "${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build/debug/git-mesh" \
-    "${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}/build/release/git-mesh" \
-  ; do
-  if [ -x "$candidate" ]; then
-    MESH_BIN="$candidate"
-    break
-  fi
-done
-
-if [ -z "$MESH_BIN" ]; then
-  ok "Test 13 (skip): no candidate binary path exists; run 'cargo build' in packages/git-mesh first"
-elif ! { MESH_HELP="$("$MESH_BIN" --help 2>&1)"; printf '%s' "$MESH_HELP" | grep -q 'advice'; }; then
-  # Binary exists but predates the advice subcommand — this is a hard failure,
-  # not a skip. A stale build should not silently pass the test suite.
-  bad "Test 13: binary at $MESH_BIN exists but does not expose the 'advice' subcommand — rebuild with 'cargo build' in packages/git-mesh"
-else
-  SAVED_PATH="$PATH"
-  export PATH="$(dirname "$MESH_BIN"):$PATH"
-REPO13="$(make_repo_nocommit repo13)"
-SID13="sess-thirteen"
-
-# Establish baseline before committing the mesh
-PRE13BASE="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t13-base", duration_ms:1}')"
-run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE13BASE"
-assert_rc_zero "Test13: PreToolUse baseline"
-POST13BASE="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_response:{}, tool_use_id:"t13-base", duration_ms:1}')"
-run_hook "$BIN_DIR/advice-post-tool-use.sh" "$POST13BASE"
-assert_rc_zero "Test13: PostToolUse baseline"
-
-# Create and commit the mesh within the session
-( cd "$REPO13" && git mesh add demo a.txt#L1-L3 b.txt#L1-L3 >/dev/null && git mesh why demo -m "a.txt and b.txt move in lockstep" >/dev/null && git mesh commit demo >/dev/null )
-
-# Observe the new mesh
-PRE13OBS="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t13-obs", duration_ms:1}')"
-run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE13OBS"
-assert_rc_zero "Test13: PreToolUse observe"
-POST13OBS="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_response:{}, tool_use_id:"t13-obs", duration_ms:1}')"
-run_hook "$BIN_DIR/advice-post-tool-use.sh" "$POST13OBS"
-assert_rc_zero "Test13: PostToolUse observe"
-
-# Read b.txt (meshed partner of a.txt) to trigger advice via the read verb.
-PAYLOAD13="$(jq -nc --arg s "$SID13" --arg c "$REPO13" \
-  '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"b.txt", offset:1, limit:3}, tool_response:{}, tool_use_id:"t13", duration_ms:1}')"
-
-export GIT_MESH_ADVICE_DEBUG=1
-run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD13"
-unset GIT_MESH_ADVICE_DEBUG
-
-assert_rc_zero "PostToolUse(debug)"
-# `read` emits BasicOutput for matching meshes. systemMessage must contain
-# the advice text (the demo mesh with partner paths).
-assert_stdout_contains "PostToolUse(debug): systemMessage has advice" "demo"
-# When GIT_MESH_ADVICE_DEBUG=1, the debug separator is appended to
-# systemMessage only when the CLI actually emits stderr. The `read` verb
-# produces no stderr for a normal read — so the separator is absent.
-# additionalContext carries only the raw advice text (no debug block).
-if ! printf '%s' "$HOOK_OUT" | jq -r '.hookSpecificOutput.additionalContext // ""' | grep -qF "git-mesh-advice-debug"; then
-  ok "Test 13: additionalContext free of debug trace"
-else
-  bad "Test 13: additionalContext must not carry debug trace"
-fi
-
-  export PATH="$SAVED_PATH"
-fi  # end: MESH_BIN found
+# Test 13 deleted: the hooks no longer emit JSON wrappers (additionalContext /
+# systemMessage). With recording-only hooks, advice is surfaced by invoking
+# `git mesh advice <sid> flush` on demand. The debug-trace-routing test had
+# no equivalent in the new design.
 
 # ---------------------------------------------------------------------------
 log ""
 # Test 14: Same-session mesh commit + read emits advice
-log "Test 14: Same-session mesh commit + read emits advice"
+log "Test 14: Same-session mesh commit + Read hook records silently; direct read verb emits advice"
 REPO14="$(make_repo_nocommit repo14)"
 SID14="sess-fourteen"
 
-# Baseline: mark+flush establishes pre-mesh state
+# Baseline: mark+diff establishes pre-mesh state
 PRE14="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t14-base", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE14"
@@ -398,7 +345,7 @@ assert_rc_zero "Test14: PostToolUse baseline"
 # Create and commit mesh via CLI
 ( cd "$REPO14" && git mesh add demo a.txt#L1-L3 b.txt#L1-L3 >/dev/null && git mesh why demo -m "pair" >/dev/null && git mesh commit demo >/dev/null )
 
-# Observe: mark+flush detects new mesh ref
+# Observe: mark+diff detects new mesh ref
 PRE14OBS="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PreToolUse", tool_name:"Bash", tool_input:{command:"echo"}, tool_use_id:"t14-obs", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-pre-tool-use.sh" "$PRE14OBS"
@@ -408,12 +355,20 @@ POST14OBS="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$POST14OBS"
 assert_rc_zero "Test14: PostToolUse observe"
 
-# Read b.txt#L1-L3 -> advice should contain a.txt
+# Read hook records silently; the `read` verb invoked directly emits advice.
 PAYLOAD14="$(jq -nc --arg s "$SID14" --arg c "$REPO14" \
   '{session_id:$s, transcript_path:"/dev/null", cwd:$c, permission_mode:"default", hook_event_name:"PostToolUse", tool_name:"Read", tool_input:{file_path:"b.txt", offset:1, limit:3}, tool_response:{}, tool_use_id:"t14-read", duration_ms:1}')"
 run_hook "$BIN_DIR/advice-post-tool-use.sh" "$PAYLOAD14"
 assert_rc_zero "Test14: PostToolUse(Read)"
-assert_stdout_contains "Test14: same-session read" "a.txt"
+assert_stdout_empty "Test14: PostToolUse(Read)"
+# The hook silently records the read; the read verb's same-session emit is
+# covered by `same_session_read_emits_advice` in advice_read_session_scope.rs.
+locate_store "$SID14"; READS14="$STORE_DIR/reads.jsonl"
+if [ -f "$READS14" ] && jq -e 'select(.path=="b.txt" and .start_line==1 and .end_line==3)' "$READS14" >/dev/null; then
+  ok "Test14: hook recorded ranged read in reads.jsonl"
+else
+  bad "Test14: expected ranged read in $READS14"
+fi
 
 # Test 15: Prior-session mesh read is silent
 log "Test 15: Prior-session mesh read is silent"
