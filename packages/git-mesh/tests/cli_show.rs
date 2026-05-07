@@ -33,13 +33,16 @@ fn show_by_name_has_required_lines() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "alpha")?;
     let out = repo.mesh_stdout(["alpha"])?;
-    // §10.4 required header lines — prose format.
-    assert!(out.starts_with("# Mesh `alpha`"), "out={out}");
-    assert!(out.contains("Commit `"), "out={out}");
-    assert!(out.contains("by Test User <test@example.com> on"), "out={out}");
-    assert!(out.contains("Why: seed"), "out={out}");
-    assert!(out.contains("This mesh has 1 anchor"), "out={out}");
-    assert!(out.contains("- `file1.txt#L1-L5`"), "out={out}");
+    // Canonical mesh block — heading, anchor bullet, why, ### Commit subsection.
+    assert!(out.starts_with("## alpha\n"), "out={out}");
+    assert!(out.contains("- file1.txt#L1-L5"), "out={out}");
+    assert!(out.contains("\nseed\n"), "out={out}");
+    assert!(out.contains("\n### Commit "), "out={out}");
+    assert!(
+        out.contains("Author: Test User <test@example.com>"),
+        "out={out}"
+    );
+    assert!(out.contains("\nDate: "), "out={out}");
     Ok(())
 }
 

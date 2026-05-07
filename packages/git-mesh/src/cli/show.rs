@@ -2,8 +2,13 @@
 
 use crate::cli::{CliError, ListArgs, NextStep, ShowArgs, parse_range_address};
 use crate::cli::format;
-use crate::staging::{list_staged_mesh_names, read_staging, serialize_copy_detection};
-use crate::types::{Anchor, AnchorExtent};
+use crate::resolver::{build_pending_findings, resolve_named_meshes};
+use crate::staging::{list_staged_mesh_names, read_staging, resolve_staged_config, Staging};
+use crate::types::{
+    Anchor, AnchorExtent, AnchorResolved, AnchorStatus, CopyDetection, DriftSource, EngineOptions,
+    LayerSet, MeshResolved, PendingFinding, UnavailableReason, DEFAULT_COPY_DETECTION,
+    DEFAULT_FOLLOW_MOVES, DEFAULT_IGNORE_WHITESPACE,
+};
 use crate::validation::validate_mesh_name_shape;
 use crate::{MeshCommitInfo, mesh_commit_info_at, mesh_log, read_mesh_at};
 use anyhow::Result;
@@ -780,6 +785,23 @@ fn run_list_batch_porcelain(repo: &gix::Repository) -> Result<i32> {
 // ---------------------------------------------------------------------------
 
 pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
+    // Pending-only path: when the mesh has no committed ref but staging
+    // exists, render the canonical block from staging alone (no commit
+    // subsection). Only the default render shape supports pending-only —
+    // `--format`, `--oneline`, `--log`, and `--at` continue to require a
+    // committed mesh and surface the existing MeshNotFound error.
+    if !args.log && args.at.is_none() && args.format.is_none() && !args.oneline {
+        let mesh_ref = format!("refs/meshes/v1/{}", args.name);
+        if crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)?.is_none() {
+            let pending = build_pending_findings(repo, &args.name);
+            if !pending.is_empty() {
+                let staging = read_staging(repo, &args.name)?;
+                render_pending_only(&args.name, &staging, &pending);
+                return Ok(0);
+            }
+        }
+    }
+
     if args.log {
         let entries = {
             let _perf = crate::perf::span("show.read-log");
@@ -888,39 +910,241 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs) -> Result<i32> {
     }
 
     let _perf = crate::perf::span("show.render-default");
-    println!("# Mesh `{}`", mesh.name);
-    println!();
-    let short_sha = &info.commit_oid[..7.min(info.commit_oid.len())];
-    println!(
-        "Commit `{short_sha}` by {} <{}> on {}.",
-        info.author_name, info.author_email, info.author_date
-    );
-    println!();
-    let why = mesh.message.trim_end_matches('\n');
-    println!("Why: {why}");
-    println!();
-    println!("This mesh has {} anchor{}:", mesh.anchors_v2.len(), if mesh.anchors_v2.len() == 1 { "" } else { "s" });
-    println!();
-    for (_id, r) in &mesh.anchors_v2 {
-        match r.extent {
-            AnchorExtent::LineRange { start, end } => {
-                let addr =
-                    format::format_anchor_address(&r.path, Some(start), Some(end));
-                println!("- `{addr}`");
+
+    // Live view: run the same resolver as `git mesh stale <name>` so each
+    // anchor renders with its current status. `--at` requests a historical
+    // snapshot whose anchor statuses are not meaningful against the current
+    // tree, so the resolver pass is skipped in that mode.
+    let resolved: Option<MeshResolved> = if args.at.is_none() {
+        let options = EngineOptions {
+            layers: LayerSet { worktree: true, index: true, staged_mesh: true },
+            ignore_unavailable: false,
+            since: None,
+            needs_all_layers: true,
+        };
+        resolve_named_meshes(repo, std::slice::from_ref(&args.name), options)?
+            .into_iter()
+            .next()
+            .and_then(|(_, r)| r.ok())
+    } else {
+        None
+    };
+
+    let resolved_anchors: &[AnchorResolved] =
+        resolved.as_ref().map(|m| m.anchors.as_slice()).unwrap_or(&[]);
+    let pending: &[PendingFinding] =
+        resolved.as_ref().map(|m| m.pending.as_slice()).unwrap_or(&[]);
+
+    println!("## {}", mesh.name);
+
+    let pending_adds: Vec<&PendingFinding> = pending
+        .iter()
+        .filter(|p| matches!(p, PendingFinding::Add { .. }))
+        .collect();
+    let pending_removes: Vec<&PendingFinding> = pending
+        .iter()
+        .filter(|p| matches!(p, PendingFinding::Remove { .. }))
+        .collect();
+
+    if mesh.anchors_v2.is_empty() && pending_adds.is_empty() && pending_removes.is_empty() {
+        println!("*Mesh has no anchors*");
+    } else {
+        for (id, r) in &mesh.anchors_v2 {
+            let addr = anchor_addr(&r.path, r.extent);
+            let suffix = anchor_status_suffix(resolved_anchors, id);
+            println!("- {addr}{suffix}");
+        }
+        for p in &pending_adds {
+            if let PendingFinding::Add { op, .. } = p {
+                let addr = anchor_addr(&op.path, op.extent);
+                println!("- {addr} — pending add");
             }
-            AnchorExtent::WholeFile => {
-                println!("- `{}` (whole file)", r.path);
+        }
+        for p in &pending_removes {
+            if let PendingFinding::Remove { op, .. } = p {
+                let addr = anchor_addr(&op.path, op.extent);
+                println!("- {addr} — pending remove");
             }
         }
     }
+
+    let why = mesh.message.trim_end_matches('\n');
+    if !why.is_empty() {
+        println!();
+        println!("{why}");
+    }
+
+    let short_sha = &info.commit_oid[..7.min(info.commit_oid.len())];
     println!();
-    let copy_detection = serialize_copy_detection(mesh.config.copy_detection);
-    println!(
-        "Resolver options: `copy-detection = {copy_detection}`, `ignore-whitespace = {}`, `follow-moves = {}`.",
-        mesh.config.ignore_whitespace,
-        mesh.config.follow_moves,
-    );
+    println!("### Commit {short_sha}");
+    println!("Author: {} <{}>", info.author_name, info.author_email);
+    println!("Date: {}", info.author_date);
+
+    let cfg = mesh.config;
+    if cfg.copy_detection != DEFAULT_COPY_DETECTION
+        || cfg.ignore_whitespace != DEFAULT_IGNORE_WHITESPACE
+        || cfg.follow_moves != DEFAULT_FOLLOW_MOVES
+    {
+        println!();
+        println!("### Resolvers");
+        println!("copy-detection: {}", copy_detection_label(cfg.copy_detection));
+        println!("ignore-whitespace: {}", on_off(cfg.ignore_whitespace));
+        println!("follow-moves: {}", on_off(cfg.follow_moves));
+    }
     Ok(0)
+}
+
+fn anchor_addr(path: &str, extent: AnchorExtent) -> String {
+    match extent {
+        AnchorExtent::LineRange { start, end } => format!("{path}#L{start}-L{end}"),
+        AnchorExtent::WholeFile => path.to_string(),
+    }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
+}
+
+/// Render the copy-detection enum for the `### Resolvers` subsection.
+/// `Off` and `SameCommit` use `off`/`on` for symmetry with the boolean rows;
+/// the more specific variants render their kebab-case identifier.
+fn copy_detection_label(cd: CopyDetection) -> &'static str {
+    match cd {
+        CopyDetection::Off => "off",
+        CopyDetection::SameCommit => "on",
+        CopyDetection::AnyFileInCommit => "any-file-in-commit",
+        CopyDetection::AnyFileInRepo => "any-file-in-repo",
+    }
+}
+
+/// Lowercase prose suffix describing an anchor's drift state, prefixed with
+/// ` — ` when non-empty. Mirrors `cli::stale_output::describe_finding` but
+/// in the lowercase voice the `show` block uses, with optional trailing
+/// modifiers for follow auto-update and acknowledgement.
+fn anchor_status_suffix(resolved: &[AnchorResolved], anchor_id: &str) -> String {
+    let Some(a) = resolved.iter().find(|a| a.anchor_id == anchor_id) else {
+        return String::new();
+    };
+    let status_phrase = match &a.status {
+        AnchorStatus::Fresh => return modifier_suffix(a),
+        AnchorStatus::Changed => match a.source {
+            None => "changed".to_string(),
+            Some(src) => format!("changed {}", source_phrase(src)),
+        },
+        AnchorStatus::Moved => {
+            let dest = a.current.as_ref().map(|cur| {
+                let s = cur.path.to_string_lossy();
+                let extent = cur.extent;
+                anchor_addr(&s, extent)
+            });
+            match (a.source, dest) {
+                (None, None) => "moved".to_string(),
+                (None, Some(d)) => format!("moved to {d}"),
+                (Some(src), None) => format!("moved {}", source_phrase(src)),
+                (Some(src), Some(d)) => format!("moved {} to {d}", source_phrase(src)),
+            }
+        }
+        AnchorStatus::Orphaned => match a.source {
+            None => "orphaned (path no longer exists)".to_string(),
+            Some(src) => format!("orphaned {} (path no longer exists)", source_phrase(src)),
+        },
+        AnchorStatus::MergeConflict => match a.source {
+            None => "merge conflict".to_string(),
+            Some(src) => format!("merge conflict {}", source_phrase(src)),
+        },
+        AnchorStatus::Submodule => match a.source {
+            None => "submodule".to_string(),
+            Some(src) => format!("submodule {}", source_phrase(src)),
+        },
+        AnchorStatus::ContentUnavailable(reason) => {
+            let detail = unavailable_detail(reason);
+            match a.source {
+                None => format!("content unavailable ({detail})"),
+                Some(src) => format!("content unavailable {} ({detail})", source_phrase(src)),
+            }
+        }
+    };
+    let mods = modifier_suffix(a);
+    format!(" — {status_phrase}{mods}")
+}
+
+fn modifier_suffix(a: &AnchorResolved) -> String {
+    let mut out = String::new();
+    if a.acknowledged_by.is_some() {
+        out.push_str(" — acknowledged");
+    }
+    out
+}
+
+fn source_phrase(src: DriftSource) -> &'static str {
+    match src {
+        DriftSource::Head => "in HEAD",
+        DriftSource::Index => "in the index",
+        DriftSource::Worktree => "in the working tree",
+    }
+}
+
+fn unavailable_detail(reason: &UnavailableReason) -> &'static str {
+    match reason {
+        UnavailableReason::LfsNotFetched => "LFS not fetched",
+        UnavailableReason::LfsNotInstalled => "LFS not installed",
+        UnavailableReason::PromisorMissing => "promisor missing",
+        UnavailableReason::SparseExcluded => "sparse excluded",
+        UnavailableReason::FilterFailed { .. } => "filter failed",
+        UnavailableReason::IoError { .. } => "I/O error",
+    }
+}
+
+fn render_pending_only(name: &str, staging: &Staging, pending: &[PendingFinding]) {
+    println!("## {name}");
+    let mut emitted_any = false;
+    for p in pending {
+        if let PendingFinding::Add { op, .. } = p {
+            let addr = anchor_addr(&op.path, op.extent);
+            println!("- {addr} — pending add");
+            emitted_any = true;
+        }
+    }
+    for p in pending {
+        if let PendingFinding::Remove { op, .. } = p {
+            let addr = anchor_addr(&op.path, op.extent);
+            println!("- {addr} — pending remove");
+            emitted_any = true;
+        }
+    }
+    if !emitted_any {
+        println!("*Mesh has no anchors*");
+    }
+
+    let why = staging.why.as_deref().unwrap_or("").trim_end_matches('\n');
+    if !why.is_empty() {
+        println!();
+        println!("{why}");
+    }
+
+    println!();
+    println!("*Not yet committed.*");
+
+    // Only render `### Resolvers` when staged config moves an option off its
+    // default — pending-only meshes have no committed config to merge against.
+    let (cd, iw, fm) = resolve_staged_config(
+        staging,
+        (
+            DEFAULT_COPY_DETECTION,
+            DEFAULT_IGNORE_WHITESPACE,
+            DEFAULT_FOLLOW_MOVES,
+        ),
+    );
+    if cd != DEFAULT_COPY_DETECTION
+        || iw != DEFAULT_IGNORE_WHITESPACE
+        || fm != DEFAULT_FOLLOW_MOVES
+    {
+        println!();
+        println!("### Resolvers");
+        println!("copy-detection: {}", copy_detection_label(cd));
+        println!("ignore-whitespace: {}", on_off(iw));
+        println!("follow-moves: {}", on_off(fm));
+    }
 }
 
 pub fn run_list(repo: &gix::Repository, args: ListArgs) -> Result<i32> {
