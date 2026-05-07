@@ -331,6 +331,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                     stat: args.stat,
                     patch: args.patch,
                     show_src: show_src_column,
+                    named_lookup: !args.paths.is_empty(),
                 },
             )?;
 
@@ -680,6 +681,7 @@ struct HumanRenderOptions {
     stat: bool,
     patch: bool,
     show_src: bool,
+    named_lookup: bool,
 }
 
 fn render_human(
@@ -690,50 +692,10 @@ fn render_human(
     followed_ids: &HashSet<String>,
     options: HumanRenderOptions,
 ) -> Result<bool> {
-    // is_named_lookup: true when positional args were given (named lookup mode)
+    // named_lookup: true when positional args were given (named lookup mode).
     // For workspace scan: suppress clean meshes and pending bullets.
     // For named lookup: always render block, append pending bullets.
-    //
-    // We detect named-lookup vs workspace-scan by checking if any mesh in the
-    // slice has pending findings — in practice the caller already gated this
-    // correctly (workspace path never builds pending-only meshes anymore).
-    // The cleanest signal is whether `pending` is empty vs not, but that doesn't
-    // tell us about mode. Instead we rely on a flag passed via the boolean
-    // derived from the mesh slice: workspace-scan meshes have no pending
-    // (the loop above that built them didn't add staging-only entries).
-    // Actually the simplest approach: the caller has `args.paths` but we don't
-    // receive it here. We'll distinguish by checking if `pending` is non-empty
-    // *and* the mesh list may contain pending-only entries — but workspace scan
-    // no longer adds those. So the distinction is: if the mesh has pending
-    // findings at all and it came through the named-lookup path. We expose this
-    // via a parameter `named_lookup`.
-    //
-    // Rather than refactor the signature now, we derive it from the pending slice:
-    // if `pending` contains any finding, we're in named mode. This works because
-    // workspace scan no longer surfaces pending-only meshes. Named lookup always
-    // resolves through `resolve_named_meshes` which does populate pending.
-    //
-    // Actually pending is always populated from meshes regardless of mode.
-    // The real distinction: workspace scan only has meshes from stale_meshes()
-    // (no pending-only meshes); named lookup has meshes from resolve_named_meshes().
-    // We cannot distinguish here without the flag. Use the `pending` vec:
-    // in workspace mode, meshes without stale anchors are not included at all,
-    // so any pending findings come from meshes that also have stale anchors.
-    // In named mode, all requested meshes are included even if fully clean.
-    //
-    // The simplest correct approach: pass a bool. But to avoid changing the
-    // call site signature for now, derive it heuristically: named lookup is
-    // detected by the presence of meshes with zero stale anchors but non-zero
-    // pending findings, OR meshes with zero stale AND zero pending (fully clean
-    // named lookup). Workspace scan meshes always have stale > 0.
-    //
-    // We detect named-lookup mode: any mesh with stale==0 present in the list
-    // means we're in named mode (workspace scan filters those out).
-    let is_named_lookup = meshes.iter().any(|m| {
-        m.anchors
-            .iter()
-            .all(|r| r.status == AnchorStatus::Fresh || m.anchors.is_empty())
-    });
+    let is_named_lookup = options.named_lookup;
 
     let mut printed_any_mesh = false;
     for m in meshes.iter() {

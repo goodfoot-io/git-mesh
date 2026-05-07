@@ -252,3 +252,45 @@ fn named_lookup_clean_mesh_is_confirmed() -> Result<()> {
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named mesh");
     Ok(())
 }
+
+/// Named lookup with all anchors drifted AND a staged pending add must render
+/// both the drift bullet and the `pending add` bullet under a single block.
+///
+/// Regression test: the old mesh-shape heuristic returned `false` when every
+/// anchor was drifted (no Fresh anchors), silently suppressing pending bullets.
+#[test]
+fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // Seed mesh with one anchor on lines 1-5.
+    repo.mesh_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "m", "-m", "regression test mesh"])?;
+    repo.mesh_stdout(["commit", "m"])?;
+
+    // Drift the anchor by mutating line 1.
+    repo.write_file(
+        "file1.txt",
+        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.commit_all("mutate file1")?;
+
+    // Stage a pending add for a second anchor (do not commit).
+    repo.mesh_stdout(["add", "m", "file2.txt#L1-L5"])?;
+
+    // Named lookup: `git mesh stale m`.
+    let out = repo.run_mesh(["stale", "m", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("## m"),
+        "block heading must appear; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("changed"),
+        "drift bullet must appear for drifted anchor; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("pending add"),
+        "pending add bullet must appear even when all anchors are drifted; stdout=\n{stdout}"
+    );
+    Ok(())
+}
