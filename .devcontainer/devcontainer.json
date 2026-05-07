@@ -41,7 +41,8 @@
     "CLAUDE_CONFIG_DIR": "/home/node/.claude",
     "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
     "VSCODE_RECONNECTION_GRACE_TIME": "60000",
-    "PATH": "${containerEnv:PATH}:/home/node/.cargo/bin:/home/node/.local/bin:/workspace/.devcontainer/utilities"
+    "PATH": "${containerEnv:PATH}:/home/node/.cargo/bin:/home/node/.local/bin:/workspace/.devcontainer/utilities",
+    "SCCACHE_DIR": "/home/node/.cache/sccache"
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "forwardPorts": [8080],

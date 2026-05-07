@@ -31,7 +31,7 @@ function buildFromSource(destBinary, binaryName) {
 
   console.log(`@goodfoot/git-mesh: Prebuilt binary missing; building from source via cargo...`);
 
-  const targetDir = path.join(__dirname, '..', 'target', 'build');
+  const targetDir = path.join(__dirname, '..', 'target-cache', 'build');
   const result = spawnSync('cargo', ['build', '--release', '--manifest-path', cargoToml], {
     stdio: 'inherit',
     env: { ...process.env, CARGO_BUILD_JOBS: '1', CARGO_TARGET_DIR: targetDir }

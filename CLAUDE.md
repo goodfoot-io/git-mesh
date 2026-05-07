@@ -30,6 +30,13 @@ Our workspace uses Yarn 4.x as a package manager. Do not use other package manag
 This is a Yarn 4.x monorepo with packages in ./packages/ containing a Rust CLI (packages/git-mesh) and a VS Code extension (packages/extension).
 
 Use local rather than origin branches.
+
+Each card worktree keeps a private `packages/git-mesh/target-cache/` for Cargo
+artifacts; `sccache` (`RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/home/node/.cache/sccache`)
+deduplicates dependency compilation across worktrees. Run `yarn validate` from any
+worktree; concurrent runs are safe. Direct `cargo` invocations also use `target-cache/`
+via `packages/git-mesh/.cargo/config.toml`. If you see `error: could not exec sccache`,
+rebuild the devcontainer.
 </workspace-information>
 
 <jsdoczoom>

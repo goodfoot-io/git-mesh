@@ -4,6 +4,7 @@ logs
 
 # Build artifacts
 target/
+target-cache/
 
 # Runtime data
 pids

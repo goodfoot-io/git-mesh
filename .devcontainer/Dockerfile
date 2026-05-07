@@ -103,6 +103,12 @@ RUN npm install -g dotenv-cli
 # Install tools for code analysis
 RUN npm install -g @ast-grep/cli jsdoczoom
 
+# Install sccache for cross-worktree Rust compilation cache
+ARG SCCACHE_VERSION=0.10.0
+RUN curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    | tar xz --strip-components=1 -C /usr/local/bin "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
+  && chmod +x /usr/local/bin/sccache
+
 USER root
 
 RUN corepack enable

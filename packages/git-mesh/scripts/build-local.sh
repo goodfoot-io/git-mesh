@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-target_root="${GIT_MESH_CARGO_TARGET_ROOT:-$HOME/.cache/git-mesh/cargo-target}"
+target_root="${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}"
 built="$target_root/build/release/git-mesh"
 
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/man/man1"
