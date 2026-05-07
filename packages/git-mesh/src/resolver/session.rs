@@ -124,6 +124,14 @@ pub(crate) struct ResolveSession {
     /// in `new()` and reused by every `build_grouped_walk` call, eliminating
     /// 8 subprocess forks per unique anchor SHA.
     session_hashes: Option<([u8; 32], [u8; 32])>,
+    /// Session-scoped blob OID memo: `(commit_sha, path) → blob_oid`.
+    ///
+    /// `path_blob_at` requires a tree traversal for every `(commit, path)`
+    /// pair. Many anchors in a mesh share the same underlying files and
+    /// commit history, so the same pair is requested repeatedly across
+    /// anchors. This memo eliminates the redundant traversals within a
+    /// single `stale` run; it does not persist across invocations.
+    blob_oid_memo: HashMap<(String, String), Option<String>>,
 }
 
 impl ResolveSession {
@@ -148,6 +156,7 @@ impl ResolveSession {
             grouped_walk_ancestor_hits: 0,
             cache,
             session_hashes,
+            blob_oid_memo: HashMap::new(),
         }
     }
 
@@ -798,6 +807,14 @@ pub(crate) fn resolve_at_head_shared(
     };
     // Iterate shared per-commit deltas; only the hunk math is per-anchor.
     for delta in &commits {
+        // Commits classified as non-interesting by the candidate-path filter
+        // have empty entries and advance_with_entries would return Unchanged
+        // immediately.  Skip the call entirely to avoid the overhead across
+        // the (common warm-cache) case where most commits touch none of the
+        // anchor's paths.
+        if delta.entries.is_empty() {
+            continue;
+        }
         match walker::advance_with_entries(
             repo,
             &delta.parent,
@@ -805,6 +822,7 @@ pub(crate) fn resolve_at_head_shared(
             &loc,
             &delta.entries,
             Some(&session.cache),
+            Some(&mut session.blob_oid_memo),
         )? {
             walker::Change::Unchanged => {}
             walker::Change::Deleted => return Ok(None),

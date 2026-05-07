@@ -7,6 +7,7 @@ use crate::resolver::cache::Cache;
 use crate::types::{Anchor, AnchorExtent, CopyDetection};
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 #[derive(Clone, Debug)]
@@ -60,7 +61,7 @@ pub(crate) fn resolve_at_head(
     let mut parent = r.anchor_sha.clone();
     for commit in &commits {
         let entries = name_status(repo, &parent, commit, copy_detection, warnings)?;
-        match advance_with_entries(repo, &parent, commit, &loc, &entries, None)? {
+        match advance_with_entries(repo, &parent, commit, &loc, &entries, None, None)? {
             Change::Unchanged => {}
             Change::Deleted => return Ok(None),
             Change::Updated(next) => loc = next,
@@ -77,6 +78,13 @@ pub(crate) fn resolve_at_head(
 /// already-computed name-status entries for `(parent, commit)`. This is
 /// the shared-session entry point — phase 1 callers pass pre-computed
 /// deltas instead of re-running `name_status` per anchor.
+///
+/// `blob_oid_memo` is an optional session-scoped cache for
+/// `(commit_sha, path) → blob_oid`. When provided, `compute_new_range`
+/// looks up blob OIDs from the memo before falling back to tree
+/// traversal, and populates the memo on miss. This eliminates redundant
+/// `path_blob_at` calls when multiple anchors share the same commit ×
+/// path combination within a single `stale` run.
 pub(crate) fn advance_with_entries(
     repo: &gix::Repository,
     parent: &str,
@@ -84,6 +92,7 @@ pub(crate) fn advance_with_entries(
     loc: &Tracked,
     entries: &[NS],
     cache: Option<&Cache>,
+    blob_oid_memo: Option<&mut HashMap<(String, String), Option<String>>>,
 ) -> Result<Change> {
     let mut next_path: Option<String> = None;
     let mut deleted = false;
@@ -118,7 +127,7 @@ pub(crate) fn advance_with_entries(
     }
     if deleted {
         if let Some(p) = next_path {
-            let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache)?;
+            let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache, blob_oid_memo)?;
             return Ok(Change::Updated(Tracked {
                 path: p,
                 start: s,
@@ -131,12 +140,34 @@ pub(crate) fn advance_with_entries(
         return Ok(Change::Unchanged);
     }
     let p = next_path.unwrap_or_else(|| loc.path.clone());
-    let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache)?;
+    let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache, blob_oid_memo)?;
     Ok(Change::Updated(Tracked {
         path: p,
         start: s,
         end: e,
     }))
+}
+
+/// Look up the blob OID for `path` at `commit`, using `memo` as a
+/// session-scoped cache to avoid repeated tree traversals for the same
+/// `(commit, path)` pair across multiple anchors.
+fn blob_oid_at(
+    repo: &gix::Repository,
+    commit: &str,
+    path: &str,
+    memo: Option<&mut HashMap<(String, String), Option<String>>>,
+) -> Option<String> {
+    let key = (commit.to_string(), path.to_string());
+    if let Some(m) = memo {
+        if let Some(cached) = m.get(&key) {
+            return cached.clone();
+        }
+        let oid = git::path_blob_at(repo, commit, path).ok();
+        m.insert(key, oid.clone());
+        oid
+    } else {
+        git::path_blob_at(repo, commit, path).ok()
+    }
 }
 
 pub(crate) fn compute_new_range(
@@ -146,9 +177,13 @@ pub(crate) fn compute_new_range(
     loc: &Tracked,
     new_path: &str,
     cache: Option<&Cache>,
+    mut blob_oid_memo: Option<&mut HashMap<(String, String), Option<String>>>,
 ) -> Result<(u32, u32)> {
-    let old_blob_oid = git::path_blob_at(repo, parent, &loc.path).ok();
-    let new_blob_oid = git::path_blob_at(repo, commit, new_path).ok();
+    // Resolve blob OIDs, using the session-scoped memo when available to
+    // avoid redundant tree traversals when multiple anchors share the same
+    // (commit, path) combination within a single stale run.
+    let old_blob_oid = blob_oid_at(repo, parent, &loc.path, blob_oid_memo.as_deref_mut());
+    let new_blob_oid = blob_oid_at(repo, commit, new_path, blob_oid_memo);
 
     // Probe Tier 2 cache when both blob OIDs are available and cache is enabled.
     if let (Some(old_oid), Some(new_oid), Some(c)) =
