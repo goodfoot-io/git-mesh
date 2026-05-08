@@ -1,4 +1,5 @@
 {
+  "rust-analyzer.linkedProjects": ["packages/git-mesh/Cargo.toml"],
   "cards.detectedAgents": [
     {
       "id": "claude-code-cli",

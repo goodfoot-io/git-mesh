@@ -1,0 +1,15 @@
+[build]
+# Per-worktree target directory. Resolves to packages/git-mesh/target-cache.
+# CARGO_TARGET_DIR (set by yarn scripts) overrides this.
+target-dir = "target-cache"
+
+# No build wrapper is configured here. Environments that have sccache (the
+# devcontainer) opt in via the RUSTC_WRAPPER env var; CI does not, and the
+# wrapper must not be forced on runners that lack the binary.
+
+[profile.dev]
+# sccache cannot cache incremental artifacts; disable so dev builds get cache hits.
+incremental = false
+
+[profile.test]
+incremental = false

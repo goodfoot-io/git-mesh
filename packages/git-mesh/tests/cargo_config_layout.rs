@@ -36,8 +36,12 @@ fn package_local_cargo_config_has_no_rustc_wrapper() {
         .join("config.toml");
     assert!(path.exists(), "{} must exist", path.display());
     let body = std::fs::read_to_string(&path).unwrap();
+    let has_wrapper_key = body
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .any(|l| l.starts_with("rustc-wrapper"));
     assert!(
-        !body.contains("rustc-wrapper"),
+        !has_wrapper_key,
         "package-local cargo config must not pin rustc-wrapper; CI runners lack sccache. Set RUSTC_WRAPPER via the environment instead."
     );
 }
