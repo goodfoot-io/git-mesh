@@ -25,6 +25,53 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Wall-clock budget for acquiring the per-mesh staging mutation lock
+/// before reporting `PermanentlyLocked` to the caller. Bounded short so
+/// momentary contention waits but a stale lockfile surfaces as a clear
+/// error rather than an indefinite hang.
+const STAGING_LOCK_BUDGET: Duration = Duration::from_secs(10);
+
+/// Acquire the per-mesh exclusive staging mutation lock for `name`.
+///
+/// The returned `Marker` holds `<staging>/<encoded-name>.lock` open via
+/// `gix-lock`'s `O_CREAT | O_EXCL` rename-into-place protocol — the
+/// same convention `gix` uses for index and ref updates. The lock is
+/// released when the marker is dropped, including on early-return error
+/// paths.
+///
+/// Mesh names are encoded with [`encode_name_for_fs`] so the on-disk
+/// lock path is a single component. Concurrent invocations on the same
+/// mesh serialize; different meshes use distinct lockfiles and proceed
+/// in parallel.
+///
+/// A stuck lockfile (process killed while holding the lock) surfaces
+/// after the budget as `Error::Git("staging mutation lock ...")` with
+/// the path to remove for manual remediation.
+fn staging_lock(repo: &gix::Repository, name: &str) -> Result<gix_lock::Marker> {
+    let dir = staging_dir(repo)?;
+    ensure_dir(&dir)?;
+    let resource = dir.join(encode_name_for_fs(name));
+    gix_lock::Marker::acquire_to_hold_resource(
+        &resource,
+        gix_lock::acquire::Fail::AfterDurationWithBackoff(STAGING_LOCK_BUDGET),
+        Some(dir),
+    )
+    .map_err(|e| match e {
+        gix_lock::acquire::Error::Io(io) => Error::Io(io),
+        gix_lock::acquire::Error::PermanentlyLocked {
+            resource_path,
+            mode,
+            attempts,
+        } => Error::Git(format!(
+            "staging mutation lock for mesh `{name}` could not be obtained {mode} \
+             after {attempts} attempt(s); a stale lockfile may need manual removal \
+             at `{}.lock`",
+            resource_path.display()
+        )),
+    })
+}
 
 const ADD_ANCHOR_SEPARATOR: char = '\t';
 
@@ -567,6 +614,13 @@ pub(crate) fn append_prepared_add(
     add: &PreparedAdd,
     anchor_id: Option<String>,
 ) -> Result<()> {
+    // Hold the per-mesh staging mutation lock across the entire
+    // read-modify-write: prospective-N read, supersede pass, sidecar +
+    // meta write, and ops-line append. Without it two writers on the
+    // same mesh can read the same `<N>`, clobber each other's sidecar
+    // bytes, and produce mismatched ops/sidecar pairs (main-59-1).
+    let _lock = staging_lock(repo, name)?;
+
     // Slice 3: last-write-wins for `(path, extent)`. Strip any existing
     // staged add at the same address (and its sidecar + meta files),
     // renumbering trailing sidecars so that parse-order ↔ on-disk `<N>`
@@ -727,12 +781,14 @@ pub fn append_remove(
     if start < 1 || end < start {
         return Err(Error::InvalidAnchor { start, end });
     }
+    let _lock = staging_lock(repo, name)?;
     append_line(repo, name, &format!("remove {path}#L{start}-L{end}"))?;
     Ok(())
 }
 
 pub fn append_remove_whole(repo: &gix::Repository, name: &str, path: &str) -> Result<()> {
     validate_staging_path(path)?;
+    let _lock = staging_lock(repo, name)?;
     append_line(repo, name, &format!("remove {path}"))?;
     Ok(())
 }
@@ -745,6 +801,7 @@ pub fn append_config(repo: &gix::Repository, name: &str, entry: &StagedConfig) -
         StagedConfig::IgnoreWhitespace(b) => ("ignore-whitespace", b.to_string()),
         StagedConfig::FollowMoves(b) => ("follow-moves", b.to_string()),
     };
+    let _lock = staging_lock(repo, name)?;
     append_line(repo, name, &format!("config {key} {value}"))?;
     Ok(())
 }
@@ -752,6 +809,7 @@ pub fn append_config(repo: &gix::Repository, name: &str, entry: &StagedConfig) -
 pub fn set_why(repo: &gix::Repository, name: &str, why: &str) -> Result<()> {
     let p = why_path(repo, name)?;
     ensure_dir(p.parent().unwrap())?;
+    let _lock = staging_lock(repo, name)?;
     if why.is_empty() {
         if p.exists() {
             fs::remove_file(&p)?;
@@ -767,6 +825,7 @@ pub fn clear_staging(repo: &gix::Repository, name: &str) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
+    let _lock = staging_lock(repo, name)?;
     let encoded = encode_name_for_fs(name);
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
