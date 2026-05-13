@@ -494,9 +494,7 @@ fn clean_head_fast_path(
     anchored_start: u32,
     anchored_end: u32,
 ) -> Result<Option<AnchorResolved>> {
-    let content_layers_match_head =
-        state.clean_layers || (!state.layers.index && !state.layers.worktree);
-    if !content_layers_match_head {
+    if !super::anchor_path_is_layer_clean(state, &r.path) {
         return Ok(None);
     }
     let Some(t) = head_loc.as_ref() else {

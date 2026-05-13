@@ -832,14 +832,14 @@ fn can_skip_clean_head_pinned_mesh(
     if options.since.is_some() {
         return Ok(false);
     }
-    if !content_layers_are_head_authoritative(state) {
-        return Ok(false);
-    }
     if mesh_has_staged_state(repo, name) {
         return Ok(false);
     }
     for (_, anchor) in &mesh.anchors_v2 {
         if anchor.anchor_sha != state.head_sha {
+            return Ok(false);
+        }
+        if !anchor_path_is_layer_clean(state, &anchor.path) {
             return Ok(false);
         }
         if state.filter_short_circuit(repo, &anchor.path)?.is_some() {
@@ -855,8 +855,36 @@ fn can_skip_clean_head_pinned_mesh(
     Ok(true)
 }
 
-fn content_layers_are_head_authoritative(state: &EngineState) -> bool {
-    state.clean_layers || (!state.layers.index && !state.layers.worktree)
+/// Returns `true` when the workspace's enabled content layers agree
+/// with HEAD *for `path` specifically*, even if some other path in the
+/// workspace is dirty. The global `state.clean_layers` is a
+/// fast-positive trivial-true shortcut so the genuinely-clean
+/// workspace skips the per-path HashMap probes; the same shortcut
+/// covers the "no content layers enabled" case.
+pub(crate) fn anchor_path_is_layer_clean(state: &EngineState, path: &str) -> bool {
+    if state.clean_layers || (!state.layers.index && !state.layers.worktree) {
+        return true;
+    }
+    if state.conflicted_paths.contains(path) {
+        return false;
+    }
+    if state.layers.index
+        && state
+            .index_diffs
+            .as_ref()
+            .is_some_and(|d| d.map.contains_key(path))
+    {
+        return false;
+    }
+    if state.layers.worktree
+        && state
+            .worktree_diffs
+            .as_ref()
+            .is_some_and(|d| d.map.contains_key(path))
+    {
+        return false;
+    }
+    true
 }
 
 fn mesh_has_staged_state(repo: &gix::Repository, name: &str) -> bool {
@@ -1078,6 +1106,129 @@ mod tests {
         let _ = state.filter_short_circuit(&repo, "b.txt").unwrap();
         assert_eq!(state.session.filter_attr_misses, 2);
         assert_eq!(state.session.filter_attr_hits, 3);
+    }
+
+    fn state_for_predicate(
+        layers: LayerSet,
+        clean_layers: bool,
+        index_paths: &[&str],
+        worktree_paths: &[&str],
+        conflicted: &[&str],
+    ) -> EngineState {
+        use crate::resolver::layers::LayerDiffs;
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        for args in [
+            &["init", "--initial-branch=main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        std::fs::write(dir.join("seed"), "s\n").unwrap();
+        std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["add", "-A"])
+            .output()
+            .unwrap();
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let repo = gix::open(dir).unwrap();
+        let mut state = EngineState::new(&repo, layers, true).unwrap();
+        state.clean_layers = clean_layers;
+        let mut idx = LayerDiffs::empty();
+        for p in index_paths {
+            idx.map.insert((*p).to_string(), crate::resolver::layers::diff::DiffEntry {
+                new_path: (*p).to_string(),
+                old_path: (*p).to_string(),
+                hunks: vec![],
+                new_blob: None,
+                deleted: false,
+                intent_to_add: false,
+            });
+        }
+        state.index_diffs = Some(idx);
+        let mut wt = LayerDiffs::empty();
+        for p in worktree_paths {
+            wt.map.insert((*p).to_string(), crate::resolver::layers::diff::DiffEntry {
+                new_path: (*p).to_string(),
+                old_path: (*p).to_string(),
+                hunks: vec![],
+                new_blob: None,
+                deleted: false,
+                intent_to_add: false,
+            });
+        }
+        state.worktree_diffs = Some(wt);
+        for p in conflicted {
+            state.conflicted_paths.insert((*p).to_string());
+        }
+        state
+    }
+
+    #[test]
+    fn anchor_path_predicate_clean_path() {
+        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let state = state_for_predicate(layers, false, &["other.rs"], &["wiki/x.md"], &[]);
+        assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+    }
+
+    #[test]
+    fn anchor_path_predicate_index_dirty() {
+        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
+        assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+    }
+
+    #[test]
+    fn anchor_path_predicate_worktree_dirty() {
+        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let state = state_for_predicate(layers, false, &[], &["packages/anchor.rs"], &[]);
+        assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+    }
+
+    #[test]
+    fn anchor_path_predicate_conflicted() {
+        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
+        assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+    }
+
+    #[test]
+    fn anchor_path_predicate_layers_disabled() {
+        let layers = LayerSet { index: false, worktree: false, staged_mesh: false };
+        let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
+        // With no content layers enabled, every path is trivially clean.
+        assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+    }
+
+    #[test]
+    fn anchor_path_predicate_index_dirty_but_index_layer_off() {
+        let layers = LayerSet { index: false, worktree: true, staged_mesh: false };
+        let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
+        // Index layer disabled → index diffs don't disqualify.
+        assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
+    }
+
+    #[test]
+    fn anchor_path_predicate_clean_layers_shortcut() {
+        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        // clean_layers=true should trivially-true every path regardless
+        // of conflicted_paths (which is logically empty under
+        // clean_layers=true; the shortcut is what makes the genuinely
+        // clean workspace skip the HashMap probes).
+        let state = state_for_predicate(layers, true, &[], &[], &[]);
+        assert!(anchor_path_is_layer_clean(&state, "anything.rs"));
     }
 
     #[test]

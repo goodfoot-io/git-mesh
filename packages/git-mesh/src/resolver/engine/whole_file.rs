@@ -42,29 +42,26 @@ pub(crate) fn resolve_whole_file(
         });
     }
 
-    if r.anchor_sha == state.head_sha {
-        let content_layers_match_head =
-            state.clean_layers || (!state.layers.index && !state.layers.worktree);
-        if content_layers_match_head
-            && let Some(head_blob) = state.head_blob_at(repo, &r.path)?
-            && head_blob == r.blob
-        {
-            return Ok(AnchorResolved {
-                anchor_id: anchor_id.into(),
-                anchor_sha: r.anchor_sha,
-                anchored,
-                current: Some(AnchorLocation {
-                    path: PathBuf::from(&r.path),
-                    extent: AnchorExtent::WholeFile,
-                    blob: oid_from_hex(&head_blob).ok(),
-                }),
-                status: AnchorStatus::Fresh,
-                source: None,
-                layer_sources: vec![],
-                acknowledged_by: None,
-                locus: None,
-            });
-        }
+    if r.anchor_sha == state.head_sha
+        && super::anchor_path_is_layer_clean(state, &r.path)
+        && let Some(head_blob) = state.head_blob_at(repo, &r.path)?
+        && head_blob == r.blob
+    {
+        return Ok(AnchorResolved {
+            anchor_id: anchor_id.into(),
+            anchor_sha: r.anchor_sha,
+            anchored,
+            current: Some(AnchorLocation {
+                path: PathBuf::from(&r.path),
+                extent: AnchorExtent::WholeFile,
+                blob: oid_from_hex(&head_blob).ok(),
+            }),
+            status: AnchorStatus::Fresh,
+            source: None,
+            layer_sources: vec![],
+            acknowledged_by: None,
+            locus: None,
+        });
     }
 
     let workdir = git::work_dir(repo)?;
@@ -92,9 +89,7 @@ pub(crate) fn resolve_whole_file(
         DriftSource::Head
     };
 
-    let content_layers_match_head =
-        state.clean_layers || (!state.layers.index && !state.layers.worktree);
-    if content_layers_match_head
+    if super::anchor_path_is_layer_clean(state, &current_path)
         && let Some(head_blob) = head_blob.as_ref()
         && head_blob == &r.blob
     {
