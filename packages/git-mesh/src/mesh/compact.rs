@@ -557,11 +557,6 @@ fn apply_compact_attempt(
 
     match apply_ref_transaction(wd, &updates) {
         Ok(()) => {
-            for sha in &advanced_old_anchor_shas {
-                if let Err(e) = crate::resolver::trail_cache::clear(repo, sha) {
-                    eprintln!("git-mesh: trail_cache::clear failed for {sha}: {e}");
-                }
-            }
             Ok(AttemptResult::Done(MeshCompactOutcome {
                 name: name.to_string(),
                 advanced,

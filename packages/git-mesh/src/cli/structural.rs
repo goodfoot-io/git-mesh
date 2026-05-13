@@ -838,36 +838,26 @@ fn check_file_index(repo: &gix::Repository, out: &mut Vec<DoctorFinding>) {
     }
 }
 
-/// Collect the set of `anchor_sha` values from all live meshes. Used by
-/// `--gc-trail-cache` to distinguish live vs. orphan cache files.
-fn collect_live_anchor_shas(repo: &gix::Repository) -> std::collections::HashSet<String> {
-    let mut shas = std::collections::HashSet::new();
-    let Ok(names) = list_mesh_names(repo) else {
-        return shas;
-    };
-    for name in names {
-        let Ok(mesh) = crate::mesh::read_mesh(repo, &name) else {
-            continue;
-        };
-        for (_id, anchor) in mesh.anchors_v2 {
-            shas.insert(anchor.anchor_sha);
-        }
-    }
-    shas
-}
 
 pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Result<i32> {
     if args.gc_trail_cache {
-        let live_anchors = collect_live_anchor_shas(repo);
-        match crate::resolver::trail_cache::gc(repo, &live_anchors) {
-            Ok(report) => {
-                println!(
-                    "mesh doctor: trail cache gc — removed {} orphan(s), {} stale tempfile(s)",
-                    report.removed_orphans, report.removed_stale_tmp
-                );
-            }
+        match crate::resolver::cache::Cache::open(repo) {
+            Ok(cache) => match cache.gc(repo) {
+                Ok(report) => {
+                    println!(
+                        "mesh doctor: sqlite cache gc — removed {} name_status, {} blob_diff, {} grouped_walk, {} rename_trail row(s)",
+                        report.name_status_removed,
+                        report.blob_diff_removed,
+                        report.grouped_walk_removed,
+                        report.rename_trail_removed,
+                    );
+                }
+                Err(e) => {
+                    println!("git-mesh: cache gc failed: {e}");
+                }
+            },
             Err(e) => {
-                println!("git-mesh: trail_cache::gc failed: {e}");
+                println!("git-mesh: cache open failed: {e}");
             }
         }
     }

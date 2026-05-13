@@ -501,8 +501,8 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.interesting-commits", state.session.interesting_commits);
     crate::perf::counter("session.skipped-commits", state.session.skipped_commits);
     crate::perf::counter("session.pass1-ms", state.session.pass1_ms);
-    crate::perf::counter("session.trail-cache-hits", state.session.trail_cache_hits);
-    crate::perf::counter("session.trail-cache-misses", state.session.trail_cache_misses);
+    crate::perf::counter("session.rename-trail-hits", state.session.rename_trail_hits);
+    crate::perf::counter("session.rename-trail-misses", state.session.rename_trail_misses);
     crate::perf::counter("session.grouped-walk-cache-hits", state.session.grouped_walk_cache_hits);
     crate::perf::counter("session.grouped-walk-ancestor-hits", state.session.grouped_walk_ancestor_hits);
     crate::perf::counter("session.name-status-hits", state.session.name_status_hits);

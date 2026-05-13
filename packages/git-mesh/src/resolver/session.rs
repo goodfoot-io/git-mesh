@@ -38,10 +38,10 @@
 
 use crate::Result;
 use crate::git;
-use crate::resolver::cache::{Cache, GroupedWalkKey};
-use crate::resolver::trail_cache::{self, TrailCacheEntry};
+use crate::resolver::cache::{Cache, GroupedWalkKey, TrailCacheEntry, TrailCacheKey};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
@@ -108,9 +108,9 @@ pub(crate) struct ResolveSession {
     /// closure via `git log --name-status` subprocesses) across all walks.
     pub(crate) pass1_ms: u64,
     /// Counter: cache hits in the cross-invocation rename-trail cache.
-    pub(crate) trail_cache_hits: u64,
-    /// Counter: cache misses (including I/O errors) in the trail cache.
-    pub(crate) trail_cache_misses: u64,
+    pub(crate) rename_trail_hits: u64,
+    /// Counter: cache misses (including I/O errors) in the rename-trail cache.
+    pub(crate) rename_trail_misses: u64,
     /// Counter: Tier 3 grouped_walk cache hits (exact key).
     pub(crate) grouped_walk_cache_hits: u64,
     /// Counter: Tier 3 grouped_walk cache hits (ancestor key).
@@ -135,7 +135,7 @@ pub(crate) struct ResolveSession {
     /// depend on git refs and config, not on any anchor or HEAD. Computed once
     /// in `new()` and reused by every `build_grouped_walk` call, eliminating
     /// 8 subprocess forks per unique anchor SHA.
-    session_hashes: Option<([u8; 32], [u8; 32])>,
+    pub(crate) session_hashes: Option<([u8; 32], [u8; 32])>,
     /// Session-scoped blob OID memo: `(commit_sha, path) → blob_oid`.
     ///
     /// `path_blob_at` requires a tree traversal for every `(commit, path)`
@@ -154,7 +154,7 @@ impl ResolveSession {
         });
         // Compute session-wide hashes once. Failure degrades to None; each
         // build_grouped_walk call then falls back to per-call compute_key.
-        let session_hashes = trail_cache::compute_session_hashes(repo);
+        let session_hashes = compute_session_hashes(repo);
         Self {
             walks: HashMap::new(),
             ensure_calls: 0,
@@ -162,8 +162,8 @@ impl ResolveSession {
             skipped_commits: 0,
             interesting_commits: 0,
             pass1_ms: 0,
-            trail_cache_hits: 0,
-            trail_cache_misses: 0,
+            rename_trail_hits: 0,
+            rename_trail_misses: 0,
             grouped_walk_cache_hits: 0,
             grouped_walk_ancestor_hits: 0,
             name_status_hits: 0,
@@ -207,8 +207,8 @@ impl ResolveSession {
             &mut self.skipped_commits,
             &mut self.interesting_commits,
             &mut self.pass1_ms,
-            &mut self.trail_cache_hits,
-            &mut self.trail_cache_misses,
+            &mut self.rename_trail_hits,
+            &mut self.rename_trail_misses,
             &mut self.grouped_walk_cache_hits,
             &mut self.grouped_walk_ancestor_hits,
             &mut self.name_status_hits,
@@ -256,8 +256,8 @@ impl ResolveSession {
                 &mut self.skipped_commits,
                 &mut self.interesting_commits,
                 &mut self.pass1_ms,
-                &mut self.trail_cache_hits,
-                &mut self.trail_cache_misses,
+                &mut self.rename_trail_hits,
+                &mut self.rename_trail_misses,
                 &mut self.grouped_walk_cache_hits,
                 &mut self.grouped_walk_ancestor_hits,
                 &mut self.name_status_hits,
@@ -292,8 +292,8 @@ fn build_grouped_walk(
     skipped_counter: &mut u64,
     interesting_counter: &mut u64,
     pass1_ms_counter: &mut u64,
-    trail_cache_hits_counter: &mut u64,
-    trail_cache_misses_counter: &mut u64,
+    rename_trail_hits_counter: &mut u64,
+    rename_trail_misses_counter: &mut u64,
     grouped_walk_cache_hits_counter: &mut u64,
     grouped_walk_ancestor_hits_counter: &mut u64,
     name_status_hits_counter: &mut u64,
@@ -315,12 +315,12 @@ fn build_grouped_walk(
         let empty_seed = HashSet::<String>::new();
         let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
         if let Some((replace_refs_hash, git_config_hash)) = session_hashes {
-            trail_cache::compute_key_with_hashes(
+            compute_trail_key_with_hashes(
                 anchor_sha, &head_sha, copy_detection, seed_for_key,
                 replace_refs_hash, git_config_hash,
             ).ok()
         } else {
-            trail_cache::compute_key(
+            compute_trail_key(
                 repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
             ).ok()
         }
@@ -471,9 +471,9 @@ fn build_grouped_walk(
                 Hit(HashSet<String>, HashSet<String>),
                 Miss,
             }
-            let compute_key_local = |seed: &HashSet<String>| -> Result<trail_cache::TrailCacheKey> {
+            let compute_key_local = |seed: &HashSet<String>| -> Result<TrailCacheKey> {
                 if let Some((replace_refs_hash, git_config_hash)) = session_hashes {
-                    trail_cache::compute_key_with_hashes(
+                    compute_trail_key_with_hashes(
                         anchor_sha,
                         &head_sha,
                         copy_detection,
@@ -482,26 +482,22 @@ fn build_grouped_walk(
                         git_config_hash,
                     )
                 } else {
-                    trail_cache::compute_key(
+                    compute_trail_key(
                         repo, anchor_sha, &head_sha, copy_detection, seed,
                     )
                 }
             };
             let probe = match compute_key_local(seed) {
                 Err(e) => {
-                    eprintln!("trail_cache compute_key error: {e}");
+                    eprintln!("rename_trail compute_key error: {e}");
                     CacheProbe::Miss
                 }
-                Ok(key) => match trail_cache::load(repo, &key) {
-                    Ok(Some(entry)) => {
-                        *trail_cache_hits_counter += 1;
+                Ok(key) => match cache.rename_trail_get(&key) {
+                    Some(entry) => {
+                        *rename_trail_hits_counter += 1;
                         CacheProbe::Hit(entry.closed, entry.interesting)
                     }
-                    Ok(None) => CacheProbe::Miss,
-                    Err(e) => {
-                        eprintln!("trail_cache load error (shadow miss): {e}");
-                        CacheProbe::Miss
-                    }
+                    None => CacheProbe::Miss,
                 },
             };
 
@@ -511,8 +507,8 @@ fn build_grouped_walk(
                     (Some(closed), Some(interesting), false)
                 }
                 CacheProbe::Miss => {
-                    // Cache miss (including shadow miss): run Pass 1 then conditionally store.
-                    *trail_cache_misses_counter += 1;
+                    // Cache miss: run Pass 1 then conditionally store.
+                    *rename_trail_misses_counter += 1;
                     let t0 = std::time::Instant::now();
                     let (closed, interesting, fell_back) =
                         compute_rename_trail(repo, anchor_sha, seed, copy_detection, &walk_parents, warnings)?;
@@ -528,8 +524,8 @@ fn build_grouped_walk(
                                 closed: closed.clone(),
                                 interesting: interesting.clone(),
                             };
-                            if let Err(e) = trail_cache::store(repo, &key, &entry) {
-                                eprintln!("trail_cache store error (ignored): {e}");
+                            if let Err(e) = cache.with_write_txn(|txn| cache.rename_trail_put(txn, &key, &entry)) {
+                                eprintln!("rename_trail store error (ignored): {e}");
                             }
                         }
                     }
@@ -810,6 +806,106 @@ fn compute_rename_trail(
 
 fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
+}
+
+// ── Trail-key helpers (moved from trail_cache.rs) ────────────────────────────
+
+fn compute_trail_key(
+    repo: &gix::Repository,
+    anchor_sha: &str,
+    head_sha: &str,
+    copy_detection: CopyDetection,
+    seed: &HashSet<String>,
+) -> Result<TrailCacheKey> {
+    let replace_refs_hash = hash_replace_refs(repo)?;
+    let git_config_hash = hash_git_config(repo)?;
+    compute_trail_key_with_hashes(
+        anchor_sha,
+        head_sha,
+        copy_detection,
+        seed,
+        replace_refs_hash,
+        git_config_hash,
+    )
+}
+
+fn compute_trail_key_with_hashes(
+    anchor_sha: &str,
+    head_sha: &str,
+    copy_detection: CopyDetection,
+    seed: &HashSet<String>,
+    replace_refs_hash: [u8; 32],
+    git_config_hash: [u8; 32],
+) -> Result<TrailCacheKey> {
+    let candidate_seed_hash = hash_sorted_paths(seed);
+    let rename_budget = walker::rename_budget();
+    Ok(TrailCacheKey {
+        anchor_sha: anchor_sha.to_string(),
+        head_sha: head_sha.to_string(),
+        copy_detection,
+        rename_budget,
+        candidate_seed_hash,
+        replace_refs_hash,
+        git_config_hash,
+    })
+}
+
+pub(crate) fn compute_session_hashes(repo: &gix::Repository) -> Option<([u8; 32], [u8; 32])> {
+    let replace = hash_replace_refs(repo).ok()?;
+    let config = hash_git_config(repo).ok()?;
+    Some((replace, config))
+}
+
+fn hash_sorted_paths(paths: &HashSet<String>) -> [u8; 32] {
+    let mut sorted: Vec<&String> = paths.iter().collect();
+    sorted.sort();
+    let joined = sorted.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
+    let mut h = Sha256::new();
+    h.update(joined.as_bytes());
+    h.finalize().into()
+}
+
+fn hash_replace_refs(repo: &gix::Repository) -> Result<[u8; 32]> {
+    let work_dir = repo.workdir().unwrap_or_else(|| std::path::Path::new("."));
+    let out = std::process::Command::new("git")
+        .current_dir(work_dir)
+        .args(["for-each-ref", "refs/replace/"])
+        .output()
+        .map_err(|e| crate::Error::Git(format!("for-each-ref: {e}")))?;
+    let mut h = Sha256::new();
+    h.update(&out.stdout);
+    Ok(h.finalize().into())
+}
+
+fn hash_git_config(repo: &gix::Repository) -> Result<[u8; 32]> {
+    let config_keys = [
+        "diff.renames",
+        "diff.algorithm",
+        "diff.renameLimit",
+        "core.ignoreCase",
+        "core.precomposeUnicode",
+        "log.follow",
+        "i18n.logOutputEncoding",
+    ];
+    let work_dir = repo.workdir().unwrap_or_else(|| std::path::Path::new("."));
+    let mut lines = Vec::new();
+    for key in &config_keys {
+        let out = std::process::Command::new("git")
+            .current_dir(work_dir)
+            .args(["config", "--get", key])
+            .output()
+            .map_err(|e| crate::Error::Git(format!("git config: {e}")))?;
+        let val = if out.status.success() {
+            String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+        } else {
+            String::new()
+        };
+        lines.push(format!("{key}={val}"));
+    }
+    let joined = lines.join("\n");
+    let mut h = Sha256::new();
+    h.update(joined.as_bytes());
+    Ok(h.finalize().into())
 }
 
 

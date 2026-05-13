@@ -1,25 +1,24 @@
 //! SQLite-backed content-addressed cache for `git mesh stale`.
 //!
-//! Three tiers of caches share a single database at
+//! Four tiers of caches share a single database at
 //! `<git_dir>/mesh/cache/mesh_cache.sqlite`:
 //!
 //! - **Tier 1** — `name_status_cache`: per-commit-pair `Vec<NS>` blobs.
 //! - **Tier 2** — `blob_diff_cache`: per-blob-pair hunk lists.
 //! - **Tier 3** — `grouped_walk_cache`: full `GroupedWalk` materializations.
-//!
-//! Phase 1 establishes the contract: types, signatures, schema bootstrap,
-//! and serde derives.  No tier probes are wired yet.
+//! - **Tier 4** — `rename_trail_cache`: Pass 1 rename-trail closure keyed by
+//!   anchor + head + copy-detection + seed hash + config hashes.
 
 use crate::Result;
 use crate::git;
 use crate::resolver::session::GroupedWalk;
-use crate::resolver::trail_cache::TrailCacheKey;
 use crate::resolver::walker::NS;
 use crate::types::CopyDetection;
 use rusqlite::{Connection, OpenFlags, Transaction};
+use std::collections::HashSet;
 use std::fs;
 
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 // ── Schema DDL ──────────────────────────────────────────────────────────────
 
@@ -54,7 +53,41 @@ CREATE TABLE IF NOT EXISTS grouped_walk_cache (
 
 CREATE INDEX IF NOT EXISTS grouped_walk_anchor_idx
     ON grouped_walk_cache (anchor_sha, copy_detection);
+
+CREATE TABLE IF NOT EXISTS rename_trail_cache (
+    anchor_sha          TEXT NOT NULL,
+    head_sha            TEXT NOT NULL,
+    copy_detection      INTEGER NOT NULL,
+    rename_budget       INTEGER NOT NULL,
+    seed_hash           BLOB NOT NULL,
+    replace_refs_hash   BLOB NOT NULL,
+    git_config_hash     BLOB NOT NULL,
+    trail_blob          BLOB NOT NULL,
+    PRIMARY KEY (anchor_sha, head_sha, copy_detection,
+                 rename_budget, seed_hash, replace_refs_hash, git_config_hash)
+) WITHOUT ROWID;
 ";
+
+// ── TrailCacheKey / TrailCacheEntry ─────────────────────────────────────────
+
+/// Every component that must match for a rename-trail cache hit.
+pub(crate) struct TrailCacheKey {
+    pub anchor_sha: String,
+    pub head_sha: String,
+    pub copy_detection: CopyDetection,
+    pub rename_budget: usize,
+    pub candidate_seed_hash: [u8; 32],
+    pub replace_refs_hash: [u8; 32],
+    pub git_config_hash: [u8; 32],
+}
+
+/// The cached Pass 1 output stored in the `rename_trail_cache` table.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct TrailCacheEntry {
+    pub seed: Vec<String>,
+    pub closed: HashSet<String>,
+    pub interesting: HashSet<String>,
+}
 
 // ── GroupedWalkKey ──────────────────────────────────────────────────────────
 
@@ -71,7 +104,7 @@ pub(crate) struct GroupedWalkKey {
 }
 
 impl GroupedWalkKey {
-    pub(crate) fn from_trail_key(trail: &TrailCacheKey, head_sha: String) -> Self {
+    pub(crate) fn from_trail_key(trail: &crate::resolver::cache::TrailCacheKey, head_sha: String) -> Self {
         Self {
             anchor_sha: trail.anchor_sha.clone(),
             head_sha,
@@ -91,6 +124,7 @@ pub(crate) struct GcStats {
     pub name_status_removed: usize,
     pub blob_diff_removed: usize,
     pub grouped_walk_removed: usize,
+    pub rename_trail_removed: usize,
 }
 
 // ── Cache ───────────────────────────────────────────────────────────────────
@@ -431,6 +465,70 @@ impl Cache {
         Ok(())
     }
 
+    // ── Tier 4: rename_trail ────────────────────────────────────────────────
+
+    pub(crate) fn rename_trail_get(&self, key: &TrailCacheKey) -> Option<TrailCacheEntry> {
+        if !self.enabled {
+            return None;
+        }
+        let cd_int = copy_detection_to_int(key.copy_detection);
+        let rename_budget = key.rename_budget as i64;
+        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+            "SELECT trail_blob FROM rename_trail_cache \
+             WHERE anchor_sha = ?1 AND head_sha = ?2 AND copy_detection = ?3 \
+               AND rename_budget = ?4 AND seed_hash = ?5 \
+               AND replace_refs_hash = ?6 AND git_config_hash = ?7",
+            rusqlite::params![
+                key.anchor_sha,
+                key.head_sha,
+                cd_int,
+                rename_budget,
+                key.candidate_seed_hash.as_ref(),
+                key.replace_refs_hash.as_ref(),
+                key.git_config_hash.as_ref(),
+            ],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(blob) => bincode::deserialize::<TrailCacheEntry>(&blob).ok(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(_) => None,
+        }
+    }
+
+    pub(crate) fn rename_trail_put(
+        &self,
+        txn: &Transaction,
+        key: &TrailCacheKey,
+        entry: &TrailCacheEntry,
+    ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let cd_int = copy_detection_to_int(key.copy_detection);
+        let rename_budget = key.rename_budget as i64;
+        let blob = bincode::serialize(entry)
+            .map_err(|e| crate::Error::Git(format!("bincode serialize rename_trail: {e}")))?;
+        txn.execute(
+            "INSERT OR REPLACE INTO rename_trail_cache \
+             (anchor_sha, head_sha, copy_detection, rename_budget, seed_hash, \
+              replace_refs_hash, git_config_hash, trail_blob) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                key.anchor_sha,
+                key.head_sha,
+                cd_int,
+                rename_budget,
+                key.candidate_seed_hash.as_ref(),
+                key.replace_refs_hash.as_ref(),
+                key.git_config_hash.as_ref(),
+                blob,
+            ],
+        )
+        .map_err(|e| crate::Error::Git(format!("rename_trail insert: {e}")))?;
+        Ok(())
+    }
+
     // ── GC ──────────────────────────────────────────────────────────────────
 
     /// Remove cache rows whose referenced SHAs are no longer reachable in the
@@ -598,10 +696,57 @@ impl Cache {
                 .map_err(|e| crate::Error::Git(format!("gc: commit grouped_walk: {e}")))?;
         }
 
+        // ── 5. Sweep rename_trail_cache ──────────────────────────────────────
+        #[allow(clippy::type_complexity)]
+        let dead_rt: Vec<(String, String, i32, i64, Vec<u8>, Vec<u8>, Vec<u8>)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT anchor_sha, head_sha, copy_detection, rename_budget, \
+                        seed_hash, replace_refs_hash, git_config_hash \
+                 FROM rename_trail_cache",
+            )
+            .map_err(|e| crate::Error::Git(format!("gc: prepare rename_trail scan: {e}")))?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                ))
+            })
+            .map_err(|e| crate::Error::Git(format!("gc: rename_trail scan: {e}")))?
+            .filter_map(|r| r.ok())
+            .filter(|(anchor, head, _, _, _, _, _)| {
+                !live.contains(anchor) || !live.contains(head)
+            })
+            .collect()
+        };
+
+        let rename_trail_removed = dead_rt.len();
+        for chunk in dead_rt.chunks(5000) {
+            let txn = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| crate::Error::Git(format!("gc: begin txn rename_trail: {e}")))?;
+            for (anchor, head, cd, budget, seed, replace_refs, git_config) in chunk {
+                txn.execute(
+                    "DELETE FROM rename_trail_cache \
+                     WHERE anchor_sha = ?1 AND head_sha = ?2 AND copy_detection = ?3 \
+                       AND rename_budget = ?4 AND seed_hash = ?5 \
+                       AND replace_refs_hash = ?6 AND git_config_hash = ?7",
+                    rusqlite::params![anchor, head, cd, budget, seed, replace_refs, git_config],
+                )
+                .map_err(|e| crate::Error::Git(format!("gc: delete rename_trail: {e}")))?;
+            }
+            txn.commit()
+                .map_err(|e| crate::Error::Git(format!("gc: commit rename_trail: {e}")))?;
+        }
+
         Ok(GcStats {
             name_status_removed,
             blob_diff_removed,
             grouped_walk_removed,
+            rename_trail_removed,
         })
     }
 }

@@ -6,7 +6,6 @@
 mod support;
 
 use anyhow::Result;
-use std::path::PathBuf;
 use support::TestRepo;
 
 // ---------------------------------------------------------------------------
@@ -20,19 +19,13 @@ fn seed(repo: &TestRepo, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Return the path to the trail-cache dir inside the repo's .git.
-fn cache_dir(repo: &TestRepo) -> PathBuf {
+/// Return the path to the sqlite cache database inside the repo's .git.
+fn sqlite_cache_path(repo: &TestRepo) -> std::path::PathBuf {
     repo.path()
         .join(".git")
         .join("mesh")
         .join("cache")
-        .join("rename-trail")
-        .join("v1")
-}
-
-/// Return the cache file path for a given anchor sha.
-fn cache_file(repo: &TestRepo, anchor_sha: &str) -> PathBuf {
-    cache_dir(repo).join(format!("{anchor_sha}.json"))
+        .join("mesh_cache.sqlite")
 }
 
 /// Run `git mesh stale` (all meshes) with GIT_MESH_PERF=1, return stderr.
@@ -43,6 +36,26 @@ fn run_stale_all_with_perf(repo: &TestRepo) -> Result<String> {
         .args(["stale"])
         .output()?;
     Ok(String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// Return true if the sqlite rename_trail_cache table has any rows for the
+/// given anchor_sha.
+fn rename_trail_row_exists(repo: &TestRepo, anchor_sha: &str) -> bool {
+    let db_path = sqlite_cache_path(repo);
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) else {
+        return false;
+    };
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM rename_trail_cache WHERE anchor_sha = ?1",
+            rusqlite::params![anchor_sha],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    count > 0
 }
 
 fn parse_counter(stderr: &str, label: &str) -> u64 {
@@ -137,8 +150,8 @@ fn stale_head_advance_invalidates() -> Result<()> {
     // tail. Both are correct — the failure case is "exact trail-cache hit
     // at the new HEAD", which would mean the cache served stale data.
     let stderr = run_stale_all_with_perf(&repo)?;
-    let hits = parse_counter(&stderr, "session.trail-cache-hits");
-    let misses = parse_counter(&stderr, "session.trail-cache-misses");
+    let hits = parse_counter(&stderr, "session.rename-trail-hits");
+    let misses = parse_counter(&stderr, "session.rename-trail-misses");
     let ancestor_hits = parse_counter(&stderr, "session.grouped-walk-ancestor-hits");
 
     assert_eq!(
@@ -147,7 +160,7 @@ fn stale_head_advance_invalidates() -> Result<()> {
     );
     assert!(
         misses > 0 || ancestor_hits > 0,
-        "expected at least one trail-cache miss or grouped-walk ancestor hit after HEAD advance; got misses={misses}, ancestor_hits={ancestor_hits}; stderr:\n{stderr}"
+        "expected at least one rename-trail miss or grouped-walk ancestor hit after HEAD advance; got misses={misses}, ancestor_hits={ancestor_hits}; stderr:\n{stderr}"
     );
 
     Ok(())
@@ -173,7 +186,7 @@ fn stale_config_change_invalidates() -> Result<()> {
     repo.run_git(["config", "diff.renameLimit", "50"])?;
 
     let stderr = run_stale_all_with_perf(&repo)?;
-    let hits = parse_counter(&stderr, "session.trail-cache-hits");
+    let hits = parse_counter(&stderr, "session.rename-trail-hits");
 
     assert_eq!(
         hits, 0,
@@ -212,20 +225,21 @@ fn stale_seed_change_invalidates() -> Result<()> {
     // Prime cache for m1.
     run_stale_all_with_perf(&repo)?;
 
-    let cf = cache_file(&repo, &anchor_sha);
-    assert!(cf.exists(), "cache must exist after m1 stale run");
+    assert!(
+        rename_trail_row_exists(&repo, &anchor_sha),
+        "rename_trail_cache must have a row for anchor after m1 stale run"
+    );
 
     // Delete m1 and create m2 with the same anchor commit but different file.
-    // m2's anchor_sha == initial_sha, so it shares the cache file path.
+    // m2's anchor_sha == initial_sha, so shares the same anchor key.
     repo.mesh_stdout(["delete", "m1"])?;
     repo.mesh_stdout(["add", "m2", "file2.txt#L1-L5", "--at", &initial_sha])?;
     repo.mesh_stdout(["why", "m2", "-m", "seed m2"])?;
     repo.mesh_stdout(["commit", "m2"])?;
 
-    // Run stale for m2. The cache file has m1's seed hash; m2's seed hash
-    // is different → miss.
+    // Run stale for m2. m2's seed hash differs from m1's → cache miss.
     let stderr = run_stale_all_with_perf(&repo)?;
-    let hits = parse_counter(&stderr, "session.trail-cache-hits");
+    let hits = parse_counter(&stderr, "session.rename-trail-hits");
 
     assert_eq!(
         hits, 0,
@@ -259,29 +273,20 @@ fn stale_fallback_does_not_populate() -> Result<()> {
     repo.commit_all("advance HEAD")?;
 
     let anchor_sha = first_anchor_sha(&repo, "m")?;
-    let cf = cache_file(&repo, &anchor_sha);
 
-    // First run: AnyFileInRepo → fell_back=true → no cache file.
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
-        .current_dir(repo.path())
-        .env("GIT_MESH_PERF", "1")
-        .args(["stale"])
-        .output()?;
-    let stderr1 = String::from_utf8_lossy(&out.stderr).into_owned();
+    // First run: AnyFileInRepo → fell_back=true → no rename_trail row written.
+    let stderr1 = run_stale_all_with_perf(&repo)?;
+    let hits1 = parse_counter(&stderr1, "session.rename-trail-hits");
 
+    assert_eq!(hits1, 0, "first run with AnyFileInRepo must have 0 trail hits; stderr:\n{stderr1}");
     assert!(
-        !cf.exists(),
-        "cache file must not be written on AnyFileInRepo fallback; file at {cf:?}; stderr:\n{stderr1}"
+        !rename_trail_row_exists(&repo, &anchor_sha),
+        "rename_trail_cache must not have a row on AnyFileInRepo fallback; anchor={anchor_sha}"
     );
 
     // Second run: still misses because nothing was cached.
-    let out2 = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
-        .current_dir(repo.path())
-        .env("GIT_MESH_PERF", "1")
-        .args(["stale"])
-        .output()?;
-    let stderr2 = String::from_utf8_lossy(&out2.stderr).into_owned();
-    let hits2 = parse_counter(&stderr2, "session.trail-cache-hits");
+    let stderr2 = run_stale_all_with_perf(&repo)?;
+    let hits2 = parse_counter(&stderr2, "session.rename-trail-hits");
 
     assert_eq!(
         hits2, 0,
@@ -292,11 +297,10 @@ fn stale_fallback_does_not_populate() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// compact_clears_old_anchor_cache: after compact advances, old cache gone.
+// compact_advances_anchor_and_old_trail_row_becomes_unreachable.
 //
-// Setup: advance HEAD so anchor is Fresh (anchor_sha != HEAD). This causes
-// the resolver to run and populate the cache on the first stale call.
-// Then advance HEAD again and compact — the old cache file must be cleared.
+// After compact advances the anchor to a new sha, a stale run for the mesh
+// must miss the rename-trail cache (the new anchor sha has no cached row).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -313,32 +317,40 @@ fn compact_clears_old_anchor_cache() -> Result<()> {
     run_stale_all_with_perf(&repo)?;
 
     let old_anchor_sha = first_anchor_sha(&repo, "m")?;
-    let cf = cache_file(&repo, &old_anchor_sha);
 
-    // Verify cache was populated.
+    // Verify the old anchor has a cached row.
     assert!(
-        cf.exists(),
-        "expected cache file to exist before compact at {cf:?}"
+        rename_trail_row_exists(&repo, &old_anchor_sha),
+        "rename_trail_cache must have a row for old anchor before compact; anchor={old_anchor_sha}"
     );
 
     // Second HEAD advance: still Fresh — compact will advance the anchor to the
-    // new HEAD and the old anchor_sha cache file must be cleared.
+    // new HEAD (which is the second advance commit).
     repo.write_file("unrelated.txt", "second-advance\n")?;
     repo.commit_all("advance HEAD (compact target)")?;
 
-    // Run compact — advances the anchor and must clear the old cache file.
+    // Run compact — advances the anchor to the new HEAD.
     repo.mesh_stdout(["stale", "m", "--compact"])?;
 
-    assert!(
-        !cf.exists(),
-        "expected cache file to be deleted after compact at {cf:?}"
+    let new_anchor_sha = first_anchor_sha(&repo, "m")?;
+    assert_ne!(
+        old_anchor_sha, new_anchor_sha,
+        "compact must have advanced the anchor sha"
+    );
+
+    // The new anchor has no cached row yet; a stale run must miss.
+    let stderr = run_stale_all_with_perf(&repo)?;
+    let hits = parse_counter(&stderr, "session.rename-trail-hits");
+    assert_eq!(
+        hits, 0,
+        "new anchor after compact must miss the rename-trail cache; stderr:\n{stderr}"
     );
 
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// doctor_gc_trail_cache_sweeps_orphans: orphan files removed, live preserved.
+// doctor_gc_trail_cache_sweeps_orphans: sqlite GC runs, live rows preserved.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -354,18 +366,13 @@ fn doctor_gc_trail_cache_sweeps_orphans() -> Result<()> {
     run_stale_all_with_perf(&repo)?;
 
     let anchor_sha = first_anchor_sha(&repo, "m")?;
-    let live_file = cache_file(&repo, &anchor_sha);
 
-    assert!(live_file.exists(), "expected live cache file to exist");
+    assert!(
+        rename_trail_row_exists(&repo, &anchor_sha),
+        "expected rename_trail_cache row to exist for live anchor; anchor={anchor_sha}"
+    );
 
-    // Write an orphan cache file (no corresponding live anchor).
-    let orphan_sha = "deadbeef".repeat(5); // 40-char string
-    let orphan_file = cache_dir(&repo).join(format!("{orphan_sha}.json"));
-    std::fs::write(&orphan_file, "garbage\n")?;
-
-    assert!(orphan_file.exists(), "orphan file must exist before doctor");
-
-    // Run doctor --gc-trail-cache.
+    // Run doctor --gc-trail-cache — runs the sqlite GC.
     let out = repo.run_mesh(["doctor", "--gc-trail-cache"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
 
@@ -374,18 +381,14 @@ fn doctor_gc_trail_cache_sweeps_orphans() -> Result<()> {
         "doctor --gc-trail-cache must succeed; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("trail cache gc"),
+        stdout.contains("sqlite cache gc"),
         "expected gc summary line; stdout:\n{stdout}"
     );
 
-    // Orphan removed, live preserved.
+    // Live anchor row must still be present after GC.
     assert!(
-        !orphan_file.exists(),
-        "orphan cache file must be removed after doctor gc"
-    );
-    assert!(
-        live_file.exists(),
-        "live anchor cache file must be preserved after doctor gc"
+        rename_trail_row_exists(&repo, &anchor_sha),
+        "live anchor row must be preserved after doctor gc; anchor={anchor_sha}"
     );
 
     Ok(())
