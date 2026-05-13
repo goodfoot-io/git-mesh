@@ -5,6 +5,8 @@
 //! - [`read`]   — read-only views (§6.5, §6.6, §10.4).
 //! - [`structural`] — delete, mv, restore, revert (§6.8).
 
+pub mod archive;
+pub mod catalog;
 pub mod commit;
 pub mod compact;
 pub mod follow;
