@@ -92,6 +92,35 @@ fn perf_trace_fast_path_flag_reflects_counter() -> Result<()> {
     Ok(())
 }
 
+/// A clean pin-tracked mesh (anchor_sha == HEAD) that is skipped by the
+/// mesh-level fast path still appears in the CSV when `--perf-trace` is set.
+#[test]
+fn perf_trace_includes_clean_pinned_mesh() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // Create a mesh and commit it; anchor_sha == HEAD so the mesh-level skip
+    // would normally elide it from `stale_meshes_inner`.
+    repo.mesh_stdout(["add", "clean-mesh", "file1.txt#L1-L5"])?;
+    repo.mesh_stdout(["why", "clean-mesh", "-m", "clean mesh"])?;
+    repo.mesh_stdout(["commit", "clean-mesh"])?;
+
+    let trace_path = repo.path().join("trace.csv");
+    let out = repo.run_mesh(["stale", "--perf-trace", trace_path.to_str().unwrap()])?;
+    assert_eq!(out.status.code(), Some(0), "clean mesh should exit 0");
+
+    let csv = std::fs::read_to_string(&trace_path)?;
+    let data_rows: Vec<&str> = csv.lines().skip(1).collect();
+    assert!(
+        !data_rows.is_empty(),
+        "expected at least one CSV row for the clean mesh anchor; csv:\n{csv}"
+    );
+    let any_clean_mesh = data_rows.iter().any(|r| r.starts_with("clean-mesh,"));
+    assert!(
+        any_clean_mesh,
+        "expected a row with mesh=clean-mesh in the CSV; csv:\n{csv}"
+    );
+    Ok(())
+}
+
 /// `--perf-trace` conflicts with positional path args: must exit non-zero
 /// with a clear error message.
 #[test]

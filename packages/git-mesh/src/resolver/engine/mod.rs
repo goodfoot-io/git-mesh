@@ -601,7 +601,12 @@ fn stale_meshes_inner(
                 let _perf = crate::perf::span("resolver.read-mesh");
                 read_mesh_from_commit(repo, &name, &commit_oid)?
             };
-            if can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)? {
+            // When tracing is active we must resolve every mesh so every anchor
+            // gets a TraceRow. Skipping here would silently drop clean meshes from
+            // the CSV and break the documented invariant `wc -l == anchors-total + 1`.
+            if !enable_trace
+                && can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)?
+            {
                 continue;
             }
             let resolved = resolve_loaded_mesh_with_state(repo, &mut state, mesh, options)?;

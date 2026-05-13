@@ -52,7 +52,7 @@ Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag is opt-in; 
 | `fast_path` | bool | `true` if the anchor returned via [`clean_head_fast_path`](../src/resolver/engine/anchor.rs) |
 | `status` | enum | One of `Fresh`, `Moved`, `Changed`, `Orphaned`, `MergeConflict`, `Submodule`, `ContentUnavailable` |
 
-Values containing `,`, `"`, or newline are RFC-4180-escaped (wrapped in `"`, internal `"` doubled).
+Values containing `,`, `"`, newline (`\n`), or carriage return (`\r`) are RFC-4180-escaped (wrapped in `"`, internal `"` doubled).
 
 **Column order is a stable interface.** External tooling that consumes the CSV may pin to it; changes go through a deprecation cycle.
 
@@ -65,7 +65,7 @@ git mesh stale --perf-trace /tmp/trace.csv          # OK: full scan
 git mesh stale --perf-trace /tmp/trace.csv some/path  # CliError
 ```
 
-It also conflicts with `--compact` (a mutation mode, out of scope for tracing).
+It also conflicts with `--compact` and `--auto-follow` (both are mutation modes that contaminate per-anchor wall-clock measurements).
 
 ### Quick analyses
 

@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
@@ -35,31 +35,49 @@ fn csv_escape(s: &str) -> String {
 }
 
 fn write_perf_trace_csv(
+    file: std::fs::File,
     path: &std::path::Path,
     rows: &[crate::perf::TraceRow],
 ) -> Result<()> {
-    use crate::cli::{CliError, NextStep};
-    let mut out = String::from("mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status\n");
-    for r in rows {
-        out.push_str(&csv_escape(&r.mesh));
-        out.push(',');
-        out.push_str(&csv_escape(&r.anchor_id));
-        out.push(',');
-        out.push_str(&csv_escape(&r.anchor_sha));
-        out.push(',');
-        out.push_str(&csv_escape(&r.path));
-        out.push(',');
-        out.push_str(&r.wall_us.to_string());
-        out.push(',');
-        out.push_str(if r.fast_path { "true" } else { "false" });
-        out.push(',');
-        out.push_str(r.status);
-        out.push('\n');
-    }
-    std::fs::write(path, &out).map_err(|e| {
+    use std::io::Write as _;
+    let mut w = std::io::BufWriter::new(file);
+    let write_err = |e: std::io::Error| -> anyhow::Error {
         CliError {
             subcommand: "stale",
-            summary: format!("failed to write --perf-trace CSV to {}", path.display()),
+            summary: format!("failed to write perf trace to '{}'", path.display()),
+            what_happened: e.to_string(),
+            next_steps: vec![NextStep::Prose("Check that the path is writable.".into())],
+        }
+        .into()
+    };
+    w.write_all(b"mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status\n")
+        .map_err(&write_err)?;
+    for r in rows {
+        let mut line = String::new();
+        line.push_str(&csv_escape(&r.mesh));
+        line.push(',');
+        line.push_str(&csv_escape(&r.anchor_id));
+        line.push(',');
+        line.push_str(&csv_escape(&r.anchor_sha));
+        line.push(',');
+        line.push_str(&csv_escape(&r.path));
+        line.push(',');
+        line.push_str(&r.wall_us.to_string());
+        line.push(',');
+        line.push_str(if r.fast_path { "true" } else { "false" });
+        line.push(',');
+        line.push_str(r.status);
+        line.push('\n');
+        w.write_all(line.as_bytes()).map_err(&write_err)?;
+    }
+    w.flush().map_err(write_err)
+}
+
+fn open_perf_trace_file(path: &std::path::Path) -> Result<std::fs::File> {
+    std::fs::File::create(path).map_err(|e| {
+        CliError {
+            subcommand: "stale",
+            summary: format!("failed to write perf trace to '{}'", path.display()),
             what_happened: e.to_string(),
             next_steps: vec![NextStep::Prose("Check that the path is writable.".into())],
         }
@@ -150,8 +168,11 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         // included — workspace scans answer "what's stale?" only.
         let _perf = crate::perf::span("stale.resolve-all-meshes");
         if let Some(trace_path) = &args.perf_trace {
+            // Open the file before running the resolver so a bad path fails
+            // in milliseconds rather than after a full scan.
+            let trace_file = open_perf_trace_file(trace_path)?;
             let (resolved, trace_rows) = stale_meshes_with_trace(repo, options)?;
-            write_perf_trace_csv(trace_path, &trace_rows)?;
+            write_perf_trace_csv(trace_file, trace_path, &trace_rows)?;
             resolved
         } else {
             stale_meshes(repo, options)?
@@ -1553,6 +1574,35 @@ mod tests {
         let anchors = vec![("a1".to_string(), anchor(path, start, end))];
         let updates = ref_updates_for_mesh(repo, mesh_name, &[], &anchors).unwrap();
         apply_ref_transaction_repo(repo, &updates).unwrap();
+    }
+
+    // --- csv_escape unit tests ---
+
+    #[test]
+    fn csv_escape_plain_ascii_unchanged() {
+        assert_eq!(csv_escape("hello"), "hello");
+        assert_eq!(csv_escape(""), "");
+        assert_eq!(csv_escape("abc123"), "abc123");
+    }
+
+    #[test]
+    fn csv_escape_comma_quoted() {
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+    }
+
+    #[test]
+    fn csv_escape_double_quote_doubled() {
+        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn csv_escape_lf_quoted() {
+        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+    }
+
+    #[test]
+    fn csv_escape_cr_quoted() {
+        assert_eq!(csv_escape("a\rb"), "\"a\rb\"");
     }
 
     // --- hierarchical mesh name reproduction tests ---

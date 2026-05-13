@@ -296,7 +296,8 @@ pub struct StaleArgs {
     /// Write a CSV of per-anchor wall-clock traces to PATH.
     /// Requires a full scan (no positional paths). Columns:
     /// mesh,anchor_id,anchor_sha,path,wall_us,fast_path,status.
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["compact"])]
+    /// See packages/git-mesh/docs/profiling.md for schema and examples.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["compact", "auto_follow"])]
     pub perf_trace: Option<std::path::PathBuf>,
 }
 
