@@ -38,7 +38,7 @@
 
 use crate::Result;
 use crate::git;
-use crate::resolver::cache::{Cache, GroupedWalkKey, Kind, RenameTrailKey};
+use crate::resolver::cache::{Cache, GroupedWalkKey, Kind, Outcome, RenameTrailKey};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
 use sha2::{Digest, Sha256};
@@ -371,7 +371,7 @@ fn build_grouped_walk(
         head_sha: head_sha.clone(),
     };
 
-    let result = cache.get_or_insert_with(Kind::GroupedWalk, &gw_key, || {
+    let result = cache.get_or_insert_with_outcome(Kind::GroupedWalk, &gw_key, || {
         compute_grouped_walk(
             repo,
             anchor_sha,
@@ -392,8 +392,11 @@ fn build_grouped_walk(
         )
     });
     match result {
-        Ok(walk) => {
-            *grouped_walk_hits_counter += 1;
+        Ok((walk, outcome)) => {
+            match outcome {
+                Outcome::L1Hit | Outcome::L2Hit => *grouped_walk_hits_counter += 1,
+                Outcome::Miss => *grouped_walk_misses_counter += 1,
+            }
             Ok(walk)
         }
         Err(e) => {
@@ -459,10 +462,9 @@ fn compute_grouped_walk(
             // authoritative (fell_back = false).
             let mut local_fell_back = false;
             let local_pass1_ms = std::cell::Cell::new(0u64);
-            let probe: Result<(HashSet<String>, HashSet<String>)> = cache.get_or_insert_with(
-                Kind::RenameTrail,
-                &trail_key,
-                || {
+            type RenameTrailProbe = ((HashSet<String>, HashSet<String>), Outcome);
+            let probe: Result<RenameTrailProbe> = cache
+                .get_or_insert_with_outcome(Kind::RenameTrail, &trail_key, || {
                     let t0 = std::time::Instant::now();
                     let (closed, interesting, fell_back) = compute_rename_trail(
                         repo, anchor_sha, seed, copy_detection, &walk_parents, warnings,
@@ -470,24 +472,23 @@ fn compute_grouped_walk(
                     local_pass1_ms.set(t0.elapsed().as_millis() as u64);
                     local_fell_back = fell_back;
                     Ok((closed, interesting))
-                },
-            );
+                });
             *pass1_ms_counter += local_pass1_ms.get();
             match probe {
-                Ok((closed, interesting)) => {
-                    if local_fell_back {
+                Ok(((closed, interesting), outcome)) => match outcome {
+                    Outcome::Miss => {
                         *rename_trail_misses_counter += 1;
-                        (None, Some(interesting), true)
-                    } else if local_pass1_ms.get() > 0 {
-                        // Miss path: compute ran.
-                        *rename_trail_misses_counter += 1;
-                        (Some(closed), Some(interesting), false)
-                    } else {
-                        // Hit path: compute did not run.
+                        if local_fell_back {
+                            (None, Some(interesting), true)
+                        } else {
+                            (Some(closed), Some(interesting), false)
+                        }
+                    }
+                    Outcome::L1Hit | Outcome::L2Hit => {
                         *rename_trail_hits_counter += 1;
                         (Some(closed), Some(interesting), false)
                     }
-                }
+                },
                 Err(e) => {
                     eprintln!("rename_trail cache error (treating as miss): {e}");
                     *rename_trail_misses_counter += 1;

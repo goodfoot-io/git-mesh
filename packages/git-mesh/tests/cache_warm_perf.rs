@@ -1,4 +1,4 @@
-//! Asserts that a warm `git mesh stale` run with the SQLite cache enabled
+//! Asserts that a warm `git mesh stale` run with the cache enabled
 //! produces grouped-walk cache hits, and that the cache-enabled path is
 //! faster than the cache-disabled path.
 //!
@@ -142,7 +142,7 @@ fn run_stale(repo: &Path, cache_val: &str) -> StaleResult {
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let grouped_walk_exact_hits = parse_perf_counter(&stderr, "session.grouped-walk-exact-hits");
+    let grouped_walk_exact_hits = parse_perf_counter(&stderr, "session.grouped-walk-hits");
 
     StaleResult { elapsed, grouped_walk_exact_hits }
 }

@@ -162,7 +162,6 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
 /// to `git_dir().join("mesh").join("cache")` — no path change for the main
 /// worktree.  For linked worktrees, `common_dir` points at the main `.git/`,
 /// so all worktrees converge on one physical directory.
-#[allow(dead_code)] // wired into `Cache::open` in Phase 3.
 pub(crate) fn cache_dir(repo: &gix::Repository) -> std::path::PathBuf {
     common_dir(repo).join("mesh").join("cache")
 }

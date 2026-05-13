@@ -140,7 +140,6 @@ fn l2_path(dir: &std::path::Path, kind: Kind, hex: &str) -> std::path::PathBuf {
 
 /// (1) Miss invokes `compute`, persists L1 + L2, returns the computed value.
 #[test]
-#[ignore]
 fn miss_invokes_compute_and_persists_both_tiers() -> Result<()> {
     let td = init_repo();
     commit_file(td.path(), "f.txt", "x\n", "init");
@@ -167,7 +166,6 @@ fn miss_invokes_compute_and_persists_both_tiers() -> Result<()> {
 /// (2) Second call with the same `(Kind, key)` is an L1 hit; `compute`
 /// is not invoked.
 #[test]
-#[ignore]
 fn second_call_is_l1_hit_compute_not_invoked() -> Result<()> {
     let td = init_repo();
     commit_file(td.path(), "f.txt", "x\n", "init");
@@ -196,7 +194,6 @@ fn second_call_is_l1_hit_compute_not_invoked() -> Result<()> {
 /// (3) A fresh `Cache` pointed at the same `dir` reads the entry from L2
 /// on the first call, then L1 on the second.
 #[test]
-#[ignore]
 fn fresh_cache_reads_l2_then_l1() -> Result<()> {
     let td = init_repo();
     commit_file(td.path(), "f.txt", "x\n", "init");
@@ -239,7 +236,6 @@ fn fresh_cache_reads_l2_then_l1() -> Result<()> {
 /// (4) `Cache::open_disabled()` bypasses both tiers — `compute` runs every
 /// call, no FS writes occur under the cache dir.
 #[test]
-#[ignore]
 fn open_disabled_bypasses_both_tiers() -> Result<()> {
     let td = init_repo();
     commit_file(td.path(), "f.txt", "x\n", "init");
@@ -267,7 +263,6 @@ fn open_disabled_bypasses_both_tiers() -> Result<()> {
 /// (5) Distinct keys for the same `Kind` produce distinct files under
 /// `v1/<kind.as_dir()>/<aa>/<rest>`.
 #[test]
-#[ignore]
 fn distinct_keys_same_kind_produce_distinct_files() -> Result<()> {
     let td = init_repo();
     commit_file(td.path(), "f.txt", "x\n", "init");
@@ -302,7 +297,6 @@ fn distinct_keys_same_kind_produce_distinct_files() -> Result<()> {
 /// (6) `CacheKey::canonical_bytes` is deterministic — identical key values
 /// produce identical hashes; permuting fields produces different hashes.
 #[test]
-#[ignore]
 fn canonical_bytes_are_deterministic_and_field_sensitive() -> Result<()> {
     let k1 = sample_grouped_walk_key();
     let k2 = sample_grouped_walk_key();
@@ -342,7 +336,6 @@ fn canonical_bytes_are_deterministic_and_field_sensitive() -> Result<()> {
 /// from two threads each return the value and leave the persisted file
 /// well-formed (exactly one byte-identical file under the BLAKE3 path).
 #[test]
-#[ignore]
 fn concurrent_writes_converge_on_one_well_formed_file() -> Result<()> {
     use std::sync::Barrier;
 
@@ -383,7 +376,6 @@ fn concurrent_writes_converge_on_one_well_formed_file() -> Result<()> {
 /// collide. The per-`Kind` directory enforces this on the filesystem, and
 /// the `b"gm.v1.<kind>\0"` domain-separation tag enforces it in the hash.
 #[test]
-#[ignore]
 fn kind_isolation_prevents_cross_kind_collisions() -> Result<()> {
     // Two keys whose payload structure is identical apart from the kind
     // tag emitted by their `CacheKey` impl. (We can't easily construct
@@ -441,7 +433,6 @@ fn kind_isolation_prevents_cross_kind_collisions() -> Result<()> {
 /// references the current HEAD oid, prune that commit, run gc, assert the
 /// entry file is gone.
 #[test]
-#[ignore]
 fn gc_removes_orphan_entries() -> Result<()> {
     let td = init_repo();
     commit_file(td.path(), "f.txt", "x\n", "init");

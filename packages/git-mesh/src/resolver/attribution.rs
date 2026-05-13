@@ -70,8 +70,9 @@ pub(crate) fn drift_locus(
 
     // Single-probe cache call: the compute closure runs the full forward
     // walk on miss. Caller-side ancestor validation of `answer_commit`
-    // returns post-cache (Phase 3 wiring); for Phase 1 the stub
-    // `get_or_insert_with` routes straight to `compute` via `todo!()`.
+    // runs after the cache returns; on failure we recompute via
+    // `drift_locus_walk` directly (the cached entry remains, but the
+    // caller treats this round as a miss).
     let encoded: Result<EncodedDriftLocus> = session.cache.get_or_insert_with(
         Kind::DriftLocus,
         &cache_key,
