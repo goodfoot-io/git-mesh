@@ -19,6 +19,7 @@
 pub mod advice;
 pub mod commit;
 pub mod compact;
+pub mod drift_label;
 pub mod error;
 pub mod format;
 pub mod hooks;
@@ -27,6 +28,8 @@ pub mod show;
 pub mod stale_output;
 pub mod structural;
 pub mod sync;
+
+pub use drift_label::format_drift_label;
 
 pub use error::{CliError, NextStep, from_lib_error, render_error};
 
