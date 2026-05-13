@@ -518,6 +518,7 @@ fn clean_head_fast_path(
     // Moved so the anchor follows the new path.
     let anchored_path_absent_at_head = state.head_blob_at(repo, &r.path)?.is_none();
     if t.path != r.path && anchored_path_absent_at_head {
+        state.session.anchors_fast_path_hits += 1;
         return Ok(Some(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha.clone(),
@@ -540,6 +541,7 @@ fn clean_head_fast_path(
     } else {
         oid_from_hex(&head_blob).ok()
     };
+    state.session.anchors_fast_path_hits += 1;
     Ok(Some(AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),

@@ -163,6 +163,26 @@ pub(crate) struct ResolveSession {
     /// anchors. This memo eliminates the redundant traversals within a
     /// single `stale` run; it does not persist across invocations.
     blob_oid_memo: HashMap<(String, String), Option<String>>,
+    /// Counters: anchors classified by terminal status. Updated from the
+    /// per-anchor loop in `engine::resolve_loaded_mesh_with_state` after each
+    /// `resolve_anchor_inner` call.
+    pub(crate) anchors_fresh: u64,
+    pub(crate) anchors_moved: u64,
+    pub(crate) anchors_changed: u64,
+    pub(crate) anchors_orphaned: u64,
+    pub(crate) anchors_merge_conflict: u64,
+    pub(crate) anchors_unavailable: u64,
+    /// Counter: anchors that returned via [`clean_head_fast_path`] (early
+    /// return). The remainder went through the full layer-comparison path
+    /// (`anchors_total - anchors_fast_path_hits == anchors_full_resolution`).
+    pub(crate) anchors_fast_path_hits: u64,
+    /// Counter: anchors that went through the full per-layer resolution
+    /// (`resolve_anchor_inner` past the fast-path).
+    pub(crate) anchors_full_resolution: u64,
+    /// Per-anchor wall-clock (microseconds), one entry per `resolve_anchor_inner`
+    /// invocation. Sorted at end-of-run to compute `p50` / `p95` percentiles.
+    /// Dropped immediately after emit; ~8 bytes per anchor.
+    pub(crate) per_anchor_us: Vec<u128>,
 }
 
 impl ResolveSession {
@@ -198,7 +218,25 @@ impl ResolveSession {
             session_hashes,
             blob_oid_memo: HashMap::new(),
             known_head_ancestors: std::collections::HashMap::new(),
+            anchors_fresh: 0,
+            anchors_moved: 0,
+            anchors_changed: 0,
+            anchors_orphaned: 0,
+            anchors_merge_conflict: 0,
+            anchors_unavailable: 0,
+            anchors_fast_path_hits: 0,
+            anchors_full_resolution: 0,
+            per_anchor_us: Vec::new(),
         }
+    }
+
+    pub(crate) fn anchors_total(&self) -> u64 {
+        self.anchors_fresh
+            + self.anchors_moved
+            + self.anchors_changed
+            + self.anchors_orphaned
+            + self.anchors_merge_conflict
+            + self.anchors_unavailable
     }
 
     pub(crate) fn walks_len(&self) -> usize {

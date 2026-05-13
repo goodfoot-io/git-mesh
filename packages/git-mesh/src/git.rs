@@ -997,6 +997,7 @@ pub fn attr_for(
     rel_path: &Path,
     name: &str,
 ) -> Result<Option<gix::bstr::BString>> {
+    crate::perf::record_index_load();
     let index = repo
         .index_or_load_from_head()
         .map_err(|e| Error::Git(format!("load index: {e}")))?;

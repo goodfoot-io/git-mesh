@@ -431,6 +431,7 @@ fn resolve_loaded_mesh_with_state(
                 filtered_by_since += 1;
                 continue;
             }
+            let anchor_t0 = std::time::Instant::now();
             let mut resolved = resolve_anchor_inner(
                 repo,
                 &mut *state,
@@ -438,6 +439,8 @@ fn resolve_loaded_mesh_with_state(
                 &id,
                 r,
             )?;
+            state.session.per_anchor_us.push(anchor_t0.elapsed().as_micros());
+            tally_anchor_status(&mut state.session, &resolved.status);
             populate_drift_locus(repo, &mut resolved, &mut state.session, mesh.config.copy_detection);
             anchors.push(resolved);
         }
@@ -511,6 +514,18 @@ fn populate_drift_locus(
     }
 }
 
+fn tally_anchor_status(session: &mut super::session::ResolveSession, status: &AnchorStatus) {
+    match status {
+        AnchorStatus::Fresh => session.anchors_fresh += 1,
+        AnchorStatus::Moved => session.anchors_moved += 1,
+        AnchorStatus::Changed => session.anchors_changed += 1,
+        AnchorStatus::Orphaned => session.anchors_orphaned += 1,
+        AnchorStatus::MergeConflict => session.anchors_merge_conflict += 1,
+        AnchorStatus::Submodule => session.anchors_unavailable += 1,
+        AnchorStatus::ContentUnavailable(_) => session.anchors_unavailable += 1,
+    }
+}
+
 fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
     m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh) || !m.pending.is_empty()
 }
@@ -538,6 +553,7 @@ pub(crate) fn resolve_named_meshes(
 }
 
 pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
+    crate::perf::reset_subroutine_counters();
     let mesh_refs = {
         let _perf = crate::perf::span("resolver.list-meshes");
         list_mesh_refs(repo)?
@@ -580,10 +596,90 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.filter-attr-hits", state.session.filter_attr_hits);
     crate::perf::counter("session.filter-attr-misses", state.session.filter_attr_misses);
     crate::perf::counter("session.cache-destructive-rebuilds", state.session.cache.destructive_rebuilds());
+    // Category 1: hot-path subroutine counters. `filter-attr-*` come from
+    // the engine-state memo (one increment per `filter_short_circuit` call,
+    // misses count distinct paths); the remaining counters are process-global
+    // and reset at the top of `stale_meshes`.
+    crate::perf::counter(
+        "session.filter-attr-calls",
+        state.session.filter_attr_hits + state.session.filter_attr_misses,
+    );
+    crate::perf::counter(
+        "session.filter-attr-distinct-paths",
+        state.session.filter_attr_misses,
+    );
+    crate::perf::counter("session.gix-open-calls", crate::perf::gix_open_calls());
+    crate::perf::counter("session.index-load-calls", crate::perf::index_load_calls());
+    crate::perf::counter(
+        "session.is-ancestor-subprocess-calls",
+        crate::perf::is_ancestor_subprocess_calls(),
+    );
+    crate::perf::counter(
+        "session.is-ancestor-memo-hits",
+        crate::perf::is_ancestor_memo_hits(),
+    );
+    // Category 2: anchor-set decomposition.
+    let anchors_total = state.session.anchors_total();
+    crate::perf::counter("session.anchors-total", anchors_total);
+    crate::perf::counter("session.anchors-fresh", state.session.anchors_fresh);
+    crate::perf::counter("session.anchors-moved", state.session.anchors_moved);
+    crate::perf::counter("session.anchors-changed", state.session.anchors_changed);
+    crate::perf::counter("session.anchors-orphaned", state.session.anchors_orphaned);
+    crate::perf::counter(
+        "session.anchors-merge-conflict",
+        state.session.anchors_merge_conflict,
+    );
+    crate::perf::counter(
+        "session.anchors-unavailable",
+        state.session.anchors_unavailable,
+    );
+    crate::perf::counter(
+        "session.anchors-fast-path-hits",
+        state.session.anchors_fast_path_hits,
+    );
+    crate::perf::counter(
+        "session.anchors-full-resolution",
+        anchors_total.saturating_sub(state.session.anchors_fast_path_hits),
+    );
+    // Category 3: cache wall-clock, txn count, row counts, and per-anchor
+    // resolution distribution.
+    crate::perf::counter("cache.sqlite-read-ms", crate::perf::sqlite_read_ms());
+    crate::perf::counter("cache.sqlite-write-ms", crate::perf::sqlite_write_ms());
+    crate::perf::counter("cache.write-txn-count", crate::perf::write_txn_count());
+    for (table, count) in state.session.cache.row_counts() {
+        let label = match table {
+            "name_status_cache" => "cache.name-status-rows",
+            "blob_diff_cache" => "cache.blob-diff-rows",
+            "grouped_walk_cache" => "cache.grouped-walk-rows",
+            "rename_trail_cache" => "cache.rename-trail-rows",
+            "drift_locus_cache" => "cache.drift-locus-rows",
+            _ => continue,
+        };
+        crate::perf::counter(label, count);
+    }
+    {
+        let mut per_anchor = std::mem::take(&mut state.session.per_anchor_us);
+        per_anchor.sort_unstable();
+        let percentile = |q: f64| -> u64 {
+            if per_anchor.is_empty() {
+                return 0;
+            }
+            let idx = ((per_anchor.len() as f64 - 1.0) * q).round() as usize;
+            // Round to nearest millisecond for legibility.
+            ((per_anchor[idx] + 500) / 1000) as u64
+        };
+        crate::perf::counter("resolve-anchor.p50-ms", percentile(0.50));
+        crate::perf::counter("resolve-anchor.p95-ms", percentile(0.95));
+    }
     // Legend: tiers are checked top-down (grouped-walk → rename-trail → name-status →
     // blob-diff → drift-locus). Zero hits+misses on a lower tier means a higher tier
     // absorbed all traffic (warm-run short-circuit).
     crate::perf::note("session.tier-legend: tiers checked top-down; zero counters on a lower tier indicate higher-tier short-circuiting");
+    crate::perf::note(
+        "session.group-legend: session.* counts in-process state and subroutine calls; \
+         cache.* names sqlite-layer wall-clock and row counts; \
+         resolve-anchor.* names per-anchor distribution",
+    );
     state.finish(repo);
     if out.len() > 1 {
         sort_meshes_by_anchor_path(&mut out);

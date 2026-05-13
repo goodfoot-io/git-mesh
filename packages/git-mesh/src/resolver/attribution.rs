@@ -350,10 +350,12 @@ fn validate_answer_commit(
     if let Some(set) = known_head_ancestors.get(&head_id)
         && set.contains(&answer_id)
     {
+        crate::perf::record_is_ancestor_memo_hit();
         return true;
     }
     // Slow path: gix merge-base check.
     // merge_base(A, B) == A means A is an ancestor of B.
+    crate::perf::record_is_ancestor_subprocess();
     match repo.merge_base(answer_id, head_id) {
         Ok(base) if base.detach() == answer_id => {
             known_head_ancestors

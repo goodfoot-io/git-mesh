@@ -1,6 +1,6 @@
 //! Opt-in performance logging for CLI operation groups.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -71,4 +71,114 @@ pub fn note(text: &str) {
         return;
     }
     eprintln!("git-mesh perf: {text}");
+}
+
+// ── Subroutine-level counters ──────────────────────────────────────────────
+//
+// Process-global counters incremented from deep call sites that have no
+// direct access to `ResolveSession`. The `git mesh stale` CLI invokes
+// `reset()` at the top of `stale_meshes` and reads the values back inside
+// the perf-emit block; output is only meaningful for a single resolver run
+// per process invocation.
+
+static GIX_OPEN_CALLS: AtomicU64 = AtomicU64::new(0);
+static INDEX_LOAD_CALLS: AtomicU64 = AtomicU64::new(0);
+static IS_ANCESTOR_SUBPROCESS_CALLS: AtomicU64 = AtomicU64::new(0);
+static IS_ANCESTOR_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
+static SQLITE_READ_NS: AtomicU64 = AtomicU64::new(0);
+static SQLITE_WRITE_NS: AtomicU64 = AtomicU64::new(0);
+static WRITE_TXN_COUNT: AtomicU64 = AtomicU64::new(0);
+
+pub fn record_gix_open() {
+    if !enabled() {
+        return;
+    }
+    GIX_OPEN_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_index_load() {
+    if !enabled() {
+        return;
+    }
+    INDEX_LOAD_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_is_ancestor_subprocess() {
+    if !enabled() {
+        return;
+    }
+    IS_ANCESTOR_SUBPROCESS_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_is_ancestor_memo_hit() {
+    if !enabled() {
+        return;
+    }
+    IS_ANCESTOR_MEMO_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_write_txn() {
+    if !enabled() {
+        return;
+    }
+    WRITE_TXN_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn time_sqlite_read<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if !enabled() {
+        return f();
+    }
+    let t = Instant::now();
+    let r = f();
+    SQLITE_READ_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    r
+}
+
+pub fn time_sqlite_write<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if !enabled() {
+        return f();
+    }
+    let t = Instant::now();
+    let r = f();
+    SQLITE_WRITE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    r
+}
+
+pub fn gix_open_calls() -> u64 {
+    GIX_OPEN_CALLS.load(Ordering::Relaxed)
+}
+pub fn index_load_calls() -> u64 {
+    INDEX_LOAD_CALLS.load(Ordering::Relaxed)
+}
+pub fn is_ancestor_subprocess_calls() -> u64 {
+    IS_ANCESTOR_SUBPROCESS_CALLS.load(Ordering::Relaxed)
+}
+pub fn is_ancestor_memo_hits() -> u64 {
+    IS_ANCESTOR_MEMO_HITS.load(Ordering::Relaxed)
+}
+pub fn sqlite_read_ms() -> u64 {
+    SQLITE_READ_NS.load(Ordering::Relaxed) / 1_000_000
+}
+pub fn sqlite_write_ms() -> u64 {
+    SQLITE_WRITE_NS.load(Ordering::Relaxed) / 1_000_000
+}
+pub fn write_txn_count() -> u64 {
+    WRITE_TXN_COUNT.load(Ordering::Relaxed)
+}
+/// Reset all subroutine-level counters. Called at the top of `stale_meshes`
+/// so the emit block reports values from a single resolver run.
+pub fn reset_subroutine_counters() {
+    GIX_OPEN_CALLS.store(0, Ordering::Relaxed);
+    INDEX_LOAD_CALLS.store(0, Ordering::Relaxed);
+    IS_ANCESTOR_SUBPROCESS_CALLS.store(0, Ordering::Relaxed);
+    IS_ANCESTOR_MEMO_HITS.store(0, Ordering::Relaxed);
+    SQLITE_READ_NS.store(0, Ordering::Relaxed);
+    SQLITE_WRITE_NS.store(0, Ordering::Relaxed);
+    WRITE_TXN_COUNT.store(0, Ordering::Relaxed);
 }

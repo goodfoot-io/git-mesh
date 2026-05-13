@@ -186,6 +186,33 @@ impl Cache {
         self.destructive_rebuilds
     }
 
+    /// `SELECT COUNT(*)` per tier table. Returns zeros when the cache is
+    /// disabled. Intended to be called once at end-of-run from the perf-emit
+    /// block; each probe is a single full-table scan and stays sub-ms on the
+    /// local-disk sqlite file.
+    pub(crate) fn row_counts(&self) -> [(&'static str, u64); 5] {
+        let probe = |table: &str| -> u64 {
+            if !self.enabled {
+                return 0;
+            }
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            crate::perf::time_sqlite_read(|| {
+                self.conn
+                    .query_row(&sql, [], |row| row.get::<_, i64>(0))
+                    .ok()
+            })
+            .map(|v| v as u64)
+            .unwrap_or(0)
+        };
+        [
+            ("name_status_cache", probe("name_status_cache")),
+            ("blob_diff_cache", probe("blob_diff_cache")),
+            ("grouped_walk_cache", probe("grouped_walk_cache")),
+            ("rename_trail_cache", probe("rename_trail_cache")),
+            ("drift_locus_cache", probe("drift_locus_cache")),
+        ]
+    }
+
     /// Open (or create) the cache database for `repo`.
     ///
     /// Path: `<git_dir>/mesh/cache/mesh_cache.sqlite`.
@@ -251,12 +278,14 @@ impl Cache {
             return None;
         }
         let cd_int = copy_detection_to_int(cd);
-        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
-            "SELECT entries_blob FROM name_status_cache \
-             WHERE parent_sha = ?1 AND commit_sha = ?2 AND copy_detection = ?3",
-            rusqlite::params![parent, commit, cd_int],
-            |row| row.get(0),
-        );
+        let result: rusqlite::Result<Vec<u8>> = crate::perf::time_sqlite_read(|| {
+            self.conn.query_row(
+                "SELECT entries_blob FROM name_status_cache \
+                 WHERE parent_sha = ?1 AND commit_sha = ?2 AND copy_detection = ?3",
+                rusqlite::params![parent, commit, cd_int],
+                |row| row.get(0),
+            )
+        });
         match result {
             Ok(blob) => bincode::deserialize::<Vec<NS>>(&blob).ok(),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -276,12 +305,14 @@ impl Cache {
             let cd_int = copy_detection_to_int(*cd);
             let blob = bincode::serialize(entries)
                 .map_err(|e| crate::Error::Git(format!("bincode serialize name_status: {e}")))?;
-            txn.execute(
-                "INSERT OR REPLACE INTO name_status_cache \
-                 (parent_sha, commit_sha, copy_detection, entries_blob) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![parent, commit, cd_int, blob],
-            )
+            crate::perf::time_sqlite_write(|| {
+                txn.execute(
+                    "INSERT OR REPLACE INTO name_status_cache \
+                     (parent_sha, commit_sha, copy_detection, entries_blob) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![parent, commit, cd_int, blob],
+                )
+            })
             .map_err(|e| crate::Error::Git(format!("name_status insert: {e}")))?;
         }
         Ok(())
@@ -293,10 +324,11 @@ impl Cache {
     where
         F: FnOnce(&Transaction) -> Result<R>,
     {
+        crate::perf::record_write_txn();
         let txn = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| crate::Error::Git(format!("cache begin txn: {e}")))?;
         let result = f(&txn)?;
-        txn.commit()
+        crate::perf::time_sqlite_write(|| txn.commit())
             .map_err(|e| crate::Error::Git(format!("cache commit txn: {e}")))?;
         Ok(result)
     }
@@ -311,12 +343,14 @@ impl Cache {
         if !self.enabled {
             return None;
         }
-        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
-            "SELECT hunks_blob FROM blob_diff_cache \
-             WHERE old_blob_sha = ?1 AND new_blob_sha = ?2",
-            rusqlite::params![old_blob, new_blob],
-            |row| row.get(0),
-        );
+        let result: rusqlite::Result<Vec<u8>> = crate::perf::time_sqlite_read(|| {
+            self.conn.query_row(
+                "SELECT hunks_blob FROM blob_diff_cache \
+                 WHERE old_blob_sha = ?1 AND new_blob_sha = ?2",
+                rusqlite::params![old_blob, new_blob],
+                |row| row.get(0),
+            )
+        });
         match result {
             Ok(blob) => bincode::deserialize::<Vec<(u32, u32, u32, u32)>>(&blob).ok(),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -336,12 +370,14 @@ impl Cache {
         }
         let blob = bincode::serialize(hunks)
             .map_err(|e| crate::Error::Git(format!("bincode serialize blob_diff: {e}")))?;
-        txn.execute(
-            "INSERT OR REPLACE INTO blob_diff_cache \
-             (old_blob_sha, new_blob_sha, hunks_blob) \
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![old, new, blob],
-        )
+        crate::perf::time_sqlite_write(|| {
+            txn.execute(
+                "INSERT OR REPLACE INTO blob_diff_cache \
+                 (old_blob_sha, new_blob_sha, hunks_blob) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![old, new, blob],
+            )
+        })
         .map_err(|e| crate::Error::Git(format!("blob_diff insert: {e}")))?;
         Ok(())
     }
@@ -376,16 +412,18 @@ impl Cache {
             return GroupedWalkResult::Miss;
         }
         let cd_int = copy_detection_to_int(cd);
-        let result: rusqlite::Result<(String, Vec<u8>)> = self.conn.query_row(
-            "SELECT head_sha, walk_blob FROM grouped_walk_cache \
-             WHERE anchor_sha = ?1 AND copy_detection = ?2 \
-               AND seed_hash = ?3 AND replace_refs_hash = ?4 \
-               AND git_config_hash = ?5 AND rename_budget = ?6",
-            rusqlite::params![
-                anchor, cd_int, seed_hash, replace_refs_hash, git_config_hash, rename_budget,
-            ],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
-        );
+        let result: rusqlite::Result<(String, Vec<u8>)> = crate::perf::time_sqlite_read(|| {
+            self.conn.query_row(
+                "SELECT head_sha, walk_blob FROM grouped_walk_cache \
+                 WHERE anchor_sha = ?1 AND copy_detection = ?2 \
+                   AND seed_hash = ?3 AND replace_refs_hash = ?4 \
+                   AND git_config_hash = ?5 AND rename_budget = ?6",
+                rusqlite::params![
+                    anchor, cd_int, seed_hash, replace_refs_hash, git_config_hash, rename_budget,
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+        });
         let (stored_head, walk_blob) = match result {
             Ok(pair) => pair,
             Err(_) => return GroupedWalkResult::Miss,
@@ -408,12 +446,14 @@ impl Cache {
         };
         let entry = known_head_ancestors.entry(head_oid).or_default();
         if entry.contains(&stored_oid) {
+            crate::perf::record_is_ancestor_memo_hit();
             return GroupedWalkResult::ExtendHit {
                 cached_head: stored_head,
                 walk,
             };
         }
         // merge_base(A, B) == A iff A is an ancestor of B.
+        crate::perf::record_is_ancestor_subprocess();
         let is_ancestor = match repo.merge_base(stored_oid, head_oid) {
             Ok(base) => base.detach() == stored_oid,
             Err(_) => false,
@@ -464,8 +504,8 @@ impl Cache {
         let cd_int = copy_detection_to_int(cd);
 
         // Look up the existing row's head (if any) inside the txn.
-        let existing_head: Option<String> = txn
-            .query_row(
+        let existing_head: Option<String> = crate::perf::time_sqlite_read(|| {
+            txn.query_row(
                 "SELECT head_sha FROM grouped_walk_cache \
                  WHERE anchor_sha = ?1 AND copy_detection = ?2 \
                    AND seed_hash = ?3 AND replace_refs_hash = ?4 \
@@ -475,7 +515,8 @@ impl Cache {
                 ],
                 |row| row.get::<_, String>(0),
             )
-            .ok();
+            .ok()
+        });
 
         // Decide whether the write is extend-only.
         let allow_write = match &existing_head {
@@ -489,6 +530,7 @@ impl Cache {
                 ) {
                     (Ok(stored_oid), Ok(incoming_oid)) => {
                         // stored is ancestor of incoming iff merge_base == stored.
+                        crate::perf::record_is_ancestor_subprocess();
                         matches!(
                             repo.merge_base(stored_oid, incoming_oid),
                             Ok(base) if base.detach() == stored_oid
@@ -505,8 +547,9 @@ impl Cache {
 
         let blob = bincode::serialize(walk)
             .map_err(|e| crate::Error::Git(format!("bincode serialize grouped_walk: {e}")))?;
-        txn.execute(
-            "INSERT INTO grouped_walk_cache \
+        crate::perf::time_sqlite_write(|| {
+            txn.execute(
+                "INSERT INTO grouped_walk_cache \
                 (anchor_sha, copy_detection, seed_hash, replace_refs_hash, \
                  git_config_hash, rename_budget, head_sha, walk_blob) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
@@ -523,7 +566,8 @@ impl Cache {
                 head_sha,
                 blob,
             ],
-        )
+            )
+        })
         .map_err(|e| crate::Error::Git(format!("grouped_walk upsert: {e}")))?;
         Ok(())
     }
@@ -536,7 +580,8 @@ impl Cache {
         }
         let cd_int = copy_detection_to_int(key.copy_detection);
         let rename_budget = key.rename_budget as i64;
-        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+        let result: rusqlite::Result<Vec<u8>> = crate::perf::time_sqlite_read(|| {
+            self.conn.query_row(
             "SELECT trail_blob FROM rename_trail_cache \
              WHERE anchor_sha = ?1 AND head_sha = ?2 AND copy_detection = ?3 \
                AND rename_budget = ?4 AND seed_hash = ?5 \
@@ -551,7 +596,8 @@ impl Cache {
                 key.git_config_hash.as_ref(),
             ],
             |row| row.get(0),
-        );
+            )
+        });
         match result {
             Ok(blob) => bincode::deserialize::<TrailCacheEntry>(&blob).ok(),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -572,22 +618,24 @@ impl Cache {
         let rename_budget = key.rename_budget as i64;
         let blob = bincode::serialize(entry)
             .map_err(|e| crate::Error::Git(format!("bincode serialize rename_trail: {e}")))?;
-        txn.execute(
-            "INSERT OR REPLACE INTO rename_trail_cache \
-             (anchor_sha, head_sha, copy_detection, rename_budget, seed_hash, \
-              replace_refs_hash, git_config_hash, trail_blob) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                key.anchor_sha,
-                key.head_sha,
-                cd_int,
-                rename_budget,
-                key.candidate_seed_hash.as_ref(),
-                key.replace_refs_hash.as_ref(),
-                key.git_config_hash.as_ref(),
-                blob,
-            ],
-        )
+        crate::perf::time_sqlite_write(|| {
+            txn.execute(
+                "INSERT OR REPLACE INTO rename_trail_cache \
+                 (anchor_sha, head_sha, copy_detection, rename_budget, seed_hash, \
+                  replace_refs_hash, git_config_hash, trail_blob) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    key.anchor_sha,
+                    key.head_sha,
+                    cd_int,
+                    rename_budget,
+                    key.candidate_seed_hash.as_ref(),
+                    key.replace_refs_hash.as_ref(),
+                    key.git_config_hash.as_ref(),
+                    blob,
+                ],
+            )
+        })
         .map_err(|e| crate::Error::Git(format!("rename_trail insert: {e}")))?;
         Ok(())
     }
@@ -608,7 +656,8 @@ impl Cache {
         }
         let cd_int = copy_detection_to_int(key.copy_detection);
         let rename_budget = key.rename_budget as i64;
-        let result: rusqlite::Result<Vec<u8>> = self.conn.query_row(
+        let result: rusqlite::Result<Vec<u8>> = crate::perf::time_sqlite_read(|| {
+            self.conn.query_row(
             "SELECT locus_blob FROM drift_locus_cache \
              WHERE anchor_sha = ?1 AND path = ?2 AND blob_oid = ?3 \
                AND range_start = ?4 AND range_end = ?5 \
@@ -623,7 +672,8 @@ impl Cache {
                 rename_budget,
             ],
             |row| row.get(0),
-        );
+            )
+        });
         match result {
             Ok(blob) => bincode::deserialize::<DriftLocusCachedValue>(&blob).ok(),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -648,23 +698,25 @@ impl Cache {
         let rename_budget = key.rename_budget as i64;
         let blob = bincode::serialize(value)
             .map_err(|e| crate::Error::Git(format!("bincode serialize drift_locus: {e}")))?;
-        txn.execute(
-            "INSERT OR REPLACE INTO drift_locus_cache \
-             (anchor_sha, path, blob_oid, range_start, range_end, \
-              copy_detection, rename_budget, locus_blob, answer_commit) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                key.anchor_sha,
-                key.path,
-                key.blob_oid,
-                key.range_start,
-                key.range_end,
-                cd_int,
-                rename_budget,
-                blob,
-                value.answer_commit,
-            ],
-        )
+        crate::perf::time_sqlite_write(|| {
+            txn.execute(
+                "INSERT OR REPLACE INTO drift_locus_cache \
+                 (anchor_sha, path, blob_oid, range_start, range_end, \
+                  copy_detection, rename_budget, locus_blob, answer_commit) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    key.anchor_sha,
+                    key.path,
+                    key.blob_oid,
+                    key.range_start,
+                    key.range_end,
+                    cd_int,
+                    rename_budget,
+                    blob,
+                    value.answer_commit,
+                ],
+            )
+        })
         .map_err(|e| crate::Error::Git(format!("drift_locus insert: {e}")))?;
         Ok(())
     }

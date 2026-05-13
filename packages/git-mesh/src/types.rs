@@ -481,6 +481,7 @@ pub(crate) fn path_filter_attribute(
     workdir: &std::path::Path,
     rel_path: &std::path::Path,
 ) -> Result<Option<String>> {
+    crate::perf::record_gix_open();
     let repo = gix::open(workdir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
     path_filter_attribute_with_repo(&repo, rel_path)
 }
