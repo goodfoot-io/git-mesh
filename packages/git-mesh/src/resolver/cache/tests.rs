@@ -99,7 +99,13 @@ fn make_gw_key(anchor_sha: &str) -> GwKey {
     }
 }
 
-fn gw_upsert(cache: &Cache, k: &GwKey, head_sha: &str, walk: &GroupedWalk) {
+fn gw_upsert(
+    cache: &Cache,
+    k: &GwKey,
+    head_sha: &str,
+    walk: &GroupedWalk,
+    repo: &gix::Repository,
+) {
     cache
         .with_write_txn(|txn| {
             cache.grouped_walk_upsert(
@@ -112,6 +118,7 @@ fn gw_upsert(cache: &Cache, k: &GwKey, head_sha: &str, walk: &GroupedWalk) {
                 k.rename_budget,
                 head_sha,
                 walk,
+                repo,
             )
         })
         .expect("upsert");
@@ -121,7 +128,7 @@ fn gw_get(
     cache: &Cache,
     k: &GwKey,
     current_head: &str,
-    memo: &mut std::collections::HashSet<gix::ObjectId>,
+    memo: &mut std::collections::HashMap<gix::ObjectId, std::collections::HashSet<gix::ObjectId>>,
     repo: &gix::Repository,
 ) -> GroupedWalkResult {
     cache.grouped_walk_get(
@@ -229,10 +236,10 @@ fn grouped_walk_get_exact_hit() {
     let key = make_gw_key(&anchor);
 
     let cache = Cache::open(&repo).expect("open");
-    gw_upsert(&cache, &key, &head, &walk);
+    gw_upsert(&cache, &key, &head, &walk, &repo);
 
     let cache2 = Cache::open(&repo).expect("reopen");
-    let mut memo = std::collections::HashSet::new();
+    let mut memo = std::collections::HashMap::new();
     match gw_get(&cache2, &key, &head, &mut memo, &repo) {
         GroupedWalkResult::ExactHit(got) => {
             assert_eq!(got.anchor_sha, anchor);
@@ -260,11 +267,15 @@ fn grouped_walk_get_extend_hit_via_real_gix_ancestor() {
     let key = make_gw_key(&anchor);
 
     let cache = Cache::open(&repo).expect("open");
-    gw_upsert(&cache, &key, &head_v1, &walk_v1);
+    gw_upsert(&cache, &key, &head_v1, &walk_v1, &repo);
 
     let cache2 = Cache::open(&repo).expect("reopen");
-    let mut memo = std::collections::HashSet::<gix::ObjectId>::new();
+    let mut memo: std::collections::HashMap<
+        gix::ObjectId,
+        std::collections::HashSet<gix::ObjectId>,
+    > = std::collections::HashMap::new();
     let v1_oid = gix::ObjectId::from_str(&head_v1).expect("parse oid");
+    let v2_oid = gix::ObjectId::from_str(&head_v2).expect("parse oid v2");
 
     match gw_get(&cache2, &key, &head_v2, &mut memo, &repo) {
         GroupedWalkResult::ExtendHit { cached_head, walk } => {
@@ -278,8 +289,8 @@ fn grouped_walk_get_extend_hit_via_real_gix_ancestor() {
         }),
     }
     assert!(
-        memo.contains(&v1_oid),
-        "merge_base success must populate the ancestor memo"
+        memo.get(&v2_oid).is_some_and(|s| s.contains(&v1_oid)),
+        "merge_base success must populate the ancestor memo keyed by HEAD"
     );
 }
 
@@ -298,18 +309,67 @@ fn grouped_walk_get_extend_hit_via_memo_fast_path() {
     let key = make_gw_key(&anchor);
 
     let cache = Cache::open(&repo).expect("open");
-    gw_upsert(&cache, &key, &head_v1, &walk_v1);
+    gw_upsert(&cache, &key, &head_v1, &walk_v1, &repo);
 
     let cache2 = Cache::open(&repo).expect("reopen");
     let v1_oid = gix::ObjectId::from_str(&head_v1).expect("parse oid");
-    let mut memo = std::collections::HashSet::<gix::ObjectId>::new();
-    memo.insert(v1_oid);
+    let v2_oid = gix::ObjectId::from_str(&head_v2).expect("parse oid v2");
+    let mut memo: std::collections::HashMap<
+        gix::ObjectId,
+        std::collections::HashSet<gix::ObjectId>,
+    > = std::collections::HashMap::new();
+    memo.entry(v2_oid).or_default().insert(v1_oid);
 
     match gw_get(&cache2, &key, &head_v2, &mut memo, &repo) {
         GroupedWalkResult::ExtendHit { cached_head, .. } => {
             assert_eq!(cached_head, head_v1);
         }
         _ => panic!("expected ExtendHit via memo"),
+    }
+}
+
+/// F1 regression: the per-session ancestor memo is keyed by HEAD. If the
+/// session's HEAD shifts between two `grouped_walk_get` calls, an entry
+/// memoized under the old HEAD must NOT short-circuit a check against the
+/// new HEAD — otherwise an oid that was an ancestor of the old HEAD could
+/// be returned as an `ExtendHit` against a new HEAD that does not contain
+/// it. We exercise the scenario by populating the memo under a divergent
+/// "old HEAD" and then querying with a "new HEAD" on a sibling branch —
+/// the memo entry must be ignored, the gix `merge_base` check must run,
+/// and the result must be `Miss`.
+#[test]
+fn grouped_walk_memo_does_not_leak_across_heads() {
+    use std::str::FromStr;
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+
+    // Two divergent heads from `anchor`.
+    let head_old = add_commit(dir, "old.txt", "v1\n");
+    run_git(dir, &["checkout", "-b", "other", &anchor]);
+    let head_new = add_commit(dir, "new.txt", "v1\n");
+
+    // Plant a row keyed against `head_old` (the stored cached head).
+    let walk_old = make_grouped_walk(&anchor, &head_old);
+    let key = make_gw_key(&anchor);
+    let cache = Cache::open(&repo).expect("open");
+    gw_upsert(&cache, &key, &head_old, &walk_old, &repo);
+
+    // Pre-seed the memo under the OLD head only.
+    let head_old_oid = gix::ObjectId::from_str(&head_old).expect("parse old");
+    let mut memo: std::collections::HashMap<
+        gix::ObjectId,
+        std::collections::HashSet<gix::ObjectId>,
+    > = std::collections::HashMap::new();
+    memo.entry(head_old_oid).or_default().insert(head_old_oid);
+
+    // Query with the NEW (divergent) head. The memo entry under
+    // `head_old_oid` must not be consulted — `head_old` is not an ancestor
+    // of `head_new` so the real `merge_base` check must return Miss.
+    let cache2 = Cache::open(&repo).expect("reopen");
+    match gw_get(&cache2, &key, &head_new, &mut memo, &repo) {
+        GroupedWalkResult::Miss => {}
+        _ => panic!("memo entry from a stale HEAD must not produce an ExtendHit"),
     }
 }
 
@@ -331,18 +391,21 @@ fn grouped_walk_get_miss_on_non_ancestor_and_upsert_overwrites() {
     let key = make_gw_key(&anchor);
 
     let cache = Cache::open(&repo).expect("open");
-    gw_upsert(&cache, &key, &head_b, &walk_b);
+    gw_upsert(&cache, &key, &head_b, &walk_b, &repo);
 
     let cache2 = Cache::open(&repo).expect("reopen");
-    let mut memo = std::collections::HashSet::new();
+    let mut memo = std::collections::HashMap::new();
     match gw_get(&cache2, &key, &head_a, &mut memo, &repo) {
         GroupedWalkResult::Miss => {}
         _ => panic!("expected Miss for divergent stored head"),
     }
 
-    // UPSERT with head_a overwrites the row in place; exactly one row remains.
+    // Monotone-extend UPSERT: head_a is divergent from the stored head_b
+    // (neither an ancestor nor descendant), so the write must be rejected
+    // and the existing head_b row preserved. There is still exactly one
+    // row at the key tuple (no second row inserted).
     let walk_a = make_grouped_walk(&anchor, &head_a);
-    gw_upsert(&cache2, &key, &head_a, &walk_a);
+    gw_upsert(&cache2, &key, &head_a, &walk_a, &repo);
 
     let count: i64 = cache2
         .conn
@@ -352,14 +415,56 @@ fn grouped_walk_get_miss_on_non_ancestor_and_upsert_overwrites() {
             |r| r.get(0),
         )
         .expect("count");
-    assert_eq!(count, 1, "UPSERT must replace, not insert a second row");
+    assert_eq!(count, 1, "key tuple must hold exactly one row");
 
-    // The new query with head_a should now ExactHit.
-    let mut memo2 = std::collections::HashSet::new();
-    match gw_get(&cache2, &key, &head_a, &mut memo2, &repo) {
-        GroupedWalkResult::ExactHit(got) => assert_eq!(got.head_sha, head_a),
-        _ => panic!("expected ExactHit after overwrite"),
-    }
+    let stored_head: String = cache2
+        .conn
+        .query_row(
+            "SELECT head_sha FROM grouped_walk_cache",
+            [],
+            |r| r.get(0),
+        )
+        .expect("head");
+    assert_eq!(
+        stored_head, head_b,
+        "divergent UPSERT must NOT overwrite a non-ancestor stored head",
+    );
+}
+
+/// F3 regression: two worktrees on divergent branches alternately try to
+/// UPSERT the same key tuple. The stored row must not ping-pong; only the
+/// initial write survives until one head becomes a descendant of the other.
+#[test]
+fn grouped_walk_monotone_upsert_does_not_flip_flop_across_divergent_heads() {
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+
+    // Two divergent heads.
+    let head_a = add_commit(dir, "a.txt", "a-on-main\n");
+    run_git(dir, &["checkout", "-b", "other", &anchor]);
+    let head_b = add_commit(dir, "b.txt", "b-on-other\n");
+    run_git(dir, &["checkout", "main"]);
+
+    let key = make_gw_key(&anchor);
+    let cache = Cache::open(&repo).expect("open");
+
+    // First write wins (no existing row).
+    gw_upsert(&cache, &key, &head_a, &make_grouped_walk(&anchor, &head_a), &repo);
+    // Divergent second write must be rejected.
+    gw_upsert(&cache, &key, &head_b, &make_grouped_walk(&anchor, &head_b), &repo);
+    // Flip again — still no flip-flop.
+    gw_upsert(&cache, &key, &head_a, &make_grouped_walk(&anchor, &head_a), &repo);
+    gw_upsert(&cache, &key, &head_b, &make_grouped_walk(&anchor, &head_b), &repo);
+
+    let stored_head: String = cache
+        .conn
+        .query_row("SELECT head_sha FROM grouped_walk_cache", [], |r| r.get(0))
+        .expect("head");
+    assert_eq!(
+        stored_head, head_a,
+        "monotone UPSERT must preserve the first-writer row across divergent retries",
+    );
 }
 
 /// UPSERT idempotency: two calls with different `head_sha` on the same key
@@ -374,8 +479,8 @@ fn grouped_walk_upsert_is_idempotent() {
 
     let key = make_gw_key(&anchor);
     let cache = Cache::open(&repo).expect("open");
-    gw_upsert(&cache, &key, &head_v1, &make_grouped_walk(&anchor, &head_v1));
-    gw_upsert(&cache, &key, &head_v2, &make_grouped_walk(&anchor, &head_v2));
+    gw_upsert(&cache, &key, &head_v1, &make_grouped_walk(&anchor, &head_v1), &repo);
+    gw_upsert(&cache, &key, &head_v2, &make_grouped_walk(&anchor, &head_v2), &repo);
 
     let count: i64 = cache
         .conn
@@ -411,11 +516,11 @@ fn cross_handle_grouped_walk_hit_on_shared_db() {
     let walk = make_grouped_walk(&anchor, &head);
 
     let cache_a = Cache::open(&repo).expect("open a");
-    gw_upsert(&cache_a, &key, &head, &walk);
+    gw_upsert(&cache_a, &key, &head, &walk, &repo);
     drop(cache_a);
 
     let cache_b = Cache::open(&repo).expect("open b");
-    let mut memo = std::collections::HashSet::new();
+    let mut memo = std::collections::HashMap::new();
     match gw_get(&cache_b, &key, &head, &mut memo, &repo) {
         GroupedWalkResult::ExactHit(got) => assert_eq!(got.head_sha, head),
         _ => panic!("expected cross-handle ExactHit on shared DB"),
@@ -533,6 +638,23 @@ fn version_mismatch_drops_and_rebuilds() {
 
     // Reopen via Cache — must silently rebuild.
     let cache2 = Cache::open(&repo).expect("reopen after version mismatch");
+
+    // F2: the destructive_rebuilds counter must increment on rebuild so an
+    // operator can correlate a cache-hit drop with a binary rollout via
+    // `--perf` (`session.cache-destructive-rebuilds`).
+    assert_eq!(
+        cache2.destructive_rebuilds(),
+        1,
+        "schema mismatch must increment destructive_rebuilds",
+    );
+
+    // A subsequent open against the now-current schema must NOT increment.
+    let cache3 = Cache::open(&repo).expect("third open");
+    assert_eq!(
+        cache3.destructive_rebuilds(),
+        0,
+        "open with matching schema must not increment destructive_rebuilds",
+    );
 
     // The table must exist (schema was rebuilt) but be empty (old data dropped).
     let count: i64 = cache2

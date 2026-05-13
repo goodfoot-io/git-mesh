@@ -114,7 +114,10 @@ fn drift_locus_walk(
     anchored_start: u32,
     anchored_end: u32,
     blob_oid: &str,
-    known_head_ancestors: &mut std::collections::HashSet<gix::ObjectId>,
+    known_head_ancestors: &mut std::collections::HashMap<
+        gix::ObjectId,
+        std::collections::HashSet<gix::ObjectId>,
+    >,
 ) -> Result<Option<DriftLocus>> {
     let head_hex = git::head_oid(repo)?;
     let head_id = match repo.rev_parse_single(head_hex.as_str()) {
@@ -147,8 +150,11 @@ fn drift_locus_walk(
     }
     // Every commit in this walk is an ancestor of HEAD by construction
     // (rev_walk visits `HEAD..anchor`, so all visited commits reach HEAD).
+    // The memo is keyed by HEAD so entries from a stale HEAD do not leak
+    // into a subsequent check against a different HEAD.
+    let entry = known_head_ancestors.entry(head_id).or_default();
     for &id in &commits {
-        known_head_ancestors.insert(id);
+        entry.insert(id);
     }
     commits.reverse();
 
@@ -316,7 +322,10 @@ fn parse_oid(hex: &str) -> gix::ObjectId {
 fn validate_answer_commit(
     repo: &gix::Repository,
     answer_commit_hex: &str,
-    known_head_ancestors: &mut std::collections::HashSet<gix::ObjectId>,
+    known_head_ancestors: &mut std::collections::HashMap<
+        gix::ObjectId,
+        std::collections::HashSet<gix::ObjectId>,
+    >,
 ) -> bool {
     if answer_commit_hex == NULL_COMMIT {
         // Unreachable sentinel — always valid (no commit to check).
@@ -327,11 +336,6 @@ fn validate_answer_commit(
         Ok(id) => id,
         Err(_) => return false,
     };
-    // Fast path: already in memo.
-    if known_head_ancestors.contains(&answer_id) {
-        return true;
-    }
-    // Slow path: gix merge-base check.
     let head_hex = match git::head_oid(repo) {
         Ok(h) => h,
         Err(_) => return false,
@@ -340,10 +344,22 @@ fn validate_answer_commit(
         Ok(id) => id,
         Err(_) => return false,
     };
+    // Fast path: already in memo for *this* HEAD. Entries from a prior
+    // HEAD are ignored — they may name commits that are not ancestors of
+    // the current HEAD.
+    if let Some(set) = known_head_ancestors.get(&head_id)
+        && set.contains(&answer_id)
+    {
+        return true;
+    }
+    // Slow path: gix merge-base check.
     // merge_base(A, B) == A means A is an ancestor of B.
     match repo.merge_base(answer_id, head_id) {
         Ok(base) if base.detach() == answer_id => {
-            known_head_ancestors.insert(answer_id);
+            known_head_ancestors
+                .entry(head_id)
+                .or_default()
+                .insert(answer_id);
             true
         }
         _ => false,

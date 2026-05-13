@@ -18,7 +18,7 @@ use crate::resolver::session::GroupedWalk;
 use crate::resolver::walker::NS;
 use crate::types::CopyDetection;
 use rusqlite::{Connection, OpenFlags, Transaction};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 pub const SCHEMA_VERSION: i32 = 4;
@@ -161,6 +161,11 @@ pub(crate) struct GcStats {
 pub(crate) struct Cache {
     conn: Connection,
     enabled: bool,
+    /// Number of times this `Cache::open` call triggered a destructive
+    /// schema rebuild (drop+recreate due to `user_version` mismatch).
+    /// 0 or 1 in practice; surfaced through `--perf` so an operator can
+    /// correlate a cache-hit drop with a recent binary rollout.
+    destructive_rebuilds: u64,
 }
 
 impl Cache {
@@ -168,11 +173,17 @@ impl Cache {
     /// Used as the silent-failure fallback when `open` errors.
     pub(crate) fn open_disabled() -> Cache {
         let conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
-        Cache { conn, enabled: false }
+        Cache { conn, enabled: false, destructive_rebuilds: 0 }
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Number of destructive schema rebuilds triggered during `Cache::open`
+    /// (typically 0; 1 on schema-version mismatch after a binary rollout).
+    pub(crate) fn destructive_rebuilds(&self) -> u64 {
+        self.destructive_rebuilds
     }
 
     /// Open (or create) the cache database for `repo`.
@@ -190,18 +201,24 @@ impl Cache {
             // Open an in-memory database so the struct is always valid.
             let conn = Connection::open_in_memory()
                 .map_err(|e| crate::Error::Git(format!("sqlite in-memory open: {e}")))?;
-            return Ok(Cache { conn, enabled: false });
+            return Ok(Cache { conn, enabled: false, destructive_rebuilds: 0 });
         }
 
         // Best-effort cleanup of the legacy per-worktree cache path.
         // Only runs in linked worktrees (main worktree: git_dir == common_dir).
-        // Errors are silently swallowed: a busy or permission-denied directory
-        // is not a blocking condition — the new shared DB is still opened
-        // correctly, and the leftover bytes are merely wasted space.
+        // Errors are surfaced to stderr but do not block opening the shared
+        // DB — leaving leftover bytes is wasted space, not data loss, and
+        // the operator needs visibility (per repo "fail closed" guidance:
+        // silent swallow violates the discoverability invariant).
         if git::git_dir(repo) != git::common_dir(repo) {
             let legacy = git::git_dir(repo).join("mesh").join("cache");
-            if legacy.exists() {
-                let _ = fs::remove_dir_all(&legacy);
+            if legacy.exists()
+                && let Err(e) = fs::remove_dir_all(&legacy)
+            {
+                eprintln!(
+                    "[git-mesh cache] legacy per-worktree cache cleanup failed at {}: {e}",
+                    legacy.display()
+                );
             }
         }
 
@@ -214,8 +231,12 @@ impl Cache {
             | OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
 
-        let conn = open_and_bootstrap(&db_path, flags, &db_dir)?;
-        Ok(Cache { conn, enabled: true })
+        let (conn, rebuilt) = open_and_bootstrap(&db_path, flags, &db_dir)?;
+        Ok(Cache {
+            conn,
+            enabled: true,
+            destructive_rebuilds: if rebuilt { 1 } else { 0 },
+        })
     }
 
     // ── Tier 1: name_status ─────────────────────────────────────────────────
@@ -348,7 +369,7 @@ impl Cache {
         git_config_hash: &[u8],
         rename_budget: i64,
         current_head: &str,
-        known_head_ancestors: &mut HashSet<gix::ObjectId>,
+        known_head_ancestors: &mut HashMap<gix::ObjectId, HashSet<gix::ObjectId>>,
         repo: &gix::Repository,
     ) -> GroupedWalkResult {
         if !self.enabled {
@@ -385,7 +406,8 @@ impl Cache {
             Ok(id) => id,
             Err(_) => return GroupedWalkResult::Miss,
         };
-        if known_head_ancestors.contains(&stored_oid) {
+        let entry = known_head_ancestors.entry(head_oid).or_default();
+        if entry.contains(&stored_oid) {
             return GroupedWalkResult::ExtendHit {
                 cached_head: stored_head,
                 walk,
@@ -397,7 +419,10 @@ impl Cache {
             Err(_) => false,
         };
         if is_ancestor {
-            known_head_ancestors.insert(stored_oid);
+            known_head_ancestors
+                .entry(head_oid)
+                .or_default()
+                .insert(stored_oid);
             GroupedWalkResult::ExtendHit {
                 cached_head: stored_head,
                 walk,
@@ -407,8 +432,18 @@ impl Cache {
         }
     }
 
-    /// UPSERT a grouped_walk row. Replaces any existing row at the same key
-    /// tuple (with whatever `head_sha` it held). Atomic within `with_write_txn`.
+    /// Monotone UPSERT for grouped_walk.
+    ///
+    /// Writes the row when there is no existing entry at the key tuple, or
+    /// when the incoming `head_sha` is equal-to or a descendant-of the
+    /// stored `head_sha`. Divergent (non-ancestor / non-descendant) heads
+    /// — two worktrees on independent branches — leave the existing row
+    /// alone so the cache does not ping-pong between divergent worktrees.
+    ///
+    /// "Extend-only" is enforced inside the same `with_write_txn` that
+    /// performs the write, using a fresh `repo.merge_base` check against
+    /// the stored head; this avoids a TOCTOU window where a sibling
+    /// process could replace the row between read and write.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grouped_walk_upsert(
         &self,
@@ -421,11 +456,53 @@ impl Cache {
         rename_budget: i64,
         head_sha: &str,
         walk: &GroupedWalk,
+        repo: &gix::Repository,
     ) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
         let cd_int = copy_detection_to_int(cd);
+
+        // Look up the existing row's head (if any) inside the txn.
+        let existing_head: Option<String> = txn
+            .query_row(
+                "SELECT head_sha FROM grouped_walk_cache \
+                 WHERE anchor_sha = ?1 AND copy_detection = ?2 \
+                   AND seed_hash = ?3 AND replace_refs_hash = ?4 \
+                   AND git_config_hash = ?5 AND rename_budget = ?6",
+                rusqlite::params![
+                    anchor, cd_int, seed_hash, replace_refs_hash, git_config_hash, rename_budget,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+
+        // Decide whether the write is extend-only.
+        let allow_write = match &existing_head {
+            None => true,
+            Some(stored) if stored == head_sha => true,
+            Some(stored) => {
+                use std::str::FromStr;
+                match (
+                    gix::ObjectId::from_str(stored),
+                    gix::ObjectId::from_str(head_sha),
+                ) {
+                    (Ok(stored_oid), Ok(incoming_oid)) => {
+                        // stored is ancestor of incoming iff merge_base == stored.
+                        matches!(
+                            repo.merge_base(stored_oid, incoming_oid),
+                            Ok(base) if base.detach() == stored_oid
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+
+        if !allow_write {
+            return Ok(());
+        }
+
         let blob = bincode::serialize(walk)
             .map_err(|e| crate::Error::Git(format!("bincode serialize grouped_walk: {e}")))?;
         txn.execute(
@@ -882,7 +959,7 @@ fn open_and_bootstrap(
     db_path: &std::path::Path,
     flags: OpenFlags,
     db_dir: &std::path::Path,
-) -> Result<Connection> {
+) -> Result<(Connection, bool)> {
     let conn = Connection::open_with_flags(db_path, flags)
         .map_err(|e| crate::Error::Git(format!("sqlite open: {e}")))?;
 
@@ -926,11 +1003,11 @@ fn open_and_bootstrap(
             .map_err(|e| crate::Error::Git(format!("sqlite reopen: {e}")))?;
         apply_pragmas(&conn)?;
         bootstrap_schema(&conn)?;
-        return Ok(conn);
+        return Ok((conn, true));
     }
 
     bootstrap_schema(&conn)?;
-    Ok(conn)
+    Ok((conn, false))
 }
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {

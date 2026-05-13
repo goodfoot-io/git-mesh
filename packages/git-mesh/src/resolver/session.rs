@@ -126,8 +126,9 @@ pub(crate) struct ResolveSession {
     pub(crate) blob_diff_hits: u64,
     /// Counter: Tier 2 blob_diff persistent cache misses.
     pub(crate) blob_diff_misses: u64,
-    /// Counter: Tier 3 grouped_walk persistent cache misses.
-    pub(crate) grouped_walk_misses_persistent: u64,
+    /// Counter: Tier 3 grouped_walk cache misses (no row, or stored
+    /// `head_sha` is neither equal to nor an ancestor of the current HEAD).
+    pub(crate) grouped_walk_misses: u64,
     /// Counter: Tier 5 drift_locus persistent cache hits.
     pub(crate) drift_locus_hits: u64,
     /// Counter: Tier 5 drift_locus persistent cache misses (includes ancestor-check failures).
@@ -139,7 +140,8 @@ pub(crate) struct ResolveSession {
     /// Populated by (a) successful `is_ancestor` checks in `drift_locus` wiring
     /// and (b) every commit observed during a miss-path `rev_walk` (those are
     /// ancestors of HEAD by construction since the walk runs `HEAD..anchor`).
-    pub(crate) known_head_ancestors: std::collections::HashSet<gix::ObjectId>,
+    pub(crate) known_head_ancestors:
+        std::collections::HashMap<gix::ObjectId, std::collections::HashSet<gix::ObjectId>>,
     /// Session-wide memoized hashes: `(replace_refs_hash, git_config_hash)`.
     /// Both are constant for the duration of one `git mesh stale` run — they
     /// depend on git refs and config, not on any anchor or HEAD. Computed once
@@ -180,13 +182,13 @@ impl ResolveSession {
             name_status_misses: 0,
             blob_diff_hits: 0,
             blob_diff_misses: 0,
-            grouped_walk_misses_persistent: 0,
+            grouped_walk_misses: 0,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
             cache,
             session_hashes,
             blob_oid_memo: HashMap::new(),
-            known_head_ancestors: std::collections::HashSet::new(),
+            known_head_ancestors: std::collections::HashMap::new(),
         }
     }
 
@@ -225,7 +227,7 @@ impl ResolveSession {
             &mut self.grouped_walk_extend_hits,
             &mut self.name_status_hits,
             &mut self.name_status_misses,
-            &mut self.grouped_walk_misses_persistent,
+            &mut self.grouped_walk_misses,
             &mut self.known_head_ancestors,
             &self.cache,
             self.session_hashes,
@@ -274,7 +276,7 @@ impl ResolveSession {
                 &mut self.grouped_walk_extend_hits,
                 &mut self.name_status_hits,
                 &mut self.name_status_misses,
-                &mut self.grouped_walk_misses_persistent,
+                &mut self.grouped_walk_misses,
                 &mut self.known_head_ancestors,
                 &self.cache,
                 self.session_hashes,
@@ -310,8 +312,11 @@ fn build_grouped_walk(
     grouped_walk_extend_hits_counter: &mut u64,
     name_status_hits_counter: &mut u64,
     name_status_misses_counter: &mut u64,
-    grouped_walk_misses_persistent_counter: &mut u64,
-    known_head_ancestors: &mut std::collections::HashSet<gix::ObjectId>,
+    grouped_walk_misses_counter: &mut u64,
+    known_head_ancestors: &mut std::collections::HashMap<
+        gix::ObjectId,
+        std::collections::HashSet<gix::ObjectId>,
+    >,
     cache: &Cache,
     // Pre-computed session-wide hashes: `(replace_refs_hash, git_config_hash)`.
     // When `Some`, these are reused for every `compute_key` call in this
@@ -435,6 +440,7 @@ fn build_grouped_walk(
                         trail_key.rename_budget as i64,
                         &head_sha,
                         &updated_walk,
+                        repo,
                     )
                 }) {
                     eprintln!("grouped_walk cache upsert error (ignored): {e}");
@@ -444,7 +450,7 @@ fn build_grouped_walk(
                 return Ok(updated_walk);
             }
             crate::resolver::cache::GroupedWalkResult::Miss => {
-                *grouped_walk_misses_persistent_counter += 1;
+                *grouped_walk_misses_counter += 1;
             }
         }
     }
@@ -637,6 +643,7 @@ fn build_grouped_walk(
                 trail_key.rename_budget as i64,
                 &head_sha,
                 &walk,
+                repo,
             )
         })
     {
