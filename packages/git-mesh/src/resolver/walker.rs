@@ -3,7 +3,6 @@
 //! commit's name-status and hunk diffs against the tracked location.
 
 use crate::git;
-use crate::resolver::cache::Cache;
 use crate::types::{Anchor, AnchorExtent, CopyDetection};
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
@@ -61,7 +60,7 @@ pub(crate) fn resolve_at_head(
     let mut parent = r.anchor_sha.clone();
     for commit in &commits {
         let entries = name_status(repo, &parent, commit, copy_detection, warnings)?;
-        match advance_with_entries(repo, &parent, commit, &loc, &entries, None, None, &mut 0, &mut 0)? {
+        match advance_with_entries(repo, &parent, commit, &loc, &entries, None)? {
             Change::Unchanged => {}
             Change::Deleted => return Ok(None),
             Change::Updated(next) => loc = next,
@@ -85,17 +84,13 @@ pub(crate) fn resolve_at_head(
 /// traversal, and populates the memo on miss. This eliminates redundant
 /// `path_blob_at` calls when multiple anchors share the same commit ×
 /// path combination within a single `stale` run.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn advance_with_entries(
     repo: &gix::Repository,
     parent: &str,
     commit: &str,
     loc: &Tracked,
     entries: &[NS],
-    cache: Option<&Cache>,
     blob_oid_memo: Option<&mut HashMap<(String, String), Option<String>>>,
-    blob_diff_hits: &mut u64,
-    blob_diff_misses: &mut u64,
 ) -> Result<Change> {
     let mut next_path: Option<String> = None;
     let mut deleted = false;
@@ -130,7 +125,7 @@ pub(crate) fn advance_with_entries(
     }
     if deleted {
         if let Some(p) = next_path {
-            let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache, blob_oid_memo, blob_diff_hits, blob_diff_misses)?;
+            let (s, e) = compute_new_range(repo, parent, commit, loc, &p, blob_oid_memo)?;
             return Ok(Change::Updated(Tracked {
                 path: p,
                 start: s,
@@ -143,7 +138,7 @@ pub(crate) fn advance_with_entries(
         return Ok(Change::Unchanged);
     }
     let p = next_path.unwrap_or_else(|| loc.path.clone());
-    let (s, e) = compute_new_range(repo, parent, commit, loc, &p, cache, blob_oid_memo, blob_diff_hits, blob_diff_misses)?;
+    let (s, e) = compute_new_range(repo, parent, commit, loc, &p, blob_oid_memo)?;
     Ok(Change::Updated(Tracked {
         path: p,
         start: s,
@@ -173,35 +168,19 @@ fn blob_oid_at(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_new_range(
     repo: &gix::Repository,
     parent: &str,
     commit: &str,
     loc: &Tracked,
     new_path: &str,
-    cache: Option<&Cache>,
     mut blob_oid_memo: Option<&mut HashMap<(String, String), Option<String>>>,
-    blob_diff_hits: &mut u64,
-    blob_diff_misses: &mut u64,
 ) -> Result<(u32, u32)> {
     // Resolve blob OIDs, using the session-scoped memo when available to
     // avoid redundant tree traversals when multiple anchors share the same
     // (commit, path) combination within a single stale run.
     let old_blob_oid = blob_oid_at(repo, parent, &loc.path, blob_oid_memo.as_deref_mut());
     let new_blob_oid = blob_oid_at(repo, commit, new_path, blob_oid_memo);
-
-    // Probe Tier 2 cache when both blob OIDs are available and cache is enabled.
-    if let (Some(old_oid), Some(new_oid), Some(c)) =
-        (old_blob_oid.as_deref(), new_blob_oid.as_deref(), cache)
-    && let Some(cached_hunks) = c.blob_diff_get(old_oid, new_oid)
-    {
-        *blob_diff_hits += 1;
-        return Ok(apply_hunks_to_range(&cached_hunks, loc.start, loc.end));
-    }
-    if old_blob_oid.is_some() && new_blob_oid.is_some() && cache.is_some() {
-        *blob_diff_misses += 1;
-    }
 
     let old_text = old_blob_oid
         .as_deref()
@@ -212,13 +191,6 @@ pub(crate) fn compute_new_range(
         .and_then(|b| git::read_git_text(repo, b).ok())
         .unwrap_or_default();
     let hunks = compute_hunks(&old_text, &new_text);
-
-    // Write to Tier 2 cache on miss when both OIDs and cache are available.
-    if let (Some(old_oid), Some(new_oid), Some(c)) =
-        (old_blob_oid.as_deref(), new_blob_oid.as_deref(), cache)
-    {
-        let _ = c.with_write_txn(|txn| c.blob_diff_put(txn, old_oid, new_oid, &hunks));
-    }
 
     Ok(apply_hunks_to_range(&hunks, loc.start, loc.end))
 }

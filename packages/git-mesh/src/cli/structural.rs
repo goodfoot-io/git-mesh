@@ -845,11 +845,10 @@ pub fn run_doctor(repo: &gix::Repository, args: crate::cli::DoctorArgs) -> Resul
             Ok(cache) => match cache.gc(repo) {
                 Ok(report) => {
                     println!(
-                        "mesh doctor: sqlite cache gc — removed {} name_status, {} blob_diff, {} grouped_walk, {} rename_trail row(s)",
-                        report.name_status_removed,
-                        report.blob_diff_removed,
+                        "mesh doctor: cache gc — removed {} grouped_walk, {} rename_trail, {} drift_locus entr(ies)",
                         report.grouped_walk_removed,
                         report.rename_trail_removed,
+                        report.drift_locus_removed,
                     );
                 }
                 Err(e) => {

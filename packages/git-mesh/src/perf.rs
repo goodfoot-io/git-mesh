@@ -88,9 +88,14 @@ static GIX_OPEN_CALLS: AtomicU64 = AtomicU64::new(0);
 static ATTR_FOR_CALLS: AtomicU64 = AtomicU64::new(0);
 static IS_ANCESTOR_SUBPROCESS_CALLS: AtomicU64 = AtomicU64::new(0);
 static IS_ANCESTOR_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
-static SQLITE_READ_NS: AtomicU64 = AtomicU64::new(0);
-static SQLITE_WRITE_NS: AtomicU64 = AtomicU64::new(0);
-static WRITE_TXN_COUNT: AtomicU64 = AtomicU64::new(0);
+static L1_HITS: AtomicU64 = AtomicU64::new(0);
+static L1_MISSES: AtomicU64 = AtomicU64::new(0);
+static L2_HITS: AtomicU64 = AtomicU64::new(0);
+static L2_MISSES: AtomicU64 = AtomicU64::new(0);
+static L2_READ_NS: AtomicU64 = AtomicU64::new(0);
+static L2_WRITE_NS: AtomicU64 = AtomicU64::new(0);
+static L2_BYTES_READ: AtomicU64 = AtomicU64::new(0);
+static L2_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
 pub fn record_gix_open() {
     if !enabled() {
@@ -120,14 +125,49 @@ pub fn record_is_ancestor_memo_hit() {
     IS_ANCESTOR_MEMO_HITS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_write_txn() {
+pub fn record_l1_hit() {
     if !enabled() {
         return;
     }
-    WRITE_TXN_COUNT.fetch_add(1, Ordering::Relaxed);
+    L1_HITS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn time_sqlite_read<F, R>(f: F) -> R
+pub fn record_l1_miss() {
+    if !enabled() {
+        return;
+    }
+    L1_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_l2_hit() {
+    if !enabled() {
+        return;
+    }
+    L2_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_l2_miss() {
+    if !enabled() {
+        return;
+    }
+    L2_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_l2_bytes_read(n: u64) {
+    if !enabled() {
+        return;
+    }
+    L2_BYTES_READ.fetch_add(n, Ordering::Relaxed);
+}
+
+pub fn record_l2_bytes_written(n: u64) {
+    if !enabled() {
+        return;
+    }
+    L2_BYTES_WRITTEN.fetch_add(n, Ordering::Relaxed);
+}
+
+pub fn time_l2_read<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
@@ -136,11 +176,11 @@ where
     }
     let t = Instant::now();
     let r = f();
-    SQLITE_READ_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    L2_READ_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     r
 }
 
-pub fn time_sqlite_write<F, R>(f: F) -> R
+pub fn time_l2_write<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
@@ -149,7 +189,7 @@ where
     }
     let t = Instant::now();
     let r = f();
-    SQLITE_WRITE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    L2_WRITE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     r
 }
 
@@ -165,14 +205,29 @@ pub fn is_ancestor_subprocess_calls() -> u64 {
 pub fn is_ancestor_memo_hits() -> u64 {
     IS_ANCESTOR_MEMO_HITS.load(Ordering::Relaxed)
 }
-pub fn sqlite_read_ms() -> u64 {
-    SQLITE_READ_NS.load(Ordering::Relaxed) / 1_000_000
+pub fn l1_hits() -> u64 {
+    L1_HITS.load(Ordering::Relaxed)
 }
-pub fn sqlite_write_ms() -> u64 {
-    SQLITE_WRITE_NS.load(Ordering::Relaxed) / 1_000_000
+pub fn l1_misses() -> u64 {
+    L1_MISSES.load(Ordering::Relaxed)
 }
-pub fn write_txn_count() -> u64 {
-    WRITE_TXN_COUNT.load(Ordering::Relaxed)
+pub fn l2_hits() -> u64 {
+    L2_HITS.load(Ordering::Relaxed)
+}
+pub fn l2_misses() -> u64 {
+    L2_MISSES.load(Ordering::Relaxed)
+}
+pub fn l2_read_us() -> u64 {
+    L2_READ_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn l2_write_us() -> u64 {
+    L2_WRITE_NS.load(Ordering::Relaxed) / 1_000
+}
+pub fn l2_bytes_read() -> u64 {
+    L2_BYTES_READ.load(Ordering::Relaxed)
+}
+pub fn l2_bytes_written() -> u64 {
+    L2_BYTES_WRITTEN.load(Ordering::Relaxed)
 }
 /// One row of per-anchor trace data emitted when `--perf-trace <path>` is set.
 pub struct TraceRow {
@@ -192,7 +247,12 @@ pub fn reset_subroutine_counters() {
     ATTR_FOR_CALLS.store(0, Ordering::Relaxed);
     IS_ANCESTOR_SUBPROCESS_CALLS.store(0, Ordering::Relaxed);
     IS_ANCESTOR_MEMO_HITS.store(0, Ordering::Relaxed);
-    SQLITE_READ_NS.store(0, Ordering::Relaxed);
-    SQLITE_WRITE_NS.store(0, Ordering::Relaxed);
-    WRITE_TXN_COUNT.store(0, Ordering::Relaxed);
+    L1_HITS.store(0, Ordering::Relaxed);
+    L1_MISSES.store(0, Ordering::Relaxed);
+    L2_HITS.store(0, Ordering::Relaxed);
+    L2_MISSES.store(0, Ordering::Relaxed);
+    L2_READ_NS.store(0, Ordering::Relaxed);
+    L2_WRITE_NS.store(0, Ordering::Relaxed);
+    L2_BYTES_READ.store(0, Ordering::Relaxed);
+    L2_BYTES_WRITTEN.store(0, Ordering::Relaxed);
 }

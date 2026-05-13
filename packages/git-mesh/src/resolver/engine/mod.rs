@@ -623,18 +623,12 @@ fn stale_meshes_inner(
     crate::perf::counter("session.pass1-ms", state.session.pass1_ms);
     crate::perf::counter("session.rename-trail-hits", state.session.rename_trail_hits);
     crate::perf::counter("session.rename-trail-misses", state.session.rename_trail_misses);
-    crate::perf::counter("session.grouped-walk-exact-hits", state.session.grouped_walk_exact_hits);
-    crate::perf::counter("session.grouped-walk-extend-hits", state.session.grouped_walk_extend_hits);
+    crate::perf::counter("session.grouped-walk-hits", state.session.grouped_walk_hits);
     crate::perf::counter("session.grouped-walk-misses", state.session.grouped_walk_misses);
-    crate::perf::counter("session.name-status-hits", state.session.name_status_hits);
-    crate::perf::counter("session.name-status-misses", state.session.name_status_misses);
-    crate::perf::counter("session.blob-diff-hits", state.session.blob_diff_hits);
-    crate::perf::counter("session.blob-diff-misses", state.session.blob_diff_misses);
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
     crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
     crate::perf::counter("session.filter-attr-hits", state.session.filter_attr_hits);
     crate::perf::counter("session.filter-attr-misses", state.session.filter_attr_misses);
-    crate::perf::counter("session.cache-destructive-rebuilds", state.session.cache.destructive_rebuilds());
     // Category 1: hot-path subroutine counters. `filter-attr-*` come from
     // the engine-state memo (one increment per `filter_short_circuit` call,
     // misses count distinct paths); the remaining counters are process-global
@@ -693,22 +687,16 @@ fn stale_meshes_inner(
         "session.anchors-full-resolution",
         anchors_total.saturating_sub(state.session.anchors_fast_path_hits),
     );
-    // Category 3: cache wall-clock, txn count, row counts, and per-anchor
-    // resolution distribution.
-    crate::perf::counter("cache.sqlite-read-ms", crate::perf::sqlite_read_ms());
-    crate::perf::counter("cache.sqlite-write-ms", crate::perf::sqlite_write_ms());
-    crate::perf::counter("cache.write-txn-count", crate::perf::write_txn_count());
-    for (table, count) in state.session.cache.row_counts() {
-        let label = match table {
-            "name_status_cache" => "cache.name-status-rows",
-            "blob_diff_cache" => "cache.blob-diff-rows",
-            "grouped_walk_cache" => "cache.grouped-walk-rows",
-            "rename_trail_cache" => "cache.rename-trail-rows",
-            "drift_locus_cache" => "cache.drift-locus-rows",
-            _ => continue,
-        };
-        crate::perf::counter(label, count);
-    }
+    // Category 3: cache L1/L2 hit/miss counts, L2 wall-clock (microseconds),
+    // L2 byte volume, and per-anchor resolution distribution.
+    crate::perf::counter("cache.l1-hits", crate::perf::l1_hits());
+    crate::perf::counter("cache.l1-misses", crate::perf::l1_misses());
+    crate::perf::counter("cache.l2-hits", crate::perf::l2_hits());
+    crate::perf::counter("cache.l2-misses", crate::perf::l2_misses());
+    crate::perf::counter("cache.l2-read-us", crate::perf::l2_read_us());
+    crate::perf::counter("cache.l2-write-us", crate::perf::l2_write_us());
+    crate::perf::counter("cache.l2-bytes-read", crate::perf::l2_bytes_read());
+    crate::perf::counter("cache.l2-bytes-written", crate::perf::l2_bytes_written());
     {
         let mut per_anchor = std::mem::take(&mut state.session.per_anchor_us);
         per_anchor.sort_unstable();
@@ -723,13 +711,12 @@ fn stale_meshes_inner(
         crate::perf::counter("resolve-anchor.p50-ms", percentile(0.50));
         crate::perf::counter("resolve-anchor.p95-ms", percentile(0.95));
     }
-    // Legend: tiers are checked top-down (grouped-walk → rename-trail → name-status →
-    // blob-diff → drift-locus). Zero hits+misses on a lower tier means a higher tier
-    // absorbed all traffic (warm-run short-circuit).
-    crate::perf::note("session.tier-legend: tiers checked top-down; zero counters on a lower tier indicate higher-tier short-circuiting");
+    // Legend: cache traffic is summarized by `cache.l1-*` / `cache.l2-*`;
+    // per-kind hit/miss counters (`session.grouped-walk-*`, `session.rename-trail-*`,
+    // `session.drift-locus-*`) decompose the cache calls by `Kind`.
     crate::perf::note(
         "session.group-legend: session.* counts in-process state and subroutine calls; \
-         cache.* names sqlite-layer wall-clock and row counts; \
+         cache.* names L1/L2 hit/miss, wall-clock (us), and byte volume; \
          resolve-anchor.* names per-anchor distribution",
     );
     let trace_rows = state.session.per_anchor_trace.take().unwrap_or_default();

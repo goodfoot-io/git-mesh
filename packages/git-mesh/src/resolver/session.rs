@@ -38,7 +38,7 @@
 
 use crate::Result;
 use crate::git;
-use crate::resolver::cache::{Cache, TrailCacheEntry, TrailCacheKey};
+use crate::resolver::cache::{Cache, GroupedWalkKey, Kind, RenameTrailKey};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
 use sha2::{Digest, Sha256};
@@ -107,31 +107,18 @@ pub(crate) struct ResolveSession {
     /// Counter: total wall-clock milliseconds spent in Pass 1 (rename-trail
     /// closure via `git log --name-status` subprocesses) across all walks.
     pub(crate) pass1_ms: u64,
-    /// Counter: cache hits in the cross-invocation rename-trail cache.
+    /// Counter: rename-trail cache hits (per-`Kind` decomposition of
+    /// `cache.l1-hits + cache.l2-hits`).
     pub(crate) rename_trail_hits: u64,
-    /// Counter: cache misses (including I/O errors) in the rename-trail cache.
+    /// Counter: rename-trail cache misses.
     pub(crate) rename_trail_misses: u64,
-    /// Counter: Tier 3 grouped_walk cache hits where stored `head_sha`
-    /// equals current HEAD (no walk extension required).
-    pub(crate) grouped_walk_exact_hits: u64,
-    /// Counter: Tier 3 grouped_walk cache hits where stored `head_sha`
-    /// is a strict ancestor of current HEAD (walk extended by the
-    /// `cached_head..HEAD` delta).
-    pub(crate) grouped_walk_extend_hits: u64,
-    /// Counter: Tier 1 name_status persistent cache hits.
-    pub(crate) name_status_hits: u64,
-    /// Counter: Tier 1 name_status persistent cache misses.
-    pub(crate) name_status_misses: u64,
-    /// Counter: Tier 2 blob_diff persistent cache hits.
-    pub(crate) blob_diff_hits: u64,
-    /// Counter: Tier 2 blob_diff persistent cache misses.
-    pub(crate) blob_diff_misses: u64,
-    /// Counter: Tier 3 grouped_walk cache misses (no row, or stored
-    /// `head_sha` is neither equal to nor an ancestor of the current HEAD).
+    /// Counter: grouped-walk cache hits.
+    pub(crate) grouped_walk_hits: u64,
+    /// Counter: grouped-walk cache misses.
     pub(crate) grouped_walk_misses: u64,
-    /// Counter: Tier 5 drift_locus persistent cache hits.
+    /// Counter: drift-locus cache hits.
     pub(crate) drift_locus_hits: u64,
-    /// Counter: Tier 5 drift_locus persistent cache misses (includes ancestor-check failures).
+    /// Counter: drift-locus cache misses.
     pub(crate) drift_locus_misses: u64,
     /// Counter: per-path filter-attribute memo hits. Populated by
     /// `EngineState::filter_short_circuit` on cached `(rel_path)` reads.
@@ -140,8 +127,8 @@ pub(crate) struct ResolveSession {
     /// distinct path). On a warm `stale` run, this equals the number of
     /// distinct paths probed across all anchors in the session.
     pub(crate) filter_attr_misses: u64,
-    /// SQLite-backed content-addressed cache (Phase 2+).  Tier 1 probe
-    /// wired in Phase 3 step 2.
+    /// Content-addressed FS cache (BLAKE3-keyed) shared across all anchors
+    /// in this resolver run.
     pub(crate) cache: Cache,
     /// Per-session set of commit ObjectIds known to be ancestors of HEAD.
     /// Populated by (a) successful `is_ancestor` checks in `drift_locus` wiring
@@ -206,12 +193,7 @@ impl ResolveSession {
             pass1_ms: 0,
             rename_trail_hits: 0,
             rename_trail_misses: 0,
-            grouped_walk_exact_hits: 0,
-            grouped_walk_extend_hits: 0,
-            name_status_hits: 0,
-            name_status_misses: 0,
-            blob_diff_hits: 0,
-            blob_diff_misses: 0,
+            grouped_walk_hits: 0,
             grouped_walk_misses: 0,
             drift_locus_hits: 0,
             drift_locus_misses: 0,
@@ -278,12 +260,8 @@ impl ResolveSession {
             &mut self.pass1_ms,
             &mut self.rename_trail_hits,
             &mut self.rename_trail_misses,
-            &mut self.grouped_walk_exact_hits,
-            &mut self.grouped_walk_extend_hits,
-            &mut self.name_status_hits,
-            &mut self.name_status_misses,
+            &mut self.grouped_walk_hits,
             &mut self.grouped_walk_misses,
-            &mut self.known_head_ancestors,
             &self.cache,
             self.session_hashes,
         )?;
@@ -327,12 +305,8 @@ impl ResolveSession {
                 &mut self.pass1_ms,
                 &mut self.rename_trail_hits,
                 &mut self.rename_trail_misses,
-                &mut self.grouped_walk_exact_hits,
-                &mut self.grouped_walk_extend_hits,
-                &mut self.name_status_hits,
-                &mut self.name_status_misses,
+                &mut self.grouped_walk_hits,
                 &mut self.grouped_walk_misses,
-                &mut self.known_head_ancestors,
                 &self.cache,
                 self.session_hashes,
             )?;
@@ -363,164 +337,99 @@ fn build_grouped_walk(
     pass1_ms_counter: &mut u64,
     rename_trail_hits_counter: &mut u64,
     rename_trail_misses_counter: &mut u64,
-    grouped_walk_exact_hits_counter: &mut u64,
-    grouped_walk_extend_hits_counter: &mut u64,
-    name_status_hits_counter: &mut u64,
-    name_status_misses_counter: &mut u64,
+    grouped_walk_hits_counter: &mut u64,
     grouped_walk_misses_counter: &mut u64,
-    known_head_ancestors: &mut std::collections::HashMap<
-        gix::ObjectId,
-        std::collections::HashSet<gix::ObjectId>,
-    >,
     cache: &Cache,
     // Pre-computed session-wide hashes: `(replace_refs_hash, git_config_hash)`.
-    // When `Some`, these are reused for every `compute_key` call in this
-    // function, avoiding 8 subprocess forks per anchor. When `None`, falls
-    // back to per-call `compute_key` (same behavior as before memoization).
+    // Reused for every cache key in this function when `Some`; when `None`,
+    // falls back to per-call computation.
     session_hashes: Option<([u8; 32], [u8; 32])>,
 ) -> Result<GroupedWalk> {
+    // Phase 1: the entire walk routes through a single cache probe per
+    // anchor. The compute closure runs Pass 1 (rename-trail closure, via its
+    // own nested cache probe) followed by Pass 2 (per-commit `name_status`
+    // collection) inline. Phase 1's stub `Cache::get_or_insert_with` calls
+    // `compute()` unconditionally via `todo!()` — the real wiring lands in
+    // Phase 3.
     let head_sha = git::head_oid(repo)?;
+    let (replace_refs_hash, git_config_hash) = match session_hashes {
+        Some(pair) => pair,
+        None => compute_session_hashes(repo).unwrap_or(([0u8; 32], [0u8; 32])),
+    };
+    let empty_seed: HashSet<String> = HashSet::new();
+    let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
+    let candidate_seed_hash = hash_sorted_paths(seed_for_key);
+    let rename_budget = walker::rename_budget() as i64;
 
-    // Tier 3 exact-hit probe: skip the entire walk on cache hit.
-    // Compute the trail_key once so we can reuse for ancestor probe + persist.
-    let cached_trail_key = if cache.is_enabled() {
-        let empty_seed = HashSet::<String>::new();
-        let seed_for_key = candidate_paths.unwrap_or(&empty_seed);
-        if let Some((replace_refs_hash, git_config_hash)) = session_hashes {
-            compute_trail_key_with_hashes(
-                anchor_sha, &head_sha, copy_detection, seed_for_key,
-                replace_refs_hash, git_config_hash,
-            ).ok()
-        } else {
-            compute_trail_key(
-                repo, anchor_sha, &head_sha, copy_detection, seed_for_key,
-            ).ok()
-        }
-    } else {
-        None
+    let gw_key = GroupedWalkKey {
+        anchor_sha: anchor_sha.to_string(),
+        copy_detection,
+        seed_hash: candidate_seed_hash,
+        replace_refs_hash,
+        git_config_hash,
+        rename_budget,
+        head_sha: head_sha.clone(),
     };
 
-    if let Some(trail_key) = &cached_trail_key {
-        let probe = cache.grouped_walk_get(
+    let result = cache.get_or_insert_with(Kind::GroupedWalk, &gw_key, || {
+        compute_grouped_walk(
+            repo,
             anchor_sha,
             copy_detection,
-            trail_key.candidate_seed_hash.as_ref(),
-            trail_key.replace_refs_hash.as_ref(),
-            trail_key.git_config_hash.as_ref(),
-            trail_key.rename_budget as i64,
+            candidate_paths,
             &head_sha,
-            known_head_ancestors,
-            repo,
-        );
-        match probe {
-            crate::resolver::cache::GroupedWalkResult::ExactHit(cached_walk) => {
-                *grouped_walk_exact_hits_counter += 1;
-                return Ok(cached_walk);
-            }
-            crate::resolver::cache::GroupedWalkResult::ExtendHit { cached_head, walk: cached_walk } => {
-                // Walk only cached_head..HEAD and append per-commit deltas.
-                let mut new_commits =
-                    git::rev_walk_excluding(repo, &[&head_sha], &[&cached_head], None)
-                        .unwrap_or_default();
-                new_commits.reverse();
-
-                let mut deltas = cached_walk.commits.clone();
-                let mut ns_cache_buffer: Vec<(String, String, CopyDetection, Vec<NS>)> = Vec::new();
-                let mut parent = cached_head.clone();
-                let prior_warning_count = warnings.len();
-
-                for commit in &new_commits {
-                    // No interesting filter for the incremental tail — we don't
-                    // have a trail closure for the new commits and re-running
-                    // Pass 1 here would defeat the cache.  Treat every new
-                    // commit as interesting (same fallback Pass 1 uses on
-                    // budget exhaustion).
-                    *interesting_counter += 1;
-                    let entries = if let Some(cached) =
-                        cache.name_status_get(&parent, commit, copy_detection)
-                    {
-                        *name_status_hits_counter += 1;
-                        cached
-                    } else {
-                        *name_status_misses_counter += 1;
-                        let result =
-                            walker::name_status(repo, &parent, commit, copy_detection, warnings)?;
-                        ns_cache_buffer.push((
-                            parent.clone(),
-                            commit.clone(),
-                            copy_detection,
-                            result.clone(),
-                        ));
-                        result
-                    };
-                    deltas.push(CommitDelta {
-                        parent: parent.clone(),
-                        commit: commit.clone(),
-                        entries,
-                    });
-                    parent = commit.clone();
-                }
-                let new_renames_disabled =
-                    cached_walk.renames_disabled || warnings.len() > prior_warning_count;
-
-                // Batch insert name_status misses.
-                if !ns_cache_buffer.is_empty() {
-                    let rows: Vec<(&str, &str, CopyDetection, Vec<NS>)> = ns_cache_buffer
-                        .iter()
-                        .map(|(p, c, cd, entries)| (p.as_str(), c.as_str(), *cd, entries.clone()))
-                        .collect();
-                    if let Err(e) =
-                        cache.with_write_txn(|txn| cache.name_status_put_batch(txn, &rows))
-                    {
-                        eprintln!("name_status cache write error (ignored): {e}");
-                    }
-                }
-
-                let updated_walk = GroupedWalk {
-                    anchor_sha: anchor_sha.to_string(),
-                    head_sha: head_sha.clone(),
-                    commits: deltas,
-                    renames_disabled: new_renames_disabled,
-                    closed_paths: cached_walk.closed_paths.clone(),
-                };
-
-                if let Err(e) = cache.with_write_txn(|txn| {
-                    cache.grouped_walk_upsert(
-                        txn,
-                        anchor_sha,
-                        copy_detection,
-                        trail_key.candidate_seed_hash.as_ref(),
-                        trail_key.replace_refs_hash.as_ref(),
-                        trail_key.git_config_hash.as_ref(),
-                        trail_key.rename_budget as i64,
-                        &head_sha,
-                        &updated_walk,
-                        repo,
-                    )
-                }) {
-                    eprintln!("grouped_walk cache upsert error (ignored): {e}");
-                }
-
-                *grouped_walk_extend_hits_counter += 1;
-                return Ok(updated_walk);
-            }
-            crate::resolver::cache::GroupedWalkResult::Miss => {
-                *grouped_walk_misses_counter += 1;
-            }
+            replace_refs_hash,
+            git_config_hash,
+            candidate_seed_hash,
+            rename_budget,
+            warnings,
+            skipped_counter,
+            interesting_counter,
+            pass1_ms_counter,
+            rename_trail_hits_counter,
+            rename_trail_misses_counter,
+            cache,
+        )
+    });
+    match result {
+        Ok(walk) => {
+            *grouped_walk_hits_counter += 1;
+            Ok(walk)
+        }
+        Err(e) => {
+            *grouped_walk_misses_counter += 1;
+            Err(e)
         }
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+fn compute_grouped_walk(
+    repo: &gix::Repository,
+    anchor_sha: &str,
+    copy_detection: CopyDetection,
+    candidate_paths: Option<&HashSet<String>>,
+    head_sha: &str,
+    replace_refs_hash: [u8; 32],
+    git_config_hash: [u8; 32],
+    candidate_seed_hash: [u8; 32],
+    rename_budget: i64,
+    warnings: &mut Vec<String>,
+    skipped_counter: &mut u64,
+    interesting_counter: &mut u64,
+    pass1_ms_counter: &mut u64,
+    rename_trail_hits_counter: &mut u64,
+    rename_trail_misses_counter: &mut u64,
+    cache: &Cache,
+) -> Result<GroupedWalk> {
+    let _ = (replace_refs_hash, git_config_hash, candidate_seed_hash, rename_budget);
+
+    // Walk anchor..HEAD oldest-first.
     let mut commits =
-        git::rev_walk_excluding(repo, &[&head_sha], &[anchor_sha], None).unwrap_or_default();
-    commits.reverse(); // oldest-first
+        git::rev_walk_excluding(repo, &[head_sha], &[anchor_sha], None).unwrap_or_default();
+    commits.reverse();
 
-    // Walk-order parent map: each commit's "parent" for rename detection
-    // is the commit immediately preceding it in the reversed `rev_walk`
-    // output, with the anchor as the parent of the first commit.
-    // `compute_rename_trail` consumes this same map so Pass 1's per-commit
-    // gix `name_status` always diffs against the same baseline that Pass
-    // 2's `build_grouped_walk` loop uses — important on merge commits,
-    // where first-parent and walk-order can disagree.
+    // Walk-order parent map for Pass 1's rename-detection baseline alignment.
     let mut walk_parents: HashMap<String, String> = HashMap::with_capacity(commits.len());
     {
         let mut prev = anchor_sha.to_string();
@@ -530,93 +439,63 @@ fn build_grouped_walk(
         }
     }
 
-    // Pass 1: rename-trail closure. Caller-supplied seed + iterative
-    // `git log --name-status` queries until the path set stops growing.
-    // When no seed is provided (single-anchor / test fallback) the gate
-    // is bypassed and every commit is treated as interesting.
-    //
-    // When a seed is provided, we first probe the cross-invocation trail
-    // cache (Route C). On hit, Pass 1 is skipped entirely and we return
-    // the persisted (closed, interesting) pair directly. On miss (file
-    // absent, key mismatch, I/O error), we run compute_rename_trail and
-    // store the result when !fell_back. Cache I/O failures are caught and
-    // downgraded to a miss; they never propagate.
+    // Pass 1: rename-trail closure via the cache. The compute closure runs
+    // `compute_rename_trail` on miss; cache hits skip Pass 1 entirely.
     let (closed_paths, interesting_set, pass1_fell_back) = match candidate_paths {
         Some(seed) => {
-            // Probe the cross-invocation trail cache. Returns:
-            //   `Some(pair)` → cache hit (counter already incremented)
-            //   `None`       → miss or shadow-miss (counter NOT yet incremented)
-            //
-            // Shadow miss (I/O error) is counted here so the outer else
-            // branch increments exactly once in all miss paths.
-            enum CacheProbe {
-                Hit(HashSet<String>, HashSet<String>),
-                Miss,
-            }
-            let compute_key_local = |seed: &HashSet<String>| -> Result<TrailCacheKey> {
-                if let Some((replace_refs_hash, git_config_hash)) = session_hashes {
-                    compute_trail_key_with_hashes(
-                        anchor_sha,
-                        &head_sha,
-                        copy_detection,
-                        seed,
-                        replace_refs_hash,
-                        git_config_hash,
-                    )
-                } else {
-                    compute_trail_key(
-                        repo, anchor_sha, &head_sha, copy_detection, seed,
-                    )
-                }
+            let trail_key = RenameTrailKey {
+                anchor_sha: anchor_sha.to_string(),
+                head_sha: head_sha.to_string(),
+                copy_detection,
+                rename_budget,
+                candidate_seed_hash,
+                replace_refs_hash,
+                git_config_hash,
             };
-            let probe = match compute_key_local(seed) {
-                Err(e) => {
-                    eprintln!("rename_trail compute_key error: {e}");
-                    CacheProbe::Miss
-                }
-                Ok(key) => match cache.rename_trail_get(&key) {
-                    Some(entry) => {
-                        *rename_trail_hits_counter += 1;
-                        CacheProbe::Hit(entry.closed, entry.interesting)
-                    }
-                    None => CacheProbe::Miss,
+            // Reserve a slot for Pass 1's `fell_back` flag — it cannot be
+            // serialized into the cached payload (a fell-back closure is not
+            // an authoritative trail), so on miss we recompute and inspect
+            // the local flag; on hit we always treat the cached entry as
+            // authoritative (fell_back = false).
+            let mut local_fell_back = false;
+            let local_pass1_ms = std::cell::Cell::new(0u64);
+            let probe: Result<(HashSet<String>, HashSet<String>)> = cache.get_or_insert_with(
+                Kind::RenameTrail,
+                &trail_key,
+                || {
+                    let t0 = std::time::Instant::now();
+                    let (closed, interesting, fell_back) = compute_rename_trail(
+                        repo, anchor_sha, seed, copy_detection, &walk_parents, warnings,
+                    )?;
+                    local_pass1_ms.set(t0.elapsed().as_millis() as u64);
+                    local_fell_back = fell_back;
+                    Ok((closed, interesting))
                 },
-            };
-
+            );
+            *pass1_ms_counter += local_pass1_ms.get();
             match probe {
-                CacheProbe::Hit(closed, interesting) => {
-                    // Cache hit: skip Pass 1 entirely.
-                    (Some(closed), Some(interesting), false)
+                Ok((closed, interesting)) => {
+                    if local_fell_back {
+                        *rename_trail_misses_counter += 1;
+                        (None, Some(interesting), true)
+                    } else if local_pass1_ms.get() > 0 {
+                        // Miss path: compute ran.
+                        *rename_trail_misses_counter += 1;
+                        (Some(closed), Some(interesting), false)
+                    } else {
+                        // Hit path: compute did not run.
+                        *rename_trail_hits_counter += 1;
+                        (Some(closed), Some(interesting), false)
+                    }
                 }
-                CacheProbe::Miss => {
-                    // Cache miss: run Pass 1 then conditionally store.
+                Err(e) => {
+                    eprintln!("rename_trail cache error (treating as miss): {e}");
                     *rename_trail_misses_counter += 1;
                     let t0 = std::time::Instant::now();
-                    let (closed, interesting, fell_back) =
-                        compute_rename_trail(repo, anchor_sha, seed, copy_detection, &walk_parents, warnings)?;
+                    let (closed, interesting, fell_back) = compute_rename_trail(
+                        repo, anchor_sha, seed, copy_detection, &walk_parents, warnings,
+                    )?;
                     *pass1_ms_counter += t0.elapsed().as_millis() as u64;
-
-                    if !fell_back {
-                        // Attempt to store; failure is logged and ignored.
-                        if let Ok(key) = compute_key_local(seed) {
-                            let mut sorted_seed: Vec<String> = seed.iter().cloned().collect();
-                            sorted_seed.sort();
-                            let entry = TrailCacheEntry {
-                                seed: sorted_seed,
-                                closed: closed.clone(),
-                                interesting: interesting.clone(),
-                            };
-                            if let Err(e) = cache.with_write_txn(|txn| cache.rename_trail_put(txn, &key, &entry)) {
-                                eprintln!("rename_trail store error (ignored): {e}");
-                            }
-                        }
-                    }
-
-                    // On fallback, `closed` is just the seed (or a partial set) —
-                    // not the authoritative trail closure the field's contract
-                    // promises. Drop it so future cache consumers can
-                    // distinguish "trail closed" from "trail unknown" without
-                    // mistaking a seed-only result for a real closure.
                     let cached_closed = if fell_back { None } else { Some(closed) };
                     (cached_closed, Some(interesting), fell_back)
                 }
@@ -626,33 +505,18 @@ fn build_grouped_walk(
     };
 
     let mut deltas: Vec<CommitDelta> = Vec::with_capacity(commits.len());
-    // Buffer for Tier 1 cache misses: (parent, commit, cd, entries) to be
-    // batch-inserted at the end of the walk.
-    let mut ns_cache_buffer: Vec<(String, String, CopyDetection, Vec<NS>)> = Vec::new();
     let mut parent = anchor_sha.to_string();
     let prior_warning_count = warnings.len();
 
     for commit in &commits {
         let interesting = match interesting_set.as_ref() {
-            // No seed → no filter → keep every commit.
             None => true,
-            // Pass 1 hit the rename budget → fall back to "every commit
-            // interesting" rather than silently shrink the trail.
             Some(_) if pass1_fell_back => true,
             Some(set) => set.contains(commit),
         };
         let entries = if interesting {
             *interesting_counter += 1;
-            // Tier 1 probe: check the name_status cache before calling walker.
-            if let Some(cached) = cache.name_status_get(&parent, commit, copy_detection) {
-                *name_status_hits_counter += 1;
-                cached
-            } else {
-                *name_status_misses_counter += 1;
-                let result = walker::name_status(repo, &parent, commit, copy_detection, warnings)?;
-                ns_cache_buffer.push((parent.clone(), commit.clone(), copy_detection, result.clone()));
-                result
-            }
+            walker::name_status(repo, &parent, commit, copy_detection, warnings)?
         } else {
             *skipped_counter += 1;
             Vec::new()
@@ -666,45 +530,13 @@ fn build_grouped_walk(
     }
     let renames_disabled = pass1_fell_back || warnings.len() > prior_warning_count;
 
-    // Batch-insert all name_status cache misses in a single transaction.
-    if !ns_cache_buffer.is_empty() {
-        let rows: Vec<(&str, &str, CopyDetection, Vec<NS>)> = ns_cache_buffer
-            .iter()
-            .map(|(p, c, cd, entries)| (p.as_str(), c.as_str(), *cd, entries.clone()))
-            .collect();
-        if let Err(e) = cache.with_write_txn(|txn| cache.name_status_put_batch(txn, &rows)) {
-            eprintln!("name_status cache write error (ignored): {e}");
-        }
-    }
-
     let walk = GroupedWalk {
         anchor_sha: anchor_sha.to_string(),
-        head_sha: head_sha.clone(),
+        head_sha: head_sha.to_string(),
         commits: deltas,
         renames_disabled,
         closed_paths,
     };
-
-    // Tier 3 persist: UPSERT walk for future exact/extend-hit probes.
-    if let Some(trail_key) = &cached_trail_key
-        && let Err(e) = cache.with_write_txn(|txn| {
-            cache.grouped_walk_upsert(
-                txn,
-                anchor_sha,
-                copy_detection,
-                trail_key.candidate_seed_hash.as_ref(),
-                trail_key.replace_refs_hash.as_ref(),
-                trail_key.git_config_hash.as_ref(),
-                trail_key.rename_budget as i64,
-                &head_sha,
-                &walk,
-                repo,
-            )
-        })
-    {
-        eprintln!("grouped_walk cache write error (ignored): {e}");
-    }
-
     Ok(walk)
 }
 
@@ -902,47 +734,7 @@ fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
 }
 
-// ── Trail-key helpers (moved from trail_cache.rs) ────────────────────────────
-
-fn compute_trail_key(
-    repo: &gix::Repository,
-    anchor_sha: &str,
-    head_sha: &str,
-    copy_detection: CopyDetection,
-    seed: &HashSet<String>,
-) -> Result<TrailCacheKey> {
-    let replace_refs_hash = hash_replace_refs(repo)?;
-    let git_config_hash = hash_git_config(repo)?;
-    compute_trail_key_with_hashes(
-        anchor_sha,
-        head_sha,
-        copy_detection,
-        seed,
-        replace_refs_hash,
-        git_config_hash,
-    )
-}
-
-fn compute_trail_key_with_hashes(
-    anchor_sha: &str,
-    head_sha: &str,
-    copy_detection: CopyDetection,
-    seed: &HashSet<String>,
-    replace_refs_hash: [u8; 32],
-    git_config_hash: [u8; 32],
-) -> Result<TrailCacheKey> {
-    let candidate_seed_hash = hash_sorted_paths(seed);
-    let rename_budget = walker::rename_budget();
-    Ok(TrailCacheKey {
-        anchor_sha: anchor_sha.to_string(),
-        head_sha: head_sha.to_string(),
-        copy_detection,
-        rename_budget,
-        candidate_seed_hash,
-        replace_refs_hash,
-        git_config_hash,
-    })
-}
+// ── Session-wide hash helpers ────────────────────────────────────────────────
 
 pub(crate) fn compute_session_hashes(repo: &gix::Repository) -> Option<([u8; 32], [u8; 32])> {
     let replace = hash_replace_refs(repo).ok()?;
@@ -1047,10 +839,7 @@ pub(crate) fn resolve_at_head_shared(
             &delta.commit,
             &loc,
             &delta.entries,
-            Some(&session.cache),
             Some(&mut session.blob_oid_memo),
-            &mut session.blob_diff_hits,
-            &mut session.blob_diff_misses,
         )? {
             walker::Change::Unchanged => {}
             walker::Change::Deleted => return Ok(None),

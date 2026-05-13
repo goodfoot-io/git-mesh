@@ -11,7 +11,7 @@
 
 use crate::Result;
 use crate::git;
-use crate::resolver::cache::{DriftLocusCacheKey, DriftLocusCachedValue};
+use crate::resolver::cache::{DriftLocusKey, Kind};
 use crate::resolver::session::ResolveSession;
 use crate::resolver::walker;
 use crate::types::{AnchorExtent, AnchorResolved, DriftLocus, DriftSource};
@@ -56,55 +56,83 @@ pub(crate) fn drift_locus(
         .blob
         .map(|o| o.to_string())
         .unwrap_or_default();
-    let rename_budget = walker::rename_budget();
+    let rename_budget = walker::rename_budget() as i64;
 
-    let cache_key = if session.cache.is_enabled() {
-        Some(DriftLocusCacheKey {
-            anchor_sha: resolved.anchor_sha.clone(),
-            path: resolved.anchored.path.to_string_lossy().into_owned(),
-            blob_oid: blob_oid.clone(),
-            range_start: anchored_start,
-            range_end: anchored_end,
-            copy_detection,
-            rename_budget,
-        })
-    } else {
-        None
+    let cache_key = DriftLocusKey {
+        anchor_sha: resolved.anchor_sha.clone(),
+        path: resolved.anchored.path.to_string_lossy().into_owned(),
+        blob_oid: blob_oid.clone(),
+        range_start: anchored_start,
+        range_end: anchored_end,
+        copy_detection,
+        rename_budget,
     };
 
-    // ── Tier 5 cache probe ───────────────────────────────────────────────────
-    if let Some(ref key) = cache_key
-        && let Some(cached) = session.cache.drift_locus_get(key)
-    {
-        // Validate answer_commit: is it still an ancestor of HEAD?
-        let valid = validate_answer_commit(
-            repo,
-            &cached.answer_commit,
-            &mut session.known_head_ancestors,
-        );
-        if valid {
-            session.drift_locus_hits += 1;
-            return Ok(decode_drift_locus(&cached));
+    // Single-probe cache call: the compute closure runs the full forward
+    // walk on miss. Caller-side ancestor validation of `answer_commit`
+    // returns post-cache (Phase 3 wiring); for Phase 1 the stub
+    // `get_or_insert_with` routes straight to `compute` via `todo!()`.
+    let encoded: Result<EncodedDriftLocus> = session.cache.get_or_insert_with(
+        Kind::DriftLocus,
+        &cache_key,
+        || {
+            session.drift_locus_misses += 1;
+            let result = drift_locus_walk(
+                repo,
+                resolved,
+                anchored_start,
+                anchored_end,
+                &blob_oid,
+                &mut session.known_head_ancestors,
+            )?;
+            Ok(encode_drift_locus(result.as_ref()))
+        },
+    );
+    match encoded {
+        Ok(v) => {
+            // Validate answer_commit is still an ancestor of HEAD; on
+            // failure recompute (Phase 3 will route this through the cache
+            // miss path properly — Phase 1 just decodes whatever came back).
+            let valid =
+                validate_answer_commit(repo, &v.answer_commit, &mut session.known_head_ancestors);
+            if valid {
+                session.drift_locus_hits += 1;
+                Ok(decode_drift_locus(&v))
+            } else {
+                session.drift_locus_misses += 1;
+                drift_locus_walk(
+                    repo,
+                    resolved,
+                    anchored_start,
+                    anchored_end,
+                    &blob_oid,
+                    &mut session.known_head_ancestors,
+                )
+            }
         }
-        // Ancestor check failed → treat as miss, recompute below.
-        // Do NOT delete the row (no-in-band revocation).
-    }
-    session.drift_locus_misses += 1;
-
-    // ── Miss path: full walk ─────────────────────────────────────────────────
-    let result = drift_locus_walk(repo, resolved, anchored_start, anchored_end, &blob_oid, &mut session.known_head_ancestors)?;
-
-    // Store result in cache.
-    if let Some(ref key) = cache_key {
-        let value = encode_drift_locus(result.as_ref());
-        if let Err(e) = session.cache.with_write_txn(|txn| {
-            session.cache.drift_locus_put(txn, key, &value)
-        }) {
-            eprintln!("drift_locus cache write error (ignored): {e}");
+        Err(e) => {
+            eprintln!("drift_locus cache error (treating as miss): {e}");
+            session.drift_locus_misses += 1;
+            drift_locus_walk(
+                repo,
+                resolved,
+                anchored_start,
+                anchored_end,
+                &blob_oid,
+                &mut session.known_head_ancestors,
+            )
         }
     }
+}
 
-    Ok(result)
+/// Cache payload for a cached `DriftLocus` result. Mirrors the prior
+/// `DriftLocusCachedValue` shape so existing encode/decode helpers continue
+/// to work.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct EncodedDriftLocus {
+    /// 0 = Unreachable, 1 = ChangedAt, 2 = OrphanedAt, 3 = None sentinel.
+    pub variant: u8,
+    pub answer_commit: String,
 }
 
 /// Perform the full forward walk without touching the cache.
@@ -268,21 +296,21 @@ fn drift_locus_walk(
 
 // ── Cache encode / decode helpers ────────────────────────────────────────────
 
-fn encode_drift_locus(locus: Option<&DriftLocus>) -> DriftLocusCachedValue {
+fn encode_drift_locus(locus: Option<&DriftLocus>) -> EncodedDriftLocus {
     match locus {
-        None => DriftLocusCachedValue {
+        None => EncodedDriftLocus {
             variant: 3, // None / no locus found
             answer_commit: NULL_COMMIT.to_string(),
         },
-        Some(DriftLocus::Unreachable) => DriftLocusCachedValue {
+        Some(DriftLocus::Unreachable) => EncodedDriftLocus {
             variant: 0,
             answer_commit: NULL_COMMIT.to_string(),
         },
-        Some(DriftLocus::ChangedAt(id)) => DriftLocusCachedValue {
+        Some(DriftLocus::ChangedAt(id)) => EncodedDriftLocus {
             variant: 1,
             answer_commit: id.to_string(),
         },
-        Some(DriftLocus::OrphanedAt(id)) => DriftLocusCachedValue {
+        Some(DriftLocus::OrphanedAt(id)) => EncodedDriftLocus {
             variant: 2,
             answer_commit: id.to_string(),
         },
@@ -293,7 +321,7 @@ fn encode_drift_locus(locus: Option<&DriftLocus>) -> DriftLocusCachedValue {
 ///
 /// Returns `None` for variant 3 (the stored "no locus" sentinel), so that a
 /// `None` result round-trips as `None` and not as `Some(Unreachable)`.
-fn decode_drift_locus(cached: &DriftLocusCachedValue) -> Option<DriftLocus> {
+fn decode_drift_locus(cached: &EncodedDriftLocus) -> Option<DriftLocus> {
     match cached.variant {
         1 => {
             let id = parse_oid(&cached.answer_commit);
@@ -428,13 +456,13 @@ fn range_overlaps_memo(
 /// Thin test-only wrapper exposing `encode_drift_locus` for unit tests in
 /// sibling modules that need to assert round-trip correctness.
 #[cfg(test)]
-pub(crate) fn encode_drift_locus_for_test(locus: Option<&crate::types::DriftLocus>) -> DriftLocusCachedValue {
+pub(crate) fn encode_drift_locus_for_test(locus: Option<&crate::types::DriftLocus>) -> EncodedDriftLocus {
     encode_drift_locus(locus)
 }
 
 /// Thin test-only wrapper exposing `decode_drift_locus` for unit tests in
 /// sibling modules that need to assert round-trip correctness.
 #[cfg(test)]
-pub(crate) fn decode_drift_locus_for_test(cached: &DriftLocusCachedValue) -> Option<crate::types::DriftLocus> {
+pub(crate) fn decode_drift_locus_for_test(cached: &EncodedDriftLocus) -> Option<crate::types::DriftLocus> {
     decode_drift_locus(cached)
 }

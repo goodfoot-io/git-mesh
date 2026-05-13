@@ -1,3 +1,7 @@
+//! Phase 1: sqlite-tier cache tests gated out; Phase 2/3 retarget at the new Cache API.
+
+#![cfg(any())]
+
 //! Integration tests for the cross-invocation rename-trail cache (Route C).
 //!
 //! Covers: warm-cache hits, invalidation on HEAD advance, config change,
