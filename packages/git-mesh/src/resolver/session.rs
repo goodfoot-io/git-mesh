@@ -455,14 +455,13 @@ fn compute_grouped_walk(
                 replace_refs_hash,
                 git_config_hash,
             };
-            // Reserve a slot for Pass 1's `fell_back` flag — it cannot be
-            // serialized into the cached payload (a fell-back closure is not
-            // an authoritative trail), so on miss we recompute and inspect
-            // the local flag; on hit we always treat the cached entry as
-            // authoritative (fell_back = false).
-            let mut local_fell_back = false;
+            // The cached payload carries `fell_back` so warm runs reconstruct
+            // Pass 1's classification authority: a fell-back trail
+            // (`AnyFileInRepo` short-circuit) cached `(seed, ∅, true)` must,
+            // on hit, force every commit interesting just as the cold run did.
             let local_pass1_ms = std::cell::Cell::new(0u64);
-            type RenameTrailProbe = ((HashSet<String>, HashSet<String>), Outcome);
+            type RenameTrailPayload = (HashSet<String>, HashSet<String>, bool);
+            type RenameTrailProbe = (RenameTrailPayload, Outcome);
             let probe: Result<RenameTrailProbe> = cache
                 .get_or_insert_with_outcome(Kind::RenameTrail, &trail_key, || {
                     let t0 = std::time::Instant::now();
@@ -470,25 +469,18 @@ fn compute_grouped_walk(
                         repo, anchor_sha, seed, copy_detection, &walk_parents, warnings,
                     )?;
                     local_pass1_ms.set(t0.elapsed().as_millis() as u64);
-                    local_fell_back = fell_back;
-                    Ok((closed, interesting))
+                    Ok((closed, interesting, fell_back))
                 });
             *pass1_ms_counter += local_pass1_ms.get();
             match probe {
-                Ok(((closed, interesting), outcome)) => match outcome {
-                    Outcome::Miss => {
-                        *rename_trail_misses_counter += 1;
-                        if local_fell_back {
-                            (None, Some(interesting), true)
-                        } else {
-                            (Some(closed), Some(interesting), false)
-                        }
+                Ok(((closed, interesting, fell_back), outcome)) => {
+                    match outcome {
+                        Outcome::Miss => *rename_trail_misses_counter += 1,
+                        Outcome::L1Hit | Outcome::L2Hit => *rename_trail_hits_counter += 1,
                     }
-                    Outcome::L1Hit | Outcome::L2Hit => {
-                        *rename_trail_hits_counter += 1;
-                        (Some(closed), Some(interesting), false)
-                    }
-                },
+                    let cached_closed = if fell_back { None } else { Some(closed) };
+                    (cached_closed, Some(interesting), fell_back)
+                }
                 Err(e) => {
                     eprintln!("rename_trail cache error (treating as miss): {e}");
                     *rename_trail_misses_counter += 1;

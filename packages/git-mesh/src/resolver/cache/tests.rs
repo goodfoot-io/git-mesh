@@ -428,6 +428,68 @@ fn kind_isolation_prevents_cross_kind_collisions() -> Result<()> {
     Ok(())
 }
 
+/// (9b) Round-trip a `(Closed, Interesting, bool)` payload through the
+/// cache and assert the bool survives L1, L2, and a fresh `Cache` reading
+/// L2. Regression for the rename-trail `fell_back` flag, which Phase 3
+/// originally stripped on persist — see [`super::super::session::compute_grouped_walk`](../../session.rs).
+#[test]
+fn rename_trail_payload_round_trips_fell_back_bool() -> Result<()> {
+    use std::collections::HashSet;
+    type Payload = (HashSet<String>, HashSet<String>, bool);
+
+    let td = init_repo();
+    commit_file(td.path(), "f.txt", "x\n", "init");
+    let repo = gix::open(td.path()).expect("gix open");
+    let key = sample_rename_trail_key();
+
+    let mut closed = HashSet::new();
+    closed.insert("src/lib.rs".to_string());
+    let interesting: HashSet<String> = HashSet::new();
+    let payload: Payload = (closed.clone(), interesting.clone(), true);
+
+    // (a) miss + L1 hit on the same Cache: bool survives both tiers.
+    let cache_a = Cache::open(&repo)?;
+    let calls = AtomicUsize::new(0);
+    let p_payload = payload.clone();
+    let miss: Payload = cache_a.get_or_insert_with(Kind::RenameTrail, &key, || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Ok(p_payload.clone())
+    })?;
+    assert_eq!(miss, payload, "miss returns the computed payload");
+    let l1: Payload = cache_a.get_or_insert_with(Kind::RenameTrail, &key, || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Ok((HashSet::new(), HashSet::new(), false))
+    })?;
+    assert_eq!(l1, payload, "L1 hit preserves fell_back=true");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "compute invoked once");
+
+    // (b) fresh Cache reads L2: bool still survives.
+    drop(cache_a);
+    let cache_b = Cache::open(&repo)?;
+    let calls_b = AtomicUsize::new(0);
+    let l2: Payload = cache_b.get_or_insert_with(Kind::RenameTrail, &key, || {
+        calls_b.fetch_add(1, Ordering::SeqCst);
+        Ok((HashSet::new(), HashSet::new(), false))
+    })?;
+    assert_eq!(l2, payload, "L2 hit preserves fell_back=true");
+    assert_eq!(calls_b.load(Ordering::SeqCst), 0, "L2 hit did not recompute");
+
+    // Sanity: a `false` bool also survives — it's not the default fallback
+    // dressed up as a successful read.
+    let mut key2 = sample_rename_trail_key();
+    key2.head_sha = "9".repeat(40);
+    let payload_false: Payload = (closed, interesting, false);
+    let pf = payload_false.clone();
+    let _: Payload =
+        cache_b.get_or_insert_with(Kind::RenameTrail, &key2, || Ok(pf.clone()))?;
+    let again: Payload =
+        cache_b.get_or_insert_with(Kind::RenameTrail, &key2, || {
+            Ok((HashSet::new(), HashSet::new(), true))
+        })?;
+    assert_eq!(again, payload_false, "fell_back=false also round-trips");
+    Ok(())
+}
+
 /// (9) `gc` removes orphan entries whose anchor / head oids are absent from
 /// `git rev-list --all --objects`. Lean version: create an entry whose key
 /// references the current HEAD oid, prune that commit, run gc, assert the

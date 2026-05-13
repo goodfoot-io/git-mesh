@@ -4,6 +4,10 @@
 
 The primary CLI surface lives in `src/cli/mod.rs`. Run `git mesh --help` or `git mesh stale --help` for flag reference.
 
+### Upgrading from the sqlite cache
+
+The trail cache now lives at `<common_dir>/mesh/cache/v1/` as a BLAKE3-keyed content-addressed filesystem store. The previous sqlite-backed cache at `<common_dir>/mesh/cache/mesh_cache.sqlite` (or `<git_dir>/mesh/cache/mesh_cache.sqlite` on older per-worktree installations), along with its `-shm` and `-wal` companions, is unused and can be removed with a single `rm -f <common_dir>/mesh/cache/mesh_cache.sqlite*` (and the `<git_dir>` variant if present). Nothing reads those files anymore; `git mesh doctor --gc-trail-cache` operates only on the new store.
+
 ## Profiling
 
 Perf investigation tooling is documented in [`./docs/profiling.md`](./docs/profiling.md):
