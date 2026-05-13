@@ -647,8 +647,21 @@ fn stale_meshes_inner(
         "session.filter-attr-distinct-paths",
         state.session.filter_attr_misses,
     );
+    // Tier legend for the `session.*` family below:
+    //   `gix-open-calls`     — count of `gix::open(...)` invocations the resolver
+    //                          triggers (each pays `.git/config` parse + parent
+    //                          walk; no internal caching).
+    //   `attr-for-calls`     — count of [`crate::git::attr_for`] invocations.
+    //                          gix's `Repository::index_or_load_from_head`
+    //                          internally caches the `gix::index::File`, so the
+    //                          actual `.git/index` open count (observable via
+    //                          `strace -e openat -f -- ... | grep .git/index`)
+    //                          is unrelated to this counter and typically far
+    //                          smaller.
+    //   `is-ancestor-*`      — out-of-process `git merge-base --is-ancestor`
+    //                          subprocess invocations and in-process memo hits.
     crate::perf::counter("session.gix-open-calls", crate::perf::gix_open_calls());
-    crate::perf::counter("session.index-load-calls", crate::perf::index_load_calls());
+    crate::perf::counter("session.attr-for-calls", crate::perf::attr_for_calls());
     crate::perf::counter(
         "session.is-ancestor-subprocess-calls",
         crate::perf::is_ancestor_subprocess_calls(),

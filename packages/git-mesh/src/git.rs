@@ -34,6 +34,7 @@ pub(crate) enum RefUpdate {
 }
 
 pub(crate) fn apply_ref_transaction(work_dir: &Path, updates: &[RefUpdate]) -> Result<()> {
+    crate::perf::record_gix_open();
     let repo = gix::open(work_dir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
     apply_ref_transaction_repo(&repo, updates)
 }
@@ -731,6 +732,7 @@ pub fn create_commit(
 }
 
 pub(crate) fn resolve_ref_oid_optional(work_dir: &Path, ref_name: &str) -> Result<Option<String>> {
+    crate::perf::record_gix_open();
     let repo = gix::open(work_dir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
     resolve_ref_oid_optional_repo(&repo, ref_name)
 }
@@ -997,7 +999,7 @@ pub fn attr_for(
     rel_path: &Path,
     name: &str,
 ) -> Result<Option<gix::bstr::BString>> {
-    crate::perf::record_index_load();
+    crate::perf::record_attr_for_call();
     let index = repo
         .index_or_load_from_head()
         .map_err(|e| Error::Git(format!("load index: {e}")))?;
@@ -1311,6 +1313,7 @@ mod gix_helper_tests {
         .unwrap()
         .trim()
         .to_string();
+        crate::perf::record_gix_open();
         let repo = gix::open(dir).unwrap();
         (td, repo, head)
     }
@@ -1384,6 +1387,7 @@ mod gix_helper_tests {
             td.path(),
             &["config", "filter.lfs.process", "git-lfs filter-process"],
         );
+        crate::perf::record_gix_open();
         let repo = gix::open(repo.path()).unwrap();
         assert_eq!(
             config_string(&repo, "filter.lfs.process").as_deref(),

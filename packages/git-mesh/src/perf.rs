@@ -82,7 +82,10 @@ pub fn note(text: &str) {
 // per process invocation.
 
 static GIX_OPEN_CALLS: AtomicU64 = AtomicU64::new(0);
-static INDEX_LOAD_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Count of `attr_for` invocations. Each call probes gix's cached attribute
+/// stack; the underlying `gix::index::File` is loaded from disk at most once
+/// per `gix::Repository` instance, so this counter does not measure disk I/O.
+static ATTR_FOR_CALLS: AtomicU64 = AtomicU64::new(0);
 static IS_ANCESTOR_SUBPROCESS_CALLS: AtomicU64 = AtomicU64::new(0);
 static IS_ANCESTOR_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
 static SQLITE_READ_NS: AtomicU64 = AtomicU64::new(0);
@@ -96,11 +99,11 @@ pub fn record_gix_open() {
     GIX_OPEN_CALLS.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn record_index_load() {
+pub fn record_attr_for_call() {
     if !enabled() {
         return;
     }
-    INDEX_LOAD_CALLS.fetch_add(1, Ordering::Relaxed);
+    ATTR_FOR_CALLS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_is_ancestor_subprocess() {
@@ -153,8 +156,8 @@ where
 pub fn gix_open_calls() -> u64 {
     GIX_OPEN_CALLS.load(Ordering::Relaxed)
 }
-pub fn index_load_calls() -> u64 {
-    INDEX_LOAD_CALLS.load(Ordering::Relaxed)
+pub fn attr_for_calls() -> u64 {
+    ATTR_FOR_CALLS.load(Ordering::Relaxed)
 }
 pub fn is_ancestor_subprocess_calls() -> u64 {
     IS_ANCESTOR_SUBPROCESS_CALLS.load(Ordering::Relaxed)
@@ -186,7 +189,7 @@ pub struct TraceRow {
 /// so the emit block reports values from a single resolver run.
 pub fn reset_subroutine_counters() {
     GIX_OPEN_CALLS.store(0, Ordering::Relaxed);
-    INDEX_LOAD_CALLS.store(0, Ordering::Relaxed);
+    ATTR_FOR_CALLS.store(0, Ordering::Relaxed);
     IS_ANCESTOR_SUBPROCESS_CALLS.store(0, Ordering::Relaxed);
     IS_ANCESTOR_MEMO_HITS.store(0, Ordering::Relaxed);
     SQLITE_READ_NS.store(0, Ordering::Relaxed);
