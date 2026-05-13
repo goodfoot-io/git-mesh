@@ -9,7 +9,9 @@
 mod support;
 
 use anyhow::Result;
+#[allow(unused_imports)]
 use git_mesh::{append_add, commit_mesh, resolve_mesh, set_why};
+#[allow(unused_imports)]
 use git_mesh::types::{AnchorStatus, DriftSource, EngineOptions, LayerSet, Scope};
 use support::TestRepo;
 
@@ -29,6 +31,7 @@ fn seed_mesh(repo: &TestRepo, mesh: &str, file: &str, start: u32, end: u32) -> R
 
 /// Resolve the mesh and return the label for the first anchor via `stale` CLI.
 /// Returns `(stale_label, patch_label, show_label)`.
+#[allow(dead_code)]
 fn labels_for_first_anchor(repo: &TestRepo, mesh: &str) -> Result<(String, String, String)> {
     let stale = repo.mesh_stdout(["stale", mesh, "--no-exit-code"])?;
     let patch = repo.mesh_stdout(["stale", mesh, "--patch", "--no-exit-code"])?;
@@ -38,6 +41,7 @@ fn labels_for_first_anchor(repo: &TestRepo, mesh: &str) -> Result<(String, Strin
 
 /// Extract the drift label token from stale output.
 /// The label appears after the anchor path, e.g. `file.txt — changed in the working tree`.
+#[allow(dead_code)]
 fn extract_label(output: &str) -> Option<&str> {
     for line in output.lines() {
         // Look for lines containing "—" (em-dash) which separates path from label.
