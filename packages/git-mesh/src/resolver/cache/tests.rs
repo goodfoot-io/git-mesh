@@ -78,16 +78,63 @@ fn make_grouped_walk(anchor_sha: &str, head_sha: &str) -> GroupedWalk {
     }
 }
 
-fn make_grouped_walk_key(anchor_sha: &str, head_sha: &str) -> GroupedWalkKey {
-    GroupedWalkKey {
-        anchor_sha: anchor_sha.to_string(),
-        head_sha: head_sha.to_string(),
-        copy_detection: CopyDetection::Off,
+/// Standard test key components for the new single-row `grouped_walk_cache`.
+struct GwKey {
+    anchor: String,
+    cd: CopyDetection,
+    seed_hash: [u8; 32],
+    replace_refs_hash: [u8; 32],
+    git_config_hash: [u8; 32],
+    rename_budget: i64,
+}
+
+fn make_gw_key(anchor_sha: &str) -> GwKey {
+    GwKey {
+        anchor: anchor_sha.to_string(),
+        cd: CopyDetection::Off,
         seed_hash: [0u8; 32],
         replace_refs_hash: [0u8; 32],
         git_config_hash: [0u8; 32],
         rename_budget: 200,
     }
+}
+
+fn gw_upsert(cache: &Cache, k: &GwKey, head_sha: &str, walk: &GroupedWalk) {
+    cache
+        .with_write_txn(|txn| {
+            cache.grouped_walk_upsert(
+                txn,
+                &k.anchor,
+                k.cd,
+                k.seed_hash.as_ref(),
+                k.replace_refs_hash.as_ref(),
+                k.git_config_hash.as_ref(),
+                k.rename_budget,
+                head_sha,
+                walk,
+            )
+        })
+        .expect("upsert");
+}
+
+fn gw_get(
+    cache: &Cache,
+    k: &GwKey,
+    current_head: &str,
+    memo: &mut std::collections::HashSet<gix::ObjectId>,
+    repo: &gix::Repository,
+) -> GroupedWalkResult {
+    cache.grouped_walk_get(
+        &k.anchor,
+        k.cd,
+        k.seed_hash.as_ref(),
+        k.replace_refs_hash.as_ref(),
+        k.git_config_hash.as_ref(),
+        k.rename_budget,
+        current_head,
+        memo,
+        repo,
+    )
 }
 
 // ── Tier 1 tests ─────────────────────────────────────────────────────────────
@@ -169,43 +216,40 @@ fn blob_diff_round_trip_persists_across_connections() {
 
 // ── Tier 3 tests ─────────────────────────────────────────────────────────────
 
-/// An exact-key hit returns the same `GroupedWalk` that was stored.
+/// Schema v4: exact-hit. Store a row with `head_sha = HEAD`, query with the
+/// same HEAD → `ExactHit`.
 #[test]
-fn grouped_walk_exact_hit_returns_same_walk() {
+fn grouped_walk_get_exact_hit() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
     let anchor = rev_parse(dir, "HEAD");
     let head = add_commit(dir, "b.txt", "world\n");
 
     let walk = make_grouped_walk(&anchor, &head);
-    let key = make_grouped_walk_key(&anchor, &head);
+    let key = make_gw_key(&anchor);
 
-    // Write.
-    {
-        let cache = Cache::open(&repo).expect("open");
-        let txn = cache.conn.unchecked_transaction().expect("txn");
-        cache
-            .grouped_walk_replace(&txn, None, &key, &walk)
-            .expect("replace");
-        txn.commit().expect("commit");
-    }
+    let cache = Cache::open(&repo).expect("open");
+    gw_upsert(&cache, &key, &head, &walk);
 
-    // Exact-hit read.
     let cache2 = Cache::open(&repo).expect("reopen");
-    let got = cache2
-        .grouped_walk_get_exact(&key)
-        .expect("exact hit expected");
-
-    assert_eq!(got.anchor_sha, anchor);
-    assert_eq!(got.head_sha, head);
-    assert_eq!(got.commits.len(), 1);
+    let mut memo = std::collections::HashSet::new();
+    match gw_get(&cache2, &key, &head, &mut memo, &repo) {
+        GroupedWalkResult::ExactHit(got) => {
+            assert_eq!(got.anchor_sha, anchor);
+            assert_eq!(got.head_sha, head);
+            assert_eq!(got.commits.len(), 1);
+        }
+        _ => panic!("expected ExactHit"),
+    }
 }
 
-/// An ancestor-hit: store a walk at `head_v1`, then query with `head_v2`
-/// which is a descendant of `head_v1`. The cache returns the cached head
-/// and the walk.
+/// Schema v4: extend-hit via a real gix ancestor check. Store a row at
+/// `head_v1`, query with `head_v2` (a descendant), with the per-session
+/// ancestor memo empty — this exercises `repo.merge_base` and the memo
+/// insertion side-effect.
 #[test]
-fn grouped_walk_ancestor_hit_returns_cached_head_and_walk() {
+fn grouped_walk_get_extend_hit_via_real_gix_ancestor() {
+    use std::str::FromStr;
     let (_td, repo) = init_repo();
     let dir = _td.path();
     let anchor = rev_parse(dir, "HEAD");
@@ -213,81 +257,242 @@ fn grouped_walk_ancestor_hit_returns_cached_head_and_walk() {
     let head_v2 = add_commit(dir, "c.txt", "again\n");
 
     let walk_v1 = make_grouped_walk(&anchor, &head_v1);
-    let key_v1 = make_grouped_walk_key(&anchor, &head_v1);
+    let key = make_gw_key(&anchor);
 
-    // Store walk at head_v1.
-    {
-        let cache = Cache::open(&repo).expect("open");
-        let txn = cache.conn.unchecked_transaction().expect("txn");
-        cache
-            .grouped_walk_replace(&txn, None, &key_v1, &walk_v1)
-            .expect("replace");
-        txn.commit().expect("commit");
-    }
+    let cache = Cache::open(&repo).expect("open");
+    gw_upsert(&cache, &key, &head_v1, &walk_v1);
 
-    // Query with head_v2 (a descendant). Should get ancestor hit.
     let cache2 = Cache::open(&repo).expect("reopen");
-    let result = cache2.grouped_walk_get_ancestor(
-        &anchor,
-        CopyDetection::Off,
-        key_v1.seed_hash.as_ref(),
-        key_v1.replace_refs_hash.as_ref(),
-        key_v1.git_config_hash.as_ref(),
-        key_v1.rename_budget as i64,
-        &head_v2,
-        &repo,
-    );
+    let mut memo = std::collections::HashSet::<gix::ObjectId>::new();
+    let v1_oid = gix::ObjectId::from_str(&head_v1).expect("parse oid");
 
-    let (cached_head, cached_walk) = result.expect("ancestor hit expected");
-    assert_eq!(cached_head, head_v1, "cached head should be the stored head");
-    assert_eq!(cached_walk.anchor_sha, anchor);
+    match gw_get(&cache2, &key, &head_v2, &mut memo, &repo) {
+        GroupedWalkResult::ExtendHit { cached_head, walk } => {
+            assert_eq!(cached_head, head_v1, "cached head must be the stored head");
+            assert_eq!(walk.anchor_sha, anchor);
+        }
+        other => panic!("expected ExtendHit, got {:?}", match other {
+            GroupedWalkResult::ExactHit(_) => "ExactHit",
+            GroupedWalkResult::Miss => "Miss",
+            _ => "?",
+        }),
+    }
+    assert!(
+        memo.contains(&v1_oid),
+        "merge_base success must populate the ancestor memo"
+    );
 }
 
-/// `grouped_walk_replace` with `old_head` set deletes the old row and
-/// inserts the new one atomically.
+/// Schema v4: extend-hit via the memo fast-path. Pre-populate `known_head_ancestors`
+/// with the stored head's oid; the call must succeed without consulting gix.
 #[test]
-fn grouped_walk_replace_evicts_old_head_in_one_txn() {
+fn grouped_walk_get_extend_hit_via_memo_fast_path() {
+    use std::str::FromStr;
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+    let head_v1 = add_commit(dir, "b.txt", "world\n");
+    let head_v2 = add_commit(dir, "c.txt", "again\n");
+
+    let walk_v1 = make_grouped_walk(&anchor, &head_v1);
+    let key = make_gw_key(&anchor);
+
+    let cache = Cache::open(&repo).expect("open");
+    gw_upsert(&cache, &key, &head_v1, &walk_v1);
+
+    let cache2 = Cache::open(&repo).expect("reopen");
+    let v1_oid = gix::ObjectId::from_str(&head_v1).expect("parse oid");
+    let mut memo = std::collections::HashSet::<gix::ObjectId>::new();
+    memo.insert(v1_oid);
+
+    match gw_get(&cache2, &key, &head_v2, &mut memo, &repo) {
+        GroupedWalkResult::ExtendHit { cached_head, .. } => {
+            assert_eq!(cached_head, head_v1);
+        }
+        _ => panic!("expected ExtendHit via memo"),
+    }
+}
+
+/// Schema v4: divergent (non-ancestor) stored head → `Miss`. UPSERT then
+/// overwrites with the new head, leaving one row total.
+#[test]
+fn grouped_walk_get_miss_on_non_ancestor_and_upsert_overwrites() {
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+
+    // Build a divergent branch: `head_b` is on `other`, not an ancestor of `head_a`.
+    let head_a = add_commit(dir, "a.txt", "a-on-main\n");
+    run_git(dir, &["checkout", "-b", "other", &anchor]);
+    let head_b = add_commit(dir, "b.txt", "b-on-other\n");
+    run_git(dir, &["checkout", "main"]);
+
+    let walk_b = make_grouped_walk(&anchor, &head_b);
+    let key = make_gw_key(&anchor);
+
+    let cache = Cache::open(&repo).expect("open");
+    gw_upsert(&cache, &key, &head_b, &walk_b);
+
+    let cache2 = Cache::open(&repo).expect("reopen");
+    let mut memo = std::collections::HashSet::new();
+    match gw_get(&cache2, &key, &head_a, &mut memo, &repo) {
+        GroupedWalkResult::Miss => {}
+        _ => panic!("expected Miss for divergent stored head"),
+    }
+
+    // UPSERT with head_a overwrites the row in place; exactly one row remains.
+    let walk_a = make_grouped_walk(&anchor, &head_a);
+    gw_upsert(&cache2, &key, &head_a, &walk_a);
+
+    let count: i64 = cache2
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM grouped_walk_cache WHERE anchor_sha = ?1",
+            rusqlite::params![&anchor],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(count, 1, "UPSERT must replace, not insert a second row");
+
+    // The new query with head_a should now ExactHit.
+    let mut memo2 = std::collections::HashSet::new();
+    match gw_get(&cache2, &key, &head_a, &mut memo2, &repo) {
+        GroupedWalkResult::ExactHit(got) => assert_eq!(got.head_sha, head_a),
+        _ => panic!("expected ExactHit after overwrite"),
+    }
+}
+
+/// UPSERT idempotency: two calls with different `head_sha` on the same key
+/// tuple leave exactly one row whose `head_sha` is the latest.
+#[test]
+fn grouped_walk_upsert_is_idempotent() {
     let (_td, repo) = init_repo();
     let dir = _td.path();
     let anchor = rev_parse(dir, "HEAD");
     let head_v1 = add_commit(dir, "b.txt", "v1\n");
     let head_v2 = add_commit(dir, "c.txt", "v2\n");
 
-    let walk_v1 = make_grouped_walk(&anchor, &head_v1);
-    let walk_v2 = make_grouped_walk(&anchor, &head_v2);
-    let key_v1 = make_grouped_walk_key(&anchor, &head_v1);
-    let key_v2 = make_grouped_walk_key(&anchor, &head_v2);
+    let key = make_gw_key(&anchor);
+    let cache = Cache::open(&repo).expect("open");
+    gw_upsert(&cache, &key, &head_v1, &make_grouped_walk(&anchor, &head_v1));
+    gw_upsert(&cache, &key, &head_v2, &make_grouped_walk(&anchor, &head_v2));
 
-    // Store v1.
-    {
-        let cache = Cache::open(&repo).expect("open");
-        let txn = cache.conn.unchecked_transaction().expect("txn");
-        cache
-            .grouped_walk_replace(&txn, None, &key_v1, &walk_v1)
-            .expect("replace v1");
-        txn.commit().expect("commit");
+    let count: i64 = cache
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM grouped_walk_cache",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(count, 1);
+
+    let stored_head: String = cache
+        .conn
+        .query_row(
+            "SELECT head_sha FROM grouped_walk_cache",
+            [],
+            |r| r.get(0),
+        )
+        .expect("head");
+    assert_eq!(stored_head, head_v2);
+}
+
+/// Cross-handle hit: two `Cache` handles against the same DB path observe
+/// each other's writes (acceptance signal for shared common_dir).
+#[test]
+fn cross_handle_grouped_walk_hit_on_shared_db() {
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let anchor = rev_parse(dir, "HEAD");
+    let head = add_commit(dir, "b.txt", "world\n");
+
+    let key = make_gw_key(&anchor);
+    let walk = make_grouped_walk(&anchor, &head);
+
+    let cache_a = Cache::open(&repo).expect("open a");
+    gw_upsert(&cache_a, &key, &head, &walk);
+    drop(cache_a);
+
+    let cache_b = Cache::open(&repo).expect("open b");
+    let mut memo = std::collections::HashSet::new();
+    match gw_get(&cache_b, &key, &head, &mut memo, &repo) {
+        GroupedWalkResult::ExactHit(got) => assert_eq!(got.head_sha, head),
+        _ => panic!("expected cross-handle ExactHit on shared DB"),
     }
+}
 
-    // Replace v1 with v2 — old_head points at v1.
-    {
-        let cache = Cache::open(&repo).expect("open");
-        let txn = cache.conn.unchecked_transaction().expect("txn");
-        cache
-            .grouped_walk_replace(&txn, Some(&head_v1), &key_v2, &walk_v2)
-            .expect("replace v2");
-        txn.commit().expect("commit");
+/// Concurrent `Cache::open` from two threads against the same path must both
+/// succeed and the schema must be consistent (covers `create_dir_all` +
+/// bootstrap race).
+#[test]
+fn concurrent_cache_open_succeeds() {
+    let (_td, repo) = init_repo();
+    drop(repo);
+    let path = _td.path().to_owned();
+
+    let p1 = path.clone();
+    let p2 = path.clone();
+    let t1 = std::thread::spawn(move || {
+        let r = gix::open(&p1).expect("open repo 1");
+        Cache::open(&r).is_ok()
+    });
+    let t2 = std::thread::spawn(move || {
+        let r = gix::open(&p2).expect("open repo 2");
+        Cache::open(&r).is_ok()
+    });
+    assert!(t1.join().expect("thread 1"));
+    assert!(t2.join().expect("thread 2"));
+
+    // Schema is consistent: user_version == SCHEMA_VERSION.
+    let repo = gix::open(&path).expect("reopen");
+    let cache = Cache::open(&repo).expect("final open");
+    let ver: i32 = cache
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .expect("version");
+    assert_eq!(ver, SCHEMA_VERSION);
+}
+
+/// No SQLITE_BUSY stress: spawn N=4 writer threads, each running
+/// `with_write_txn` calls; all must complete cleanly under the configured
+/// busy_timeout.
+#[test]
+fn concurrent_writers_no_sqlite_busy_stress() {
+    let (_td, repo) = init_repo();
+    let dir = _td.path();
+    let head = rev_parse(dir, "HEAD");
+    let _ = Cache::open(&repo).expect("bootstrap");
+    drop(repo);
+
+    let n: usize = 4;
+    let iters: usize = 25;
+    let path = dir.to_owned();
+
+    let handles: Vec<_> = (0..n)
+        .map(|tid| {
+            let path = path.clone();
+            let head = head.clone();
+            std::thread::spawn(move || -> Result<()> {
+                let r = gix::open(&path).expect("open repo");
+                let cache = Cache::open(&r).expect("open cache");
+                for i in 0..iters {
+                    let parent = format!("{:040x}", tid * 10000 + i);
+                    cache.with_write_txn(|txn| {
+                        cache.name_status_put_batch(
+                            txn,
+                            &[(&parent, &head, CopyDetection::Off,
+                               vec![NS::Added { path: "x.rs".to_string() }])],
+                        )
+                    })?;
+                }
+                Ok(())
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("thread panic").expect("no SQLITE_BUSY");
     }
-
-    // v1 must be gone; v2 must be present.
-    let cache3 = Cache::open(&repo).expect("reopen");
-    assert!(
-        cache3.grouped_walk_get_exact(&key_v1).is_none(),
-        "old row must be evicted"
-    );
-    let got = cache3
-        .grouped_walk_get_exact(&key_v2)
-        .expect("new row must exist");
-    assert_eq!(got.head_sha, head_v2);
 }
 
 // ── Schema / version tests ────────────────────────────────────────────────────

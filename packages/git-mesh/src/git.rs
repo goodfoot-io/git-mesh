@@ -156,6 +156,15 @@ pub(crate) fn common_dir(repo: &gix::Repository) -> &Path {
     repo.common_dir()
 }
 
+/// Shared cache directory rooted at the common git directory.
+/// For the main worktree, `common_dir == git_dir`, so the path is identical
+/// to `git_dir().join("mesh").join("cache")` — no path change for the main
+/// worktree.  For linked worktrees, `common_dir` points at the main `.git/`,
+/// so all worktrees converge on one physical directory.
+pub(crate) fn cache_dir(repo: &gix::Repository) -> std::path::PathBuf {
+    common_dir(repo).join("mesh").join("cache")
+}
+
 /// Write raw bytes as a blob and return its hex OID.
 pub(crate) fn write_blob_bytes(repo: &gix::Repository, bytes: &[u8]) -> Result<String> {
     let id = repo

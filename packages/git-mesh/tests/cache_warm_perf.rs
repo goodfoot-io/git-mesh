@@ -112,11 +112,11 @@ fn clear_sqlite_cache(repo: &Path) {
 
 struct StaleResult {
     elapsed: Duration,
-    grouped_walk_cache_hits: u64,
+    grouped_walk_exact_hits: u64,
 }
 
 /// Run `git mesh stale` once with the given `GIT_MESH_CACHE` value.
-/// Returns elapsed wall-clock time and the `session.grouped-walk-cache-hits`
+/// Returns elapsed wall-clock time and the `session.grouped-walk-exact-hits`
 /// counter extracted from `GIT_MESH_PERF=1` stderr output.
 fn run_stale(repo: &Path, cache_val: &str) -> StaleResult {
     let t = Instant::now();
@@ -142,9 +142,9 @@ fn run_stale(repo: &Path, cache_val: &str) -> StaleResult {
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let grouped_walk_cache_hits = parse_perf_counter(&stderr, "session.grouped-walk-cache-hits");
+    let grouped_walk_exact_hits = parse_perf_counter(&stderr, "session.grouped-walk-exact-hits");
 
-    StaleResult { elapsed, grouped_walk_cache_hits }
+    StaleResult { elapsed, grouped_walk_exact_hits }
 }
 
 fn parse_perf_counter(stderr: &str, label: &str) -> u64 {
@@ -166,7 +166,7 @@ fn sample_stale(repo: &Path, cache_val: &str, n: u32) -> (Duration, u64) {
     for _ in 0..n {
         let r = run_stale(repo, cache_val);
         total_elapsed += r.elapsed;
-        total_hits += r.grouped_walk_cache_hits;
+        total_hits += r.grouped_walk_exact_hits;
     }
     (total_elapsed / n, total_hits)
 }

@@ -508,13 +508,12 @@ pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Ve
     crate::perf::counter("session.pass1-ms", state.session.pass1_ms);
     crate::perf::counter("session.rename-trail-hits", state.session.rename_trail_hits);
     crate::perf::counter("session.rename-trail-misses", state.session.rename_trail_misses);
-    crate::perf::counter("session.grouped-walk-cache-hits", state.session.grouped_walk_cache_hits);
-    crate::perf::counter("session.grouped-walk-ancestor-hits", state.session.grouped_walk_ancestor_hits);
+    crate::perf::counter("session.grouped-walk-exact-hits", state.session.grouped_walk_exact_hits);
+    crate::perf::counter("session.grouped-walk-extend-hits", state.session.grouped_walk_extend_hits);
     crate::perf::counter("session.name-status-hits", state.session.name_status_hits);
     crate::perf::counter("session.name-status-misses", state.session.name_status_misses);
     crate::perf::counter("session.blob-diff-hits", state.session.blob_diff_hits);
     crate::perf::counter("session.blob-diff-misses", state.session.blob_diff_misses);
-    crate::perf::counter("session.grouped-walk-hits-persistent", state.session.grouped_walk_hits_persistent);
     crate::perf::counter("session.grouped-walk-misses-persistent", state.session.grouped_walk_misses_persistent);
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
     crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
