@@ -661,6 +661,17 @@ fn stale_meshes_inner(
     crate::perf::counter("session.rename-trail-misses", state.session.rename_trail_misses);
     crate::perf::counter("session.grouped-walk-hits", state.session.grouped_walk_hits);
     crate::perf::counter("session.grouped-walk-misses", state.session.grouped_walk_misses);
+    crate::perf::counter("session.walk-bloom-skips", state.session.walk_bloom_skips);
+    crate::perf::counter(
+        "session.walk-bloom-false-positives",
+        state.session.walk_bloom_false_positives,
+    );
+    crate::perf::counter("session.walk-tree-diffs", state.session.walk_tree_diffs);
+    crate::perf::counter("session.walk-commits-visited", state.session.walk_commits_visited);
+    crate::perf::counter(
+        "session.reverse-index-build-ms",
+        state.session.reverse_index_build_ms,
+    );
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
     crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
     crate::perf::counter("session.filter-attr-hits", state.session.filter_attr_hits);

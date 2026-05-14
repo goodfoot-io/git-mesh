@@ -38,6 +38,7 @@
 
 use crate::Result;
 use crate::git;
+use crate::resolver::bloom::CommitGraphBloom;
 use crate::resolver::cache::{Cache, GroupedWalkKey, Kind, Outcome, RenameTrailKey};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
@@ -144,6 +145,22 @@ impl AnchorReverseIndex {
     }
 }
 
+/// Output of the single reverse-indexed HEAD walk.
+///
+/// Produced by [`ResolveSession::build_reverse_walk`] and consumed by
+/// Group 3's wiring into the existing anchor classifier.
+#[allow(dead_code)]
+pub(crate) struct ReverseWalkOutput {
+    /// HEAD oid at walk time.
+    pub(crate) head_sha: String,
+    /// Per-anchor commit deltas (oldest-first), keyed by `(mesh_name, anchor_id)`.
+    ///
+    /// Each vec contains only the commits that touch that anchor's path,
+    /// including commits where the path was renamed (the entries include
+    /// the `Renamed` NS variant so downstream consumers can follow the trail).
+    pub(crate) per_anchor_deltas: HashMap<(String, String), Vec<CommitDelta>>,
+}
+
 /// Engine-wide shared state: one entry per distinct anchor commit.
 pub(crate) struct ResolveSession {
     walks: HashMap<(String, CopyDetection), GroupedWalk>,
@@ -228,6 +245,16 @@ pub(crate) struct ResolveSession {
     /// Constructed once per `stale_meshes` run by [`AnchorReverseIndex::from_meshes`];
     /// `None` when no reverse-indexed walk is active.
     pub(crate) reverse_index: Option<AnchorReverseIndex>,
+    /// Reverse-indexed walk: commits where Bloom said "definitely no tracked path changed".
+    pub(crate) walk_bloom_skips: u64,
+    /// Reverse-indexed walk: paths Bloom said "maybe" but tree-diff showed unchanged.
+    pub(crate) walk_bloom_false_positives: u64,
+    /// Reverse-indexed walk: commits that ran a tree-diff.
+    pub(crate) walk_tree_diffs: u64,
+    /// Reverse-indexed walk: total commits visited.
+    pub(crate) walk_commits_visited: u64,
+    /// Reverse-indexed walk: wall-clock ms to build the AnchorReverseIndex.
+    pub(crate) reverse_index_build_ms: u64,
 }
 
 impl ResolveSession {
@@ -269,6 +296,11 @@ impl ResolveSession {
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
             reverse_index: None,
+            walk_bloom_skips: 0,
+            walk_bloom_false_positives: 0,
+            walk_tree_diffs: 0,
+            walk_commits_visited: 0,
+            reverse_index_build_ms: 0,
         }
     }
 
@@ -379,6 +411,256 @@ impl ResolveSession {
             .iter()
             .find_map(|((sha, _), walk)| (sha == anchor_sha).then_some(walk))
     }
+
+    /// Build the reverse-indexed walk: one pass from HEAD, Bloom-gated,
+    /// that produces per-anchor commit deltas for every anchor in every mesh.
+    ///
+    /// The walk tracks per-anchor current paths through rename chains:
+    /// when a commit renames an anchor's path from A to B, subsequent commits
+    /// query the Bloom filter for B (the new name).
+    ///
+    /// Terminates when every `anchor_sha` in the reverse index has been observed
+    /// (passed in the walk) or the walk reaches the root.
+    ///
+    /// ## Fail-closed
+    ///
+    /// Returns `Err` if the repository does not have a commit-graph file with
+    /// changed-path Bloom filters. No silent fallback — per `<fail-closed>`.
+    #[allow(dead_code)]
+    pub(crate) fn build_reverse_walk(
+        &mut self,
+        repo: &gix::Repository,
+        meshes: &[(String, crate::types::Mesh)],
+    ) -> Result<ReverseWalkOutput> {
+        // 1. Build the reverse index.
+        let t0 = std::time::Instant::now();
+        let reverse_index = AnchorReverseIndex::from_meshes(meshes);
+        self.reverse_index_build_ms = t0.elapsed().as_millis() as u64;
+
+        // 2. Open the Bloom filter (fail-closed — no silent fallback).
+        let bloom = CommitGraphBloom::open(repo)
+            .map_err(crate::Error::Git)?;
+
+        // 3. Get HEAD oid.
+        let head_sha = git::head_oid(repo)?;
+        let head_oid = gix::ObjectId::from_hex(head_sha.as_bytes())
+            .map_err(|e| crate::Error::Git(format!("parse HEAD: {e}")))?;
+
+        // 4. Initialize per-anchor state.
+        let mut per_anchor: Vec<AnchorWalkState> = Vec::new();
+        for (mesh_name, mesh) in meshes {
+            for (anchor_id, anchor) in &mesh.anchors_v2 {
+                let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                per_anchor.push(AnchorWalkState {
+                    mesh_name: mesh_name.clone(),
+                    anchor_id: anchor_id.clone(),
+                    anchor_sha: sha,
+                    current_path: anchor.path.as_bytes().to_vec(),
+                    deltas: Vec::new(),
+                    anchor_passed: false,
+                });
+            }
+        }
+
+        // 5. Walk from HEAD reverse-chronologically.
+        let mut stop_set: HashSet<gix::ObjectId> = reverse_index.anchor_shas;
+
+        let walk = repo
+            .rev_walk([head_oid])
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            ))
+            .all()
+            .map_err(|e| crate::Error::Git(format!("rev walk: {e}")))?;
+
+        for info in walk {
+            let info = match info {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
+            let commit_oid = info.id;
+
+            // Check stop condition: remove this commit from the set of
+            // anchor_shas not yet observed. Mark the matching anchor as
+            // passed so we stop recording new deltas for it.
+            if stop_set.remove(&commit_oid) {
+                for state in &mut per_anchor {
+                    if state.anchor_sha == commit_oid {
+                        state.anchor_passed = true;
+                    }
+                }
+            }
+            if stop_set.is_empty() {
+                break;
+            }
+
+            self.walk_commits_visited += 1;
+
+            // Get file-level position for Bloom filter query.
+            let Some(commit_pos) = bloom.commit_position(&commit_oid) else {
+                // Commit is not in this commit-graph file; skip (cannot
+                // Bloom-check). This is safe — the commit-graph covers
+                // reachable commits; commits outside it are typically
+                // unreachable or very recent loose objects.
+                continue;
+            };
+
+            // Collect unique tracked paths across all active (non-passed)
+            // anchors into a single set for Bloom querying.
+            let mut bloom_check_paths: Vec<Vec<u8>> = Vec::new();
+            let mut seen_paths: HashSet<Vec<u8>> = HashSet::new();
+            for state in &per_anchor {
+                if state.anchor_passed {
+                    continue;
+                }
+                if seen_paths.insert(state.current_path.clone()) {
+                    bloom_check_paths.push(state.current_path.clone());
+                }
+            }
+
+            // Query the Bloom filter for each tracked path.
+            let mut bloom_positives: Vec<Vec<u8>> = Vec::new();
+            for path in &bloom_check_paths {
+                if bloom.maybe_contains(commit_pos, path) {
+                    bloom_positives.push(path.clone());
+                }
+            }
+
+            if bloom_positives.is_empty() {
+                self.walk_bloom_skips += 1;
+                continue;
+            }
+
+            // Bloom says "maybe" for at least one path — run tree-diff.
+            self.walk_tree_diffs += 1;
+
+            let commit_sha_str = commit_oid.to_string();
+            let commit_obj = repo
+                .find_commit(commit_oid)
+                .map_err(|e| crate::Error::Git(format!("find commit {commit_oid}: {e}")))?;
+            let parent_oid = match commit_obj.parent_ids().next() {
+                Some(p) => p.detach(),
+                None => {
+                    // Root commit — nothing older to diff against.
+                    continue;
+                }
+            };
+            let parent_sha_str = parent_oid.to_string();
+
+            // Run name_status with CopyDetection::Off (rename detection
+            // enabled, copy detection off).
+            let mut local_warnings: Vec<String> = Vec::new();
+            let entries = walker::name_status(
+                repo,
+                &parent_sha_str,
+                &commit_sha_str,
+                CopyDetection::Off,
+                &mut local_warnings,
+            )?;
+
+            // Count false positives: paths Bloom said "maybe" but that
+            // don't appear in the actual tree-diff result.
+            let actual_paths: HashSet<String> = entries
+                .iter()
+                .flat_map(|e| {
+                    let mut paths = Vec::new();
+                    match e {
+                        NS::Added { path }
+                        | NS::Modified { path }
+                        | NS::Deleted { path } => paths.push(path.clone()),
+                        NS::Renamed { from, to } | NS::Copied { from, to } => {
+                            paths.push(from.clone());
+                            paths.push(to.clone());
+                        }
+                    }
+                    paths
+                })
+                .collect();
+
+            for bp in &bloom_positives {
+                let bp_str = String::from_utf8_lossy(bp).to_string();
+                if !actual_paths.contains(&bp_str) {
+                    self.walk_bloom_false_positives += 1;
+                }
+            }
+
+            // Fan out to anchors whose tracked path was affected.
+            let delta = CommitDelta {
+                parent: parent_sha_str,
+                commit: commit_sha_str,
+                entries: entries.clone(),
+            };
+
+            'anchor_loop: for state in &mut per_anchor {
+                if state.anchor_passed {
+                    continue;
+                }
+
+                // Check each entry against this anchor's current tracked path.
+                for entry in &entries {
+                    let affects = match entry {
+                        NS::Added { path }
+                        | NS::Modified { path }
+                        | NS::Deleted { path } => {
+                            path.as_bytes() == state.current_path.as_slice()
+                        }
+                        NS::Renamed { from, to: _ } | NS::Copied { from, to: _ } => {
+                            from.as_bytes() == state.current_path.as_slice()
+                        }
+                    };
+
+                    if affects {
+                        // Update tracked path for renames.
+                        if let NS::Renamed { from: _, to }
+                        | NS::Copied { from: _, to } = entry
+                        {
+                            state.current_path = to.as_bytes().to_vec();
+                        }
+
+                        state.deltas.push(delta.clone());
+                        continue 'anchor_loop;
+                    }
+                }
+            }
+        }
+
+        // 6. Build the output. Reverse each anchor's deltas to oldest-first
+        // order (the walk produced newest-first).
+        let mut per_anchor_deltas: HashMap<(String, String), Vec<CommitDelta>> =
+            HashMap::new();
+        for state in per_anchor {
+            let mut deltas = state.deltas;
+            deltas.reverse();
+            per_anchor_deltas.insert((state.mesh_name, state.anchor_id), deltas);
+        }
+
+        Ok(ReverseWalkOutput {
+            head_sha,
+            per_anchor_deltas,
+        })
+    }
+}
+
+/// Per-anchor walk state maintained during the reverse-indexed walk.
+///
+/// Tracks the current path (updated through renames) and whether the
+/// anchor_sha has been passed in the walk.
+struct AnchorWalkState {
+    mesh_name: String,
+    anchor_id: String,
+    anchor_sha: gix::ObjectId,
+    /// The path we are currently tracking for this anchor. Updated when
+    /// a rename/copy entry matches.
+    current_path: Vec<u8>,
+    /// Accumulated commit deltas (newest-first during the walk; reversed
+    /// to oldest-first in the output).
+    deltas: Vec<CommitDelta>,
+    /// Set to true once the walk passes this anchor's anchor_sha. After
+    /// that point, no more deltas are recorded for this anchor.
+    anchor_passed: bool,
 }
 
 #[allow(clippy::too_many_arguments)]

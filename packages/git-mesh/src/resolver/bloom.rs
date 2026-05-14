@@ -25,10 +25,13 @@
 //!
 //! No per-commit type byte; the filter data begins directly at the offset.
 
+use gix::ObjectId;
 use std::path::PathBuf;
 
 /// A reader for the changed-path Bloom filter (BIDX/BDAT chunks) of a
-/// single commit-graph file.
+/// single commit-graph file. Also provides OID-to-position lookup using
+/// the OID fan (OIDF) and OID lookup (OIDL) chunks, avoiding the need
+/// to open a separate `gix_commitgraph::File`.
 pub(crate) struct CommitGraphBloom {
     data: memmap2::Mmap,
     bidx_start: usize,
@@ -39,6 +42,12 @@ pub(crate) struct CommitGraphBloom {
     num_commits: u32,
     #[allow(dead_code)]
     path: PathBuf,
+    /// Offset of the OID fan-out table (OIDF chunk).
+    oidf_offset: usize,
+    /// Offset of the OID lookup table (OIDL chunk).
+    oidl_offset: usize,
+    /// Hash length in bytes (20 for SHA-1, 32 for SHA-256).
+    hash_len: usize,
 }
 
 impl CommitGraphBloom {
@@ -122,12 +131,29 @@ impl CommitGraphBloom {
         let bits_per_entry =
             u32::from_be_bytes(data[bdat_range.start + 8..bdat_range.start + 12].try_into().unwrap());
 
-        // ----- Number of commits from OIDF fan table -----
+        // ----- OID fan table (OIDF) for position lookup -----
         let oidf_range = chunks.usize_offset_by_id(*b"OIDF").map_err(|_| {
             "Commit graph missing OIDF chunk".to_string()
         })?;
         let num_commits =
             u32::from_be_bytes(data[oidf_range.start + 255 * 4..oidf_range.start + 256 * 4].try_into().unwrap());
+
+        // ----- OID lookup table (OIDL) for position lookup -----
+        let oidl_range = chunks.usize_offset_by_id(*b"OIDL").map_err(|_| {
+            "Commit graph missing OIDL chunk".to_string()
+        })?;
+
+        // ----- Hash length from file header -----
+        let hash_len: usize = match data[5] {
+            1 => 20, // SHA-1
+            2 => 32, // SHA-256
+            v => {
+                return Err(format!(
+                    "Unsupported commit-graph hash version {v} at {}",
+                    path.display()
+                ));
+            }
+        };
 
         Ok(Self {
             data,
@@ -137,6 +163,9 @@ impl CommitGraphBloom {
             bits_per_entry,
             num_commits,
             path,
+            oidf_offset: oidf_range.start,
+            oidl_offset: oidl_range.start,
+            hash_len,
         })
     }
 
@@ -205,6 +234,63 @@ impl CommitGraphBloom {
         }
 
         true
+    }
+
+    /// Look up the file-level (lexicographical) position of `oid` within
+    /// this commit-graph file.
+    ///
+    /// Returns `Some(pos)` where `pos` is a `u32` suitable for passing
+    /// to `maybe_contains`. Returns `None` when the OID is not found in
+    /// this commit-graph file.
+    #[allow(dead_code)]
+    pub(crate) fn commit_position(&self, oid: &ObjectId) -> Option<u32> {
+        let bytes = oid.as_bytes();
+        let first_byte = bytes[0] as usize;
+        let fan_base = self.oidf_offset;
+
+        // Fan-out table gives the index range for this prefix byte.
+        let lo = if first_byte == 0 {
+            0u32
+        } else {
+            let start = fan_base + (first_byte - 1) * 4;
+            u32::from_be_bytes(
+                self.data[start..start + 4]
+                    .try_into()
+                    .expect("fan table entry"),
+            )
+        };
+        let hi = {
+            let start = fan_base + first_byte * 4;
+            u32::from_be_bytes(
+                self.data[start..start + 4]
+                    .try_into()
+                    .expect("fan table entry"),
+            )
+        };
+
+        if lo >= hi {
+            return None;
+        }
+
+        // Binary search within OIDL chunk range [lo, hi). The OIDL chunk
+        // is a sorted array of hash_len-byte OIDs.
+        let oidl_base = self.oidl_offset;
+        let mut l = lo;
+        let mut r = hi;
+        while l < r {
+            let mid = l + (r - l) / 2;
+            let mid_off = oidl_base + (mid as usize) * self.hash_len;
+            if mid_off + self.hash_len > self.data.len() {
+                return None;
+            }
+            let mid_oid = &self.data[mid_off..mid_off + self.hash_len];
+            match bytes.cmp(mid_oid) {
+                std::cmp::Ordering::Less => r = mid,
+                std::cmp::Ordering::Greater => l = mid + 1,
+                std::cmp::Ordering::Equal => return Some(mid),
+            }
+        }
+        None
     }
 }
 
