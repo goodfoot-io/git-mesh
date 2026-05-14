@@ -1462,7 +1462,7 @@ mod tests {
     // resolve_targets helpers and tests
     // -----------------------------------------------------------------------
 
-    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo, RefUpdate};
+    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo};
     use crate::mesh::catalog::{self, CATALOG_REF};
     use crate::mesh::path_index::ref_updates_for_mesh;
     use crate::types::Anchor;

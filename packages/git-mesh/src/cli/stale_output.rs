@@ -1510,7 +1510,7 @@ pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh_name: &str) ->
 mod tests {
     use super::*;
     use crate::cli::StaleFormat;
-    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo, RefUpdate};
+    use crate::git::{apply_ref_transaction_repo, resolve_ref_oid_optional_repo};
     use crate::mesh::catalog::{self, CATALOG_REF};
     use crate::mesh::path_index::ref_updates_for_mesh;
     use crate::types::{Anchor, AnchorExtent, MeshConfig};
