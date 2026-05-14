@@ -13,6 +13,9 @@ use crate::git;
 use crate::perf;
 use crate::resolver::bloom::CommitGraphBloom;
 use crate::resolver::cache::Cache;
+use crate::resolver::timeline::{
+    PathInterner, PathTimeline, PathTimelineKey, build_timeline,
+};
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
 use std::collections::{HashMap, HashSet};
@@ -286,6 +289,12 @@ pub(crate) struct ResolveSession {
     /// Warnings accumulated during the reverse-indexed walk (rename budget
     /// notes, etc.). Forwarded to `EngineState::finish` for stderr output.
     pub(crate) warnings: Vec<String>,
+    /// Phase 1: per-session `PathTimeline` cache keyed by
+    /// `(path, head_blob_oid, copy_detection)`. Multiple anchors that share
+    /// the same path history reuse the same timeline.
+    pub(crate) timelines: HashMap<PathTimelineKey, Arc<PathTimeline>>,
+    /// Phase 1: shared path-byte interner used while building timelines.
+    pub(crate) timeline_paths: PathInterner,
 }
 
 impl ResolveSession {
@@ -320,6 +329,8 @@ impl ResolveSession {
             walk_commits_visited: 0,
             reverse_index_build_ms: 0,
             warnings: Vec::new(),
+            timelines: HashMap::new(),
+            timeline_paths: PathInterner::new(),
         }
     }
 
@@ -656,40 +667,67 @@ pub(crate) fn resolve_at_head_shared(
     // `session.reverse_walk_output` and then freely access
     // `session.blob_oid_memo` during the hunk loop.
     let (head_sha, deltas) = {
-        let output = session.reverse_walk_output.as_ref()
+        let output = session
+            .reverse_walk_output
+            .as_ref()
             .ok_or_else(|| crate::Error::Git("reverse walk not built".into()))?;
         let head_sha = output.head_sha.clone();
-        let deltas = output.per_anchor_deltas
+        let deltas = output
+            .per_anchor_deltas
             .get(&(mesh_name.to_string(), anchor_id.to_string()))
             .cloned()
             .unwrap_or_default();
         (head_sha, deltas)
     };
-    let mut loc = walker::Tracked {
-        path: r.path.clone(),
-        start: rstart,
-        end: rend,
+
+    // Phase 1: route projection through a `PathTimeline`. The cache key is
+    // path-history identity — `(path, head_blob_oid, copy_detection)` — not
+    // the anchor commit. Anchors that observe the same history share one
+    // timeline.
+    //
+    // Copy detection is keyed off the anchor's mesh config when available;
+    // when it isn't threaded through, we fall back to the most permissive
+    // setting used by the reverse-indexed walk. The walk recorded entries
+    // under the most-permissive copy_detection in `build_reverse_walk`, so
+    // using that here is safe.
+    // The reverse-indexed walk recorded entries under the most-permissive
+    // copy_detection across all meshes; using SameCommit here is a safe
+    // default for cache identity since the entry stream already reflects
+    // any wider detection the walk performed.
+    let copy_detection = CopyDetection::SameCommit;
+
+    let head_blob_oid: Option<gix::ObjectId> = git::path_blob_at(repo, &head_sha, &r.path)
+        .ok()
+        .and_then(|s| gix::ObjectId::from_hex(s.as_bytes()).ok());
+
+    let key = PathTimelineKey {
+        path: Arc::from(r.path.as_bytes()),
+        head_blob_oid,
+        copy_detection,
     };
-    // Iterate shared per-commit deltas; only the hunk math is per-anchor.
-    for delta in &deltas {
-        // Commits with empty entries have no affect on this anchor;
-        // advance_with_entries would return Unchanged immediately.
-        if delta.entries.is_empty() {
-            continue;
-        }
-        match walker::advance_with_entries(
+
+    let timeline_arc: Arc<PathTimeline> = if let Some(existing) = session.timelines.get(&key) {
+        Arc::clone(existing)
+    } else {
+        let tl = build_timeline(
             repo,
-            &delta.parent,
-            &delta.commit,
-            &loc,
-            &delta.entries,
-            Some(&mut session.blob_oid_memo),
-        )? {
-            walker::Change::Unchanged => {}
-            walker::Change::Deleted => return Ok(None),
-            walker::Change::Updated(next) => loc = next,
-        }
-    }
+            r.path.as_bytes(),
+            &deltas,
+            head_blob_oid,
+            copy_detection,
+            &mut session.timeline_paths,
+            &mut session.blob_oid_memo,
+        )?;
+        let arc = Arc::new(tl);
+        session.timelines.insert(key, Arc::clone(&arc));
+        arc
+    };
+
+    let loc = match timeline_arc.project_by_hunk_replay(rstart, rend) {
+        Some(loc) => loc,
+        None => return Ok(None),
+    };
+
     if git::path_blob_at(repo, &head_sha, &loc.path).is_err() {
         return Ok(None);
     }
@@ -757,6 +795,8 @@ mod tests {
             reverse_index_build_ms: 0,
             warnings: Vec::new(),
             anchors_skipped_clean_head: 50,
+            timelines: HashMap::new(),
+            timeline_paths: PathInterner::new(),
         };
 
         let total = session.anchors_total();
@@ -801,6 +841,8 @@ mod tests {
             reverse_index_build_ms: 0,
             warnings: Vec::new(),
             anchors_skipped_clean_head: 40,
+            timelines: HashMap::new(),
+            timeline_paths: PathInterner::new(),
         };
 
         let total = session.anchors_total();

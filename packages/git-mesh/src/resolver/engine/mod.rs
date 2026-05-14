@@ -628,6 +628,7 @@ pub(crate) fn resolve_named_meshes(
         "session.reverse-index-build-ms",
         state.session.reverse_index_build_ms,
     );
+    crate::resolver::timeline::emit_counters();
     state.finish(repo);
     Ok(out)
 }
@@ -638,6 +639,7 @@ fn stale_meshes_inner(
     enable_trace: bool,
 ) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
     crate::perf::reset_subroutine_counters();
+    crate::resolver::timeline::reset_counters();
     let mesh_pairs: Vec<(String, Mesh)> = {
         let catalog = {
             let _perf = crate::perf::span("resolver.read-catalog");
@@ -697,6 +699,7 @@ fn stale_meshes_inner(
     );
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
     crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
+    crate::resolver::timeline::emit_counters();
     crate::perf::counter("session.filter-attr-hits", state.session.filter_attr_hits);
     crate::perf::counter("session.filter-attr-misses", state.session.filter_attr_misses);
     // Category 1: hot-path subroutine counters. `filter-attr-*` come from
