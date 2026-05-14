@@ -33,7 +33,8 @@ impl TestRepo {
 
     /// New repo seeded with a single initial commit containing a
     /// 10-line `file1.txt` and a 16-line `file2.txt`. Convenient for
-    /// staging-add tests that need a real anchor.
+    /// staging-add tests that need a real anchor. Includes a commit-graph
+    /// with changed-path Bloom filters for the reverse-indexed walker.
     pub fn seeded() -> Result<Self> {
         let me = Self::new()?;
         me.write_file(
@@ -45,6 +46,7 @@ impl TestRepo {
             "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\n",
         )?;
         me.commit_all("initial commit")?;
+        me.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
         Ok(me)
     }
 
@@ -184,6 +186,15 @@ impl TestRepo {
             String::from_utf8_lossy(&out.stderr)
         );
         Ok(String::from_utf8(out.stdout)?)
+    }
+    /// Write a commit-graph with changed-path Bloom filters for all
+    /// reachable commits.  Required before calling any resolver entry
+    /// point (`resolve_mesh`, `resolve_anchor`, `stale_meshes`) — the
+    /// reverse-indexed walk fails closed without a commit-graph.
+    #[allow(dead_code)]
+    pub fn write_commit_graph(&self) -> Result<()> {
+        self.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
+        Ok(())
     }
 }
 

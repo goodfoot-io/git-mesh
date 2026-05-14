@@ -31,6 +31,7 @@ fn since_filters_ranges_anchored_before_cutoff() -> Result<()> {
     set_why(&gix, "new", "new")?;
     commit_mesh(&gix, "new")?;
 
+    repo.write_commit_graph()?;
     let later_oid = gix::ObjectId::from_str(&later)?;
     let opts = EngineOptions {
         since: Some(later_oid),
@@ -56,6 +57,7 @@ fn since_head_includes_anchors_at_head() -> Result<()> {
     git_mesh::staging::append_add(&gix, "m", "a.txt", 1, 1, Some(&head))?;
     set_why(&gix, "m", "x")?;
     commit_mesh(&gix, "m")?;
+    repo.write_commit_graph()?;
     let opts = EngineOptions {
         since: Some(gix::ObjectId::from_str(&head)?),
         ..EngineOptions::full()

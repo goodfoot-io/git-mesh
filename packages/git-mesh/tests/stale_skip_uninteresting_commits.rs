@@ -1,11 +1,11 @@
-//! Integration test for the candidate-path commit-skipping optimization
-//! in `ResolveSession`. Builds a realistic repo with many commits where
-//! only a handful touch the anchored path, then resolves the mesh and
-//! asserts:
+//! Integration test for the Bloom-filter commit-skipping optimization
+//! in the reverse-indexed walk (`ResolveSession::build_reverse_walk`).
+//! Builds a realistic repo with many commits where only a handful touch
+//! the anchored path, then resolves the mesh and asserts:
 //!
 //! 1. The resolution outcome (status, current path/extent) matches what
 //!    we'd get without any optimization (correctness baseline).
-//! 2. The session counters confirm most commits were skipped.
+//! 2. The Bloom-based session counters confirm most commits were skipped.
 
 mod support;
 
@@ -48,6 +48,11 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
     set_why(&gix, "demo/mesh", "demo")?;
     commit_mesh(&gix, "demo/mesh")?;
 
+    // Write a commit-graph with changed-path Bloom filters so the
+    // reverse-indexed walk can use Bloom gating. Must be done after
+    // the mesh commit so the mesh ref is included in `--reachable`.
+    repo.write_commit_graph()?;
+
     let resolved = resolve_mesh(
         &gix,
         "demo/mesh",
@@ -68,10 +73,10 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
     // The lines we anchored (1-5) were untouched — still at 1-5.
     assert_eq!(anchor.status, AnchorStatus::Fresh);
 
-    // Now resolve again and check that the session-level skip counter
-    // reports most commits skipped. We use the CLI with GIT_MESH_PERF=1
-    // to read counters out of stderr, since the public API doesn't
-    // expose them directly.
+    // Now run `stale` via CLI with GIT_MESH_PERF=1 and check that the
+    // Bloom-based counters confirm most commits were skipped (the
+    // reverse-indexed walk uses changed-path Bloom filters instead of the
+    // old per-anchor walk's `interesting-commits` / `skipped-commits`).
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(repo.path())
         .args(["stale"])
@@ -79,20 +84,20 @@ fn most_commits_skipped_when_path_untouched() -> Result<()> {
         .env("GIT_MESH_CACHE", "0")
         .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let interesting = parse_counter(&stderr, "session.interesting-commits");
-    let skipped = parse_counter(&stderr, "session.skipped-commits");
+    let bloom_skips = parse_counter(&stderr, "session.walk-bloom-skips");
+    let tree_diffs = parse_counter(&stderr, "session.walk-tree-diffs");
     assert!(
-        skipped >= 45,
-        "expected most of the 50 noise commits to be skipped, got skipped={} interesting={} stderr=\n{}",
-        skipped,
-        interesting,
+        bloom_skips >= 45,
+        "expected Bloom to skip most of the 50 noise commits, got bloom_skips={} tree_diffs={} stderr=\n{}",
+        bloom_skips,
+        tree_diffs,
         stderr
     );
     assert!(
-        interesting <= 6,
-        "expected only the few real edits + any copy-detection-widened commits, got interesting={} skipped={}",
-        interesting,
-        skipped,
+        tree_diffs <= 5,
+        "expected only a handful of commits to run tree-diff, got tree_diffs={} bloom_skips={}",
+        tree_diffs,
+        bloom_skips,
     );
     Ok(())
 }

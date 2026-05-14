@@ -548,8 +548,7 @@ pub fn run_doctor(repo: &gix::Repository, args: DoctorArgs) -> Result<i32> {
             Ok(cache) => match cache.gc(repo) {
                 Ok(report) => {
                     println!(
-                        "mesh doctor: cache gc — removed {} grouped_walk, {} rename_trail, {} drift_locus entr(ies)",
-                        report.grouped_walk_removed,
+                        "mesh doctor: cache gc — removed {} rename_trail, {} drift_locus entr(ies)",
                         report.rename_trail_removed,
                         report.drift_locus_removed,
                     );

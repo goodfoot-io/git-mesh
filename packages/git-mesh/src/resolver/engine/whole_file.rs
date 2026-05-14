@@ -20,6 +20,7 @@ pub(crate) fn resolve_whole_file(
     repo: &gix::Repository,
     state: &mut EngineState,
     cfg: &MeshConfig,
+    mesh_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
@@ -70,9 +71,9 @@ pub(crate) fn resolve_whole_file(
     let current_path = follow_path_to_head_shared(
         repo,
         &mut state.session,
-        &r.anchor_sha,
+        mesh_name,
+        anchor_id,
         &r.path,
-        cfg.copy_detection,
         &mut state.warnings,
     )
     .unwrap_or_else(|| r.path.clone());

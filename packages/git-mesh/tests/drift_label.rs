@@ -253,6 +253,11 @@ fn unreachable_anchor_sha_labels_orphaned_no_sha() -> Result<()> {
     repo.run_git(["checkout", "--orphan", "orphan-branch"])?;
     repo.run_git(["commit", "--allow-empty", "-m", "orphan root"])?;
 
+    // The reverse-indexed walk requires a commit-graph; write one before
+    // running stale. The anchor's commit (on the original branch) is not
+    // reachable from the orphan branch, so it won't appear in the graph.
+    repo.write_commit_graph()?;
+
     // git-mesh stale run from this orphan branch — the anchor sha from the
     // mesh commit is not reachable from this branch's HEAD.
     let stale_out = repo.run_mesh(["stale", "m", "--no-exit-code"])?;

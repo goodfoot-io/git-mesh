@@ -11,7 +11,7 @@
 //! Path-equality assertions canonicalize first (see
 //! [`notes/common-dir-resolution.md`](../../../notes/common-dir-resolution.md)).
 
-use super::{Cache, CacheKey, DriftLocusKey, GroupedWalkKey, Kind, RenameTrailKey};
+use super::{Cache, CacheKey, DriftLocusKey, Kind, RenameTrailKey};
 use crate::Result;
 use crate::types::CopyDetection;
 use serde::{Deserialize, Serialize};
@@ -92,18 +92,6 @@ fn sample_rename_trail_key() -> RenameTrailKey {
         candidate_seed_hash: [1u8; 32],
         replace_refs_hash: [2u8; 32],
         git_config_hash: [3u8; 32],
-    }
-}
-
-fn sample_grouped_walk_key() -> GroupedWalkKey {
-    GroupedWalkKey {
-        anchor_sha: "c".repeat(40),
-        copy_detection: CopyDetection::Off,
-        seed_hash: [4u8; 32],
-        replace_refs_hash: [5u8; 32],
-        git_config_hash: [6u8; 32],
-        rename_budget: 500,
-        head_sha: "d".repeat(40),
     }
 }
 
@@ -294,44 +282,6 @@ fn distinct_keys_same_kind_produce_distinct_files() -> Result<()> {
     Ok(())
 }
 
-/// (6) `CacheKey::canonical_bytes` is deterministic — identical key values
-/// produce identical hashes; permuting fields produces different hashes.
-#[test]
-fn canonical_bytes_are_deterministic_and_field_sensitive() -> Result<()> {
-    let k1 = sample_grouped_walk_key();
-    let k2 = sample_grouped_walk_key();
-    assert_eq!(
-        key_hex(&k1),
-        key_hex(&k2),
-        "identical fields → identical hash"
-    );
-
-    let mut k3 = sample_grouped_walk_key();
-    std::mem::swap(&mut k3.anchor_sha, &mut k3.head_sha);
-    assert_ne!(
-        key_hex(&k1),
-        key_hex(&k3),
-        "permuted anchor/head → different hash"
-    );
-
-    let mut k4 = sample_grouped_walk_key();
-    k4.rename_budget += 1;
-    assert_ne!(
-        key_hex(&k1),
-        key_hex(&k4),
-        "different rename_budget → different hash"
-    );
-
-    let mut k5 = sample_grouped_walk_key();
-    k5.copy_detection = CopyDetection::AnyFileInRepo;
-    assert_ne!(
-        key_hex(&k1),
-        key_hex(&k5),
-        "different copy_detection → different hash"
-    );
-    Ok(())
-}
-
 /// (7) Concurrent `get_or_insert_with` calls with the same `(Kind, key)`
 /// from two threads each return the value and leave the persisted file
 /// well-formed (exactly one byte-identical file under the BLAKE3 path).
@@ -372,28 +322,16 @@ fn concurrent_writes_converge_on_one_well_formed_file() -> Result<()> {
     Ok(())
 }
 
-/// (8) Kind isolation — identical raw bytes under different `Kind`s never
-/// collide. The per-`Kind` directory enforces this on the filesystem, and
-/// the `b"gm.v1.<kind>\0"` domain-separation tag enforces it in the hash.
+/// (8) Kind isolation — different `Kind`s use different on-disk directories
+/// and domain-separation tags, preventing cross-kind hash collisions.
 #[test]
 fn kind_isolation_prevents_cross_kind_collisions() -> Result<()> {
-    // Two keys whose payload structure is identical apart from the kind
-    // tag emitted by their `CacheKey` impl. (We can't easily construct
-    // the *same* concrete key under two `Kind`s, but the domain tag is
-    // the property under test.)
-    let gw = sample_grouped_walk_key();
     let rt = sample_rename_trail_key();
-    assert_ne!(
-        key_hex(&gw),
-        key_hex(&rt),
-        "domain tag makes per-kind hashes distinct"
-    );
 
     let td = init_repo();
     commit_file(td.path(), "f.txt", "x\n", "init");
     let repo = gix::open(td.path()).expect("gix open");
     let cache = Cache::open(&repo)?;
-    let _: Probe = cache.get_or_insert_with(Kind::GroupedWalk, &gw, || Ok(Probe::sample()))?;
     let _: Probe = cache.get_or_insert_with(Kind::RenameTrail, &rt, || {
         Ok(Probe {
             count: 99,
@@ -402,21 +340,14 @@ fn kind_isolation_prevents_cross_kind_collisions() -> Result<()> {
     })?;
 
     let common = repo.common_dir().canonicalize().expect("canonicalize");
-    let gw_dir = common
-        .join("mesh")
-        .join("cache")
-        .join("v1")
-        .join(Kind::GroupedWalk.as_dir());
     let rt_dir = common
         .join("mesh")
         .join("cache")
         .join("v1")
         .join(Kind::RenameTrail.as_dir());
-    assert_ne!(gw_dir, rt_dir);
-    assert!(gw_dir.exists());
     assert!(rt_dir.exists());
 
-    // And confirm DriftLocus uses its own subdir as well.
+    // Confirm DriftLocus uses its own subdir.
     let dl_key = sample_drift_locus_key();
     let _: Probe = cache.get_or_insert_with(Kind::DriftLocus, &dl_key, || Ok(Probe::sample()))?;
     let dl_dir = common
@@ -430,8 +361,8 @@ fn kind_isolation_prevents_cross_kind_collisions() -> Result<()> {
 
 /// (9b) Round-trip a `(Closed, Interesting, bool)` payload through the
 /// cache and assert the bool survives L1, L2, and a fresh `Cache` reading
-/// L2. Regression for the rename-trail `fell_back` flag, which Phase 3
-/// originally stripped on persist — see [`super::super::session::compute_grouped_walk`](../../session.rs).
+/// L2. Regression for the rename-trail `fell_back` flag which Phase 3
+/// originally stripped on persist.
 #[test]
 fn rename_trail_payload_round_trips_fell_back_bool() -> Result<()> {
     use std::collections::HashSet;

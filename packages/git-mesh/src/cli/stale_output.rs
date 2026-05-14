@@ -1527,6 +1527,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "init"]);
+        run_git(dir, &["commit-graph", "write", "--reachable", "--changed-paths"]);
         let repo = gix::open(dir).unwrap();
         (td, repo)
     }

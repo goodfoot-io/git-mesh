@@ -37,8 +37,8 @@ pub(crate) struct EngineState {
     pub(crate) warnings: Vec<String>,
     pub(crate) lfs: LfsState,
     pub(crate) custom_filters: CustomFilters,
-    /// Phase 1+2 shared state: one rev-walk per `(repo, anchor_sha)`,
-    /// reused across every anchor that pins that commit.
+    /// Shared state including the reverse-indexed walk output, layer
+    /// caches, and perf counters.
     pub(crate) session: ResolveSession,
     /// Phase 4: when false, `compute_layer_sources` may short-circuit
     /// once it has enough information to drive the exit code. Set by
@@ -225,7 +225,11 @@ impl EngineState {
         Ok(blob)
     }
 
-    fn finish(self, repo: &gix::Repository) {
+    fn finish(mut self, repo: &gix::Repository) {
+        // Forward session warnings (rename budget, budget downgrade, etc.)
+        // from the reverse-indexed walk into the engine's warning buffer.
+        self.warnings
+            .append(&mut self.session.warnings);
         if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
@@ -259,7 +263,7 @@ pub fn resolve_anchor(
             .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?
     };
     let mut out = match mesh.anchors_v2.into_iter().find(|(id, _)| id == anchor_id) {
-        Some((_, r)) => resolve_anchor_inner(repo, &mut state, &mesh.config, anchor_id, r)?,
+        Some((_, r)) => resolve_anchor_inner(repo, &mut state, &mesh.config, mesh_name, anchor_id, r)?,
         None => orphaned_placeholder(anchor_id),
     };
     if state.layers.staged_mesh {
@@ -418,33 +422,14 @@ fn resolve_loaded_mesh_with_state(
 ) -> Result<MeshResolved> {
     let mut anchors = Vec::with_capacity(mesh.anchors_v2.len());
     let mut filtered_by_since: usize = 0;
-    // Prebuild the candidate-path union per anchor commit so each grouped
-    // walk skips commits that don't touch any path the mesh's anchors
-    // actually care about. Anchors filtered by `--since` are excluded
-    // from the union — they won't be resolved, so their paths shouldn't
-    // widen the walk.
+    // Build the reverse-indexed walk if not already built by a batch caller.
+    // The walk spans all anchors in this mesh and produces per-anchor commit
+    // deltas consumed by resolve_at_head_shared.
     {
         let _perf = crate::perf::span("resolver.prepare-groups");
-        let mut by_anchor_sha: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-        for (_id, r) in &mesh.anchors_v2 {
-            if let Some(since_oid) = options.since
-                && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
-            {
-                continue;
-            }
-            by_anchor_sha
-                .entry(r.anchor_sha.clone())
-                .or_default()
-                .insert(r.path.clone());
-        }
-        for (anchor_sha, paths) in &by_anchor_sha {
-            state.session.prepare_group(
-                repo,
-                anchor_sha,
-                mesh.config.copy_detection,
-                paths,
-                &mut state.warnings,
-            )?;
+        if state.session.reverse_walk_output.is_none() {
+            let meshes = [(mesh.name.clone(), mesh.clone())];
+            state.session.build_reverse_walk(repo, &meshes)?;
         }
     }
     {
@@ -464,6 +449,7 @@ fn resolve_loaded_mesh_with_state(
                 repo,
                 &mut *state,
                 &mesh.config,
+                &mesh.name,
                 &id,
                 r,
             )?;
@@ -595,6 +581,29 @@ pub(crate) fn resolve_named_meshes(
 ) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
     let _perf = crate::perf::span("resolver.resolve-named-meshes");
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+
+    // Build the reverse-indexed walk once across all named meshes so that
+    // per-anchor commit deltas are available to every per-mesh resolver call.
+    {
+        let catalog = {
+            let _perf = crate::perf::span("resolver.read-catalog");
+            Catalog::load(repo)?
+        };
+        let mesh_pairs: Vec<(String, Mesh)> = names
+            .iter()
+            .filter_map(|name| {
+                catalog
+                    .lookup(name)
+                    .ok()
+                    .flatten()
+                    .map(|mesh| (name.clone(), mesh))
+            })
+            .collect();
+        if !mesh_pairs.is_empty() {
+            state.session.build_reverse_walk(repo, &mesh_pairs)?;
+        }
+    }
+
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         let resolved = resolve_mesh_with_state(repo, &mut state, name, options);
@@ -627,6 +636,9 @@ fn stale_meshes_inner(
     }
     let mut can_skip_clean_head_ns: u128 = 0;
     {
+        // Build the reverse-indexed walk once across all meshes.
+        state.session.build_reverse_walk(repo, &mesh_pairs)?;
+
         let _perf = crate::perf::span("resolver.resolve-stale-meshes");
         for (name, mesh) in mesh_pairs {
             // When tracing is active we must resolve every mesh so every anchor
@@ -651,16 +663,6 @@ fn stale_meshes_inner(
         "resolver.can-skip-clean-head-us",
         (can_skip_clean_head_ns / 1_000) as u64,
     );
-    crate::perf::counter("session.ensure-calls", state.session.ensure_calls);
-    crate::perf::counter("session.ensure-hits", state.session.ensure_hits);
-    crate::perf::counter("session.walks-len", state.session.walks_len() as u64);
-    crate::perf::counter("session.interesting-commits", state.session.interesting_commits);
-    crate::perf::counter("session.skipped-commits", state.session.skipped_commits);
-    crate::perf::counter("session.pass1-ms", state.session.pass1_ms);
-    crate::perf::counter("session.rename-trail-hits", state.session.rename_trail_hits);
-    crate::perf::counter("session.rename-trail-misses", state.session.rename_trail_misses);
-    crate::perf::counter("session.grouped-walk-hits", state.session.grouped_walk_hits);
-    crate::perf::counter("session.grouped-walk-misses", state.session.grouped_walk_misses);
     crate::perf::counter("session.walk-bloom-skips", state.session.walk_bloom_skips);
     crate::perf::counter(
         "session.walk-bloom-false-positives",
@@ -791,9 +793,30 @@ pub(crate) fn resolve_meshes_in_order(
     names: &[String],
     options: EngineOptions,
 ) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
-    // resolve_mesh_with_state handles catalog/fallback internally.
     let mut out = Vec::with_capacity(names.len());
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
+
+    // Build the reverse-indexed walk once across all named meshes.
+    {
+        let catalog = {
+            let _perf = crate::perf::span("resolver.read-catalog");
+            Catalog::load(repo)?
+        };
+        let mesh_pairs: Vec<(String, Mesh)> = names
+            .iter()
+            .filter_map(|name| {
+                catalog
+                    .lookup(name)
+                    .ok()
+                    .flatten()
+                    .map(|mesh| (name.clone(), mesh))
+            })
+            .collect();
+        if !mesh_pairs.is_empty() {
+            state.session.build_reverse_walk(repo, &mesh_pairs)?;
+        }
+    }
+
     {
         let _perf = crate::perf::span("resolver.resolve-meshes");
         for name in names {

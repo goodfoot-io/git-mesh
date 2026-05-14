@@ -2,8 +2,8 @@
 //!
 //! Single polymorphic surface: a [`Cache`] backed by an L1 in-memory map and
 //! an L2 on-disk store under `<common_dir>/mesh/cache/v1/<kind>/<aa>/<rest>`,
-//! keyed by BLAKE3 of canonical key bytes. Three [`Kind`]s today:
-//! `GroupedWalk`, `RenameTrail`, `DriftLocus`.
+//! keyed by BLAKE3 of canonical key bytes. Two [`Kind`]s today:
+//! `RenameTrail`, `DriftLocus`.
 //!
 //! Persisted value framing: every L2 entry is bincode-serialized as
 //! `(u8 format_version, Vec<String> bound_oids, V)`. The `bound_oids` slot
@@ -33,7 +33,6 @@ const FORMAT_VERSION: u8 = 0;
 /// and as the on-disk path segment via [`Kind::as_dir`].
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Kind {
-    GroupedWalk,
     RenameTrail,
     DriftLocus,
 }
@@ -41,7 +40,6 @@ pub enum Kind {
 impl Kind {
     pub fn as_dir(self) -> &'static str {
         match self {
-            Kind::GroupedWalk => "grouped_walk",
             Kind::RenameTrail => "rename_trail",
             Kind::DriftLocus => "drift_locus",
         }
@@ -64,34 +62,6 @@ pub trait CacheKey {
 }
 
 // ── Per-kind key structs ────────────────────────────────────────────────────
-
-/// Key for the `grouped_walk` kind. Fields mirror the prior sqlite PK
-/// tuple at the call site in [`crate::resolver::session::build_grouped_walk`].
-pub struct GroupedWalkKey {
-    pub anchor_sha: String,
-    pub copy_detection: CopyDetection,
-    pub seed_hash: [u8; 32],
-    pub replace_refs_hash: [u8; 32],
-    pub git_config_hash: [u8; 32],
-    pub rename_budget: i64,
-    pub head_sha: String,
-}
-
-impl CacheKey for GroupedWalkKey {
-    fn canonical_bytes(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(b"gm.v1.grouped_walk\0");
-        write_str(out, &self.anchor_sha);
-        out.push(copy_detection_byte(self.copy_detection));
-        out.extend_from_slice(&self.seed_hash);
-        out.extend_from_slice(&self.replace_refs_hash);
-        out.extend_from_slice(&self.git_config_hash);
-        out.extend_from_slice(&self.rename_budget.to_be_bytes());
-        write_str(out, &self.head_sha);
-    }
-    fn bound_oids(&self) -> Vec<String> {
-        vec![self.anchor_sha.clone(), self.head_sha.clone()]
-    }
-}
 
 /// Key for the `rename_trail` kind. Fields mirror the prior `TrailCacheKey`.
 pub struct RenameTrailKey {
@@ -166,7 +136,6 @@ fn copy_detection_byte(cd: CopyDetection) -> u8 {
 
 #[derive(Default)]
 pub struct GcStats {
-    pub grouped_walk_removed: usize,
     pub rename_trail_removed: usize,
     pub drift_locus_removed: usize,
 }
@@ -359,7 +328,6 @@ impl Cache {
         let reachable = collect_reachable_oids(repo)?;
 
         for (kind, slot) in [
-            (Kind::GroupedWalk, &mut stats.grouped_walk_removed),
             (Kind::RenameTrail, &mut stats.rename_trail_removed),
             (Kind::DriftLocus, &mut stats.drift_locus_removed),
         ] {

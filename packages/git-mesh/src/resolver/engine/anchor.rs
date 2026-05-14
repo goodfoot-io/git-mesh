@@ -82,11 +82,12 @@ pub(crate) fn resolve_anchor_inner(
     repo: &gix::Repository,
     state: &mut EngineState,
     cfg: &MeshConfig,
+    mesh_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
     if matches!(r.extent, AnchorExtent::WholeFile) {
-        return resolve_whole_file(repo, state, cfg, anchor_id, r);
+        return resolve_whole_file(repo, state, cfg, mesh_name, anchor_id, r);
     }
     let (anchored_start, anchored_end) = match r.extent {
         AnchorExtent::LineRange { start, end } => (start, end),
@@ -135,7 +136,8 @@ pub(crate) fn resolve_anchor_inner(
         repo,
         &mut state.session,
         &r,
-        cfg.copy_detection,
+        mesh_name,
+        anchor_id,
         &mut state.warnings,
     )?;
 

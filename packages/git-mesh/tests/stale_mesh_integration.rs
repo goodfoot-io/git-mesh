@@ -648,6 +648,10 @@ fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
     let _ = repo.run_mesh(["add", "pn", "data.tsv#L1-L10"])?;
     repo.run_mesh(["why", "pn", "-m", "seed"])?;
     repo.run_mesh(["commit", "pn"])?;
+    // Write a commit-graph so the reverse-indexed walk can use Bloom
+    // filters. Must be done after the mesh commit so the mesh ref is
+    // included.
+    repo.write_commit_graph()?;
     // No edits to data.tsv. Stale must report no drift.
     let out = repo.run_mesh(["stale", "pn", "--format=porcelain"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
