@@ -3,6 +3,7 @@
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
+use crate::mesh::catalog::{Catalog, CATALOG_REF};
 use crate::staging;
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
@@ -30,7 +31,23 @@ pub fn delete_mesh(repo: &gix::Repository, name: &str) -> Result<()> {
         });
     }
 
-    let mesh = super::read::read_mesh_at(repo, name, Some(&current))?;
+    let mesh = super::read::read_mesh_at(repo, name, Some(&current))
+        .or_else(|_| super::read::read_mesh(repo, name))?;
+
+    // Update catalog when the catalog ref exists.
+    let catalog_ref_oid = crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+    if catalog_ref_oid.is_some() {
+        let mut catalog = Catalog::load(repo)?;
+        catalog.remove(name)?;
+        crate::mesh::catalog::commit_catalog(
+            repo,
+            &catalog,
+            &format!("mesh: delete {name}"),
+            catalog_ref_oid.as_deref(),
+        )?;
+    }
+
+    // Always delete per-mesh ref for backward compat.
     let mut updates = super::path_index::ref_updates_for_mesh(repo, name, &mesh.anchors_v2, &[])?;
     updates.push(RefUpdate::Delete {
         name: ref_name,
@@ -49,7 +66,24 @@ pub fn rename_mesh(repo: &gix::Repository, old: &str, new: &str) -> Result<()> {
     if resolve_ref_oid_optional(wd, &new_ref)?.is_some() {
         return Err(Error::MeshAlreadyExists(new.into()));
     }
-    let mesh = super::read::read_mesh_at(repo, old, Some(&old_oid))?;
+    let mesh = super::read::read_mesh_at(repo, old, Some(&old_oid))
+        .or_else(|_| super::read::read_mesh(repo, old))?;
+
+    // Update catalog when the catalog ref exists.
+    let catalog_ref_oid = crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+    if catalog_ref_oid.is_some() {
+        let mut catalog = Catalog::load(repo)?;
+        catalog.remove(old)?;
+        catalog.insert(new, &mesh)?;
+        crate::mesh::catalog::commit_catalog(
+            repo,
+            &catalog,
+            &format!("mesh: rename {old} -> {new}"),
+            catalog_ref_oid.as_deref(),
+        )?;
+    }
+
+    // Always update per-mesh refs for backward compat.
     let mut updates = super::path_index::ref_updates_for_rename(repo, old, new, &mesh.anchors_v2)?;
     updates.extend([
         RefUpdate::Create {
@@ -77,9 +111,26 @@ pub fn revert_mesh(repo: &gix::Repository, name: &str, commit_ish: &str) -> Resu
         resolve_ref_oid_optional(wd, &ref_name)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
     let tree_oid = git::commit_tree_oid(repo, &target)?;
     let message = git::commit_meta(repo, &target)?.message;
-    let old_mesh = super::read::read_mesh_at(repo, name, Some(&current))?;
-    let new_mesh = super::read::read_mesh_at(repo, name, Some(&target))?;
+    let old_mesh = super::read::read_mesh_at(repo, name, Some(&current))
+        .or_else(|_| super::read::read_mesh(repo, name))?;
+    let new_mesh = super::read::read_mesh_at(repo, name, Some(&target))
+        .or_else(|_| super::read::read_mesh(repo, name))?;
     let new_commit = create_commit(repo, &tree_oid, &message, std::slice::from_ref(&current))?;
+
+    // Update catalog when the catalog ref exists.
+    let catalog_ref_oid = crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+    if catalog_ref_oid.is_some() {
+        let mut catalog = Catalog::load(repo)?;
+        catalog.insert(name, &new_mesh)?;
+        crate::mesh::catalog::commit_catalog(
+            repo,
+            &catalog,
+            &message,
+            catalog_ref_oid.as_deref(),
+        )?;
+    }
+
+    // Always update per-mesh ref for backward compat.
     let mut updates = super::path_index::ref_updates_for_mesh(
         repo,
         name,

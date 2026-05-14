@@ -293,7 +293,11 @@ fn discover_meshes_committed_this_session(
         }
     } else {
         for name in catalog.names() {
-            let is_new = !baseline.contains_key(&name);
+            let oid = catalog.entry_oid(&name).unwrap_or_default();
+            let is_new = match baseline.get(&name) {
+                Some(prior_oid) => prior_oid != &oid,
+                None => true,
+            };
             if is_new && !committed.contains(&name) {
                 new_names.push(name);
             }

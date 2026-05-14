@@ -8,7 +8,7 @@ use crate::anchor::create_anchor_with_extent_skipping_blob_bounds;
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
-use crate::mesh::catalog::Catalog;
+use crate::mesh::catalog::{Catalog, CATALOG_REF, build_mesh, commit_catalog};
 use crate::mesh::read::{read_mesh_at, serialize_config_blob};
 use crate::mesh::path_index;
 use std::collections::HashSet;
@@ -54,14 +54,15 @@ pub fn follow_moves(
 
     // Load catalog for mesh data reads.
     let cat = Catalog::load(repo)?;
+    let catalog_active = !cat.is_empty();
     let new_commit: String;
     'retry: loop {
         // Re-read mesh tip on every attempt so the CAS parent is fresh.
         let current_parent = resolve_ref_oid_optional(wd, &mesh_ref_name)?;
-        let m = if cat.is_empty() {
-            read_mesh_at(repo, name, current_parent.as_deref())?
-        } else {
+        let m = if catalog_active {
             cat.lookup(name)?.ok_or_else(|| Error::MeshNotFound(name.into()))?
+        } else {
+            read_mesh_at(repo, name, current_parent.as_deref())?
         };
 
         // Build new anchor list: replace each matched id, keep all others.
@@ -115,54 +116,7 @@ pub fn follow_moves(
             }
         }
 
-        // Serialize anchors_v2.
-        let anchors_v2_text: String = {
-            let mut s = String::new();
-            for (id, r) in &combined {
-                s.push_str("id ");
-                s.push_str(id);
-                s.push('\n');
-                s.push_str(&crate::anchor::serialize_anchor(r));
-                s.push('\n');
-            }
-            s
-        };
-        let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
-
-        // Config blob: preserve existing config unchanged.
-        let config_text = serialize_config_blob(&m.config);
-        let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
-
-        // Build tree.
-        let tree = Tree {
-            entries: vec![
-                Entry {
-                    mode: EntryKind::Blob.into(),
-                    filename: "anchors".into(),
-                    oid: anchors_v2_blob
-                        .parse()
-                        .map_err(|e| Error::Git(format!("parse anchors blob oid: {e}")))?,
-                },
-                Entry {
-                    mode: EntryKind::Blob.into(),
-                    filename: "config".into(),
-                    oid: config_blob
-                        .parse()
-                        .map_err(|e| Error::Git(format!("parse config blob oid: {e}")))?,
-                },
-            ],
-        };
-        let tree_oid = repo
-            .write_object(&tree)
-            .map_err(|e| Error::Git(format!("write tree: {e}")))?
-            .detach()
-            .to_string();
-
         // Commit message: structured audit subject on the subject line.
-        // This makes `git log --oneline refs/meshes/v1/<mesh>` and
-        // case-sensitive `git log --grep="^mesh: follow"` find the follow
-        // commits.  `read_mesh_from_commit` walks past commits whose subject
-        // starts with "mesh: follow " to recover the original user why.
         let n = decisions.len();
         let message = format!(
             "mesh: follow {} moved anchor{}\n",
@@ -170,44 +124,145 @@ pub fn follow_moves(
             if n == 1 { "" } else { "s" }
         );
 
-        let parents: Vec<String> = current_parent
-            .as_deref()
-            .map(|p| vec![p.to_string()])
-            .unwrap_or_default();
-        let candidate = create_commit(repo, &tree_oid, &message, &parents)?;
-
-        // CAS ref transaction (mesh tip + path index).
-        let old_anchors = &m.anchors_v2;
-        let mesh_update = match current_parent.as_deref() {
-            Some(prev) => RefUpdate::Update {
-                name: mesh_ref_name.clone(),
-                new_oid: candidate.clone(),
-                expected_old_oid: prev.to_string(),
-            },
-            None => RefUpdate::Create {
-                name: mesh_ref_name.clone(),
-                new_oid: candidate.clone(),
-            },
-        };
-        let mut updates =
-            path_index::ref_updates_for_mesh(repo, name, old_anchors, &combined)?;
-        updates.push(mesh_update);
-        crate::git::ensure_log_all_ref_updates_always(repo)?;
-
-        match apply_ref_transaction(wd, &updates) {
-            Ok(()) => {
-                new_commit = candidate;
-                break;
-            }
-            Err(_e) => {
-                attempt += 1;
-                if attempt >= MAX_RETRIES {
-                    return Err(Error::ConcurrentUpdate {
-                        expected: current_parent.unwrap_or_default(),
-                        found: resolve_ref_oid_optional(wd, &mesh_ref_name)?.unwrap_or_default(),
-                    });
+        if catalog_active {
+            // Catalog RMW path: update mesh in catalog, create commit, CAS.
+            let current_cat_ref =
+                crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+            let mut catalog = Catalog::load(repo)?;
+            let updated_mesh = build_mesh(name, &m.message, &combined, &m.config);
+            catalog.insert(name, &updated_mesh)?;
+            match commit_catalog(repo, &catalog, &message, current_cat_ref.as_deref()) {
+                Ok(commit_oid) => {
+                    new_commit = commit_oid.clone();
+                    // Update path index refs (independent of catalog).
+                    let old_anchors = &m.anchors_v2;
+                    let path_updates =
+                        path_index::ref_updates_for_mesh(repo, name, old_anchors, &combined)?;
+                    if !path_updates.is_empty() {
+                        crate::git::ensure_log_all_ref_updates_always(repo)?;
+                        let _ = crate::git::apply_ref_transaction_repo(repo, &path_updates);
+                    }
+                    // Update per-mesh convenience ref for git log compatibility.
+                    match resolve_ref_oid_optional(wd, &mesh_ref_name)? {
+                        Some(old_oid) => {
+                            let _ = crate::git::apply_ref_transaction_repo(
+                                repo,
+                                &[crate::git::RefUpdate::Update {
+                                    name: mesh_ref_name.clone(),
+                                    new_oid: commit_oid.clone(),
+                                    expected_old_oid: old_oid,
+                                }],
+                            );
+                        }
+                        None => {
+                            let _ = crate::git::apply_ref_transaction_repo(
+                                repo,
+                                &[crate::git::RefUpdate::Create {
+                                    name: mesh_ref_name.clone(),
+                                    new_oid: commit_oid.clone(),
+                                }],
+                            );
+                        }
+                    }
+                    break;
                 }
-                // Loop will re-read the fresh tip on the next iteration.
+                Err(_e) => {
+                    attempt += 1;
+                    if attempt >= MAX_RETRIES {
+                        return Err(Error::ConcurrentUpdate {
+                            expected: current_parent.unwrap_or_default(),
+                            found: resolve_ref_oid_optional(wd, &mesh_ref_name)?
+                                .unwrap_or_default(),
+                        });
+                    }
+                    continue 'retry;
+                }
+            }
+        } else {
+            // Legacy per-mesh ref path.
+            // Serialize anchors_v2.
+            let anchors_v2_text: String = {
+                let mut s = String::new();
+                for (id, r) in &combined {
+                    s.push_str("id ");
+                    s.push_str(id);
+                    s.push('\n');
+                    s.push_str(&crate::anchor::serialize_anchor(r));
+                    s.push('\n');
+                }
+                s
+            };
+            let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
+
+            // Config blob: preserve existing config unchanged.
+            let config_text = serialize_config_blob(&m.config);
+            let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
+
+            // Build tree.
+            let tree = Tree {
+                entries: vec![
+                    Entry {
+                        mode: EntryKind::Blob.into(),
+                        filename: "anchors".into(),
+                        oid: anchors_v2_blob
+                            .parse()
+                            .map_err(|e| Error::Git(format!("parse anchors blob oid: {e}")))?,
+                    },
+                    Entry {
+                        mode: EntryKind::Blob.into(),
+                        filename: "config".into(),
+                        oid: config_blob
+                            .parse()
+                            .map_err(|e| Error::Git(format!("parse config blob oid: {e}")))?,
+                    },
+                ],
+            };
+            let tree_oid = repo
+                .write_object(&tree)
+                .map_err(|e| Error::Git(format!("write tree: {e}")))?
+                .detach()
+                .to_string();
+
+            let parents: Vec<String> = current_parent
+                .as_deref()
+                .map(|p| vec![p.to_string()])
+                .unwrap_or_default();
+            let candidate = create_commit(repo, &tree_oid, &message, &parents)?;
+
+            // CAS ref transaction (mesh tip + path index).
+            let old_anchors = &m.anchors_v2;
+            let mesh_update = match current_parent.as_deref() {
+                Some(prev) => RefUpdate::Update {
+                    name: mesh_ref_name.clone(),
+                    new_oid: candidate.clone(),
+                    expected_old_oid: prev.to_string(),
+                },
+                None => RefUpdate::Create {
+                    name: mesh_ref_name.clone(),
+                    new_oid: candidate.clone(),
+                },
+            };
+            let mut updates =
+                path_index::ref_updates_for_mesh(repo, name, old_anchors, &combined)?;
+            updates.push(mesh_update);
+            crate::git::ensure_log_all_ref_updates_always(repo)?;
+
+            match apply_ref_transaction(wd, &updates) {
+                Ok(()) => {
+                    new_commit = candidate;
+                    break;
+                }
+                Err(_e) => {
+                    attempt += 1;
+                    if attempt >= MAX_RETRIES {
+                        return Err(Error::ConcurrentUpdate {
+                            expected: current_parent.unwrap_or_default(),
+                            found: resolve_ref_oid_optional(wd, &mesh_ref_name)?
+                                .unwrap_or_default(),
+                        });
+                    }
+                    // Loop will re-read the fresh tip on the next iteration.
+                }
             }
         }
     }

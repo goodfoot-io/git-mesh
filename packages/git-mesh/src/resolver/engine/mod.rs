@@ -333,8 +333,16 @@ fn resolve_mesh_with_state_at(
     options: EngineOptions,
 ) -> Result<MeshResolved> {
     let mesh = {
-        let _perf = crate::perf::span("resolver.read-mesh");
-        read_mesh_from_commit(repo, name, commit_oid)?
+        let _perf = crate::perf::span("resolver.read-catalog");
+        match Catalog::load(repo) {
+            Ok(catalog) if !catalog.is_empty() => catalog
+                .lookup(name)?
+                .ok_or_else(|| Error::MeshNotFound(name.to_string()))?,
+            _ => {
+                let _perf = crate::perf::span("resolver.read-mesh");
+                read_mesh_from_commit(repo, name, commit_oid)?
+            }
+        }
     };
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }

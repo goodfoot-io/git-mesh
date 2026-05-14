@@ -256,10 +256,10 @@ fn commit_retries_on_cas_conflict() -> Result<()> {
         .output()?;
     anyhow::ensure!(out.status.success(), "commit-tree: {:?}", out);
     let bump_oid = String::from_utf8(out.stdout)?.trim().to_string();
-    // Force-update the mesh ref to the bump commit.
+    // Force-update the catalog ref to the bump commit.
     let ou = Command::new("git")
         .current_dir(wd)
-        .args(["update-ref", "refs/meshes/v1/race", &bump_oid, &seed_tip])
+        .args(["update-ref", "refs/meshes/v1/catalog", &bump_oid, &seed_tip])
         .output()?;
     anyhow::ensure!(ou.status.success(), "update-ref: {:?}", ou);
 

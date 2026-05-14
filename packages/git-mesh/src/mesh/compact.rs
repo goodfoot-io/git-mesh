@@ -6,7 +6,8 @@
 use crate::git::{
     self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
 };
-use crate::mesh::read::{read_mesh_at, read_mesh_from_commit, serialize_config_blob};
+use crate::mesh::catalog::{Catalog, CATALOG_REF};
+use crate::mesh::read::{read_mesh, serialize_config_blob};
 use crate::resolver::{
     EngineStateHandle, new_engine_state, resolve_loaded_mesh_with_engine_state, resolve_mesh_at,
     resolve_mesh_at_with_engine_state,
@@ -230,7 +231,7 @@ pub fn compact_mesh(
     let initial_tip =
         resolve_ref_oid_optional(wd, &mesh_ref)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
     {
-        let mesh = read_mesh_at(repo, name, Some(&initial_tip))?;
+        let mesh = read_mesh(repo, name)?;
         let mut state = new_engine_state(repo, options)?;
         if let Some(out) = already_at_head_outcome(repo, &mut state, name, &mesh)? {
             return Ok(out);
@@ -270,7 +271,7 @@ fn compact_mesh_with_retry(
     let mut attempt = 0;
 
     loop {
-        let mesh = read_mesh_at(repo, name, Some(&current_tip))?;
+        let mesh = read_mesh(repo, name)?;
         // If the caller threaded a shared `EngineStateHandle` through
         // (the batch CAS-conflict path), reuse it as long as HEAD has
         // not moved since the state was built. The handle's HEAD-blob
@@ -557,6 +558,10 @@ fn apply_compact_attempt(
 
     match apply_ref_transaction(wd, &updates) {
         Ok(()) => {
+            // Secondary best-effort catalog update: if the catalog ref
+            // exists, insert the updated mesh.  Failure is logged but does
+            // not undo the per-mesh ref update.
+            maybe_update_catalog_compact(repo, name, mesh, &all_anchors, message.as_str());
             Ok(AttemptResult::Done(MeshCompactOutcome {
                 name: name.to_string(),
                 advanced,
@@ -577,6 +582,42 @@ fn apply_compact_attempt(
             skipped_clean_not_head,
             anchor_records,
         }),
+    }
+}
+
+/// Best-effort catalog update for compact: build a Mesh from the old
+/// mesh metadata + new anchors and insert into the catalog.
+fn maybe_update_catalog_compact(
+    repo: &gix::Repository,
+    name: &str,
+    mesh: &crate::types::Mesh,
+    all_anchors: &[(String, crate::types::Anchor)],
+    message: &str,
+) {
+    let cat_ref = match crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF) {
+        Ok(Some(r)) => r,
+        _ => return,
+    };
+    let mut cat = match Catalog::load(repo) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("git-mesh: catalog load for `{name}`: {e}");
+            return;
+        }
+    };
+    let updated = crate::mesh::catalog::build_mesh(
+        name,
+        message,
+        all_anchors,
+        &mesh.config,
+    );
+    if let Err(e) = cat
+        .insert(name, &updated)
+        .and_then(|_| crate::mesh::catalog::commit_catalog(
+            repo, &cat, message, Some(&cat_ref),
+        ))
+    {
+        eprintln!("git-mesh: catalog update for `{name}`: {e}");
     }
 }
 
@@ -628,7 +669,7 @@ fn compact_one_in_batch(
     let mesh_ref = format!("refs/meshes/v1/{name}");
     let initial_tip =
         resolve_ref_oid_optional(wd, &mesh_ref)?.ok_or_else(|| Error::MeshNotFound(name.into()))?;
-    let mesh = read_mesh_from_commit(repo, name, &initial_tip)?;
+    let mesh = read_mesh(repo, name)?;
 
     // Already-at-HEAD fast path using the shared state.
     if let Some(out) = already_at_head_outcome(repo, state, name, &mesh)? {

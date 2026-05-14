@@ -6,10 +6,12 @@
 //! anchored bytes are identical across the rewrite.
 
 use crate::git::{
-    self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
+    self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional,
+    resolve_ref_oid_optional_repo, work_dir,
 };
-use crate::mesh::catalog::Catalog;
+use crate::mesh::catalog::{self, Catalog, CATALOG_REF};
 use crate::mesh::read::{list_mesh_refs, read_mesh_from_commit, serialize_config_blob};
+use crate::mesh::read_mesh;
 use crate::{Error, Result};
 use std::collections::HashMap;
 
@@ -102,28 +104,39 @@ fn rewrite_one_mesh(
     map: &HashMap<String, String>,
 ) -> Result<RewriteOutcome> {
     const MAX_RETRIES: usize = 5;
-    let mesh_ref = format!("refs/meshes/v1/{name}");
-    let wd = work_dir(repo)?;
     let cat = Catalog::load(repo)?;
 
-    let initial_tip = if cat.is_empty() {
-        resolve_ref_oid_optional(wd, &mesh_ref)?
-            .ok_or_else(|| Error::MeshNotFound(name.into()))?
+    if cat.is_empty() {
+        // Pre-catalog path: per-mesh ref CAS (existing behavior).
+        rewrite_one_mesh_pre_catalog(repo, name, map, MAX_RETRIES)
     } else {
-        // In the catalog path per-mesh refs don't exist; CAS is handled
-        // by the catalog write path (future group).
-        cat.entry_oid(name).ok_or_else(|| Error::MeshNotFound(name.into()))?
-    };
+        // Catalog path: read from catalog, write via catalog CAS.
+        rewrite_one_mesh_catalog(repo, name, map, MAX_RETRIES)
+    }
+}
 
+/// Pre-catalog rewrite: mesh data is stored as blobs (`anchors`/`config`) in a
+/// per-mesh ref commit tree.  CAS is on `refs/meshes/v1/<name>`.
+fn rewrite_one_mesh_pre_catalog(
+    repo: &gix::Repository,
+    name: &str,
+    map: &HashMap<String, String>,
+    max_retries: usize,
+) -> Result<RewriteOutcome> {
+    let mesh_ref = format!("refs/meshes/v1/{name}");
+    let wd = work_dir(repo)?;
+
+    let initial_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
+        .ok_or_else(|| Error::MeshNotFound(name.into()))?;
     let mut current_tip = initial_tip;
     let mut attempt = 0;
 
     loop {
-        match apply_rewrite_attempt(repo, name, map, &current_tip)? {
+        match apply_rewrite_attempt_pre_catalog(repo, name, map, &current_tip)? {
             AttemptResult::Done(out) => return Ok(out),
             AttemptResult::CasConflict => {
                 attempt += 1;
-                if attempt >= MAX_RETRIES {
+                if attempt >= max_retries {
                     return Ok(RewriteOutcome {
                         name: name.to_string(),
                         advanced: 0,
@@ -134,16 +147,198 @@ fn rewrite_one_mesh(
                         hard_error: Some("CAS conflict exhausted retries".into()),
                     });
                 }
-                current_tip = if cat.is_empty() {
-                    resolve_ref_oid_optional(wd, &mesh_ref)?
-                        .ok_or_else(|| Error::MeshNotFound(name.into()))?
-                } else {
-                    cat.entry_oid(name)
-                        .ok_or_else(|| Error::MeshNotFound(name.into()))?
-                };
+                current_tip = resolve_ref_oid_optional(wd, &mesh_ref)?
+                    .ok_or_else(|| Error::MeshNotFound(name.into()))?;
             }
         }
     }
+}
+
+/// Catalog-aware rewrite: mesh data is in the catalog tree.  CAS is on
+/// `refs/meshes/v1/catalog`.
+fn rewrite_one_mesh_catalog(
+    repo: &gix::Repository,
+    name: &str,
+    map: &HashMap<String, String>,
+    max_retries: usize,
+) -> Result<RewriteOutcome> {
+    let mut attempt = 0;
+
+    loop {
+        // Read the mesh from the current catalog (catalog-aware).
+        let mesh = match read_mesh(repo, name) {
+            Ok(m) => m,
+            Err(crate::Error::MeshNotFound(_)) => {
+                return Ok(RewriteOutcome {
+                    name: name.to_string(),
+                    advanced: 0,
+                    skipped_blob_changed: 0,
+                    skipped_path_missing: 0,
+                    errors: 0,
+                    anchors: Vec::new(),
+                    hard_error: Some("mesh not found".into()),
+                });
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut anchor_records: Vec<AnchorRewriteRecord> = Vec::new();
+        let mut new_anchors: Vec<(String, crate::types::Anchor)> = Vec::new();
+        let mut advanced = 0u32;
+        let mut skipped_blob_changed = 0u32;
+        let mut skipped_path_missing = 0u32;
+
+        for (id, anchor) in &mesh.anchors_v2 {
+            let Some(new_sha) = map.get(&anchor.anchor_sha) else {
+                // Not in map — carry over unchanged.
+                new_anchors.push((id.clone(), anchor.clone()));
+                continue;
+            };
+
+            // Try to read blob at old_sha and new_sha.
+            let old_blob = git::path_blob_at(repo, &anchor.anchor_sha, &anchor.path);
+            let new_blob = git::path_blob_at(repo, new_sha, &anchor.path);
+
+            match (old_blob, new_blob) {
+                (Ok(ob), Ok(nb)) => {
+                    if ob != nb {
+                        // Blob changed — skip.
+                        anchor_records.push(AnchorRewriteRecord {
+                            anchor_id: id.clone(),
+                            outcome: AnchorRewriteOutcome::SkippedBlobChanged,
+                            old_sha: anchor.anchor_sha.clone(),
+                            new_sha: Some(new_sha.clone()),
+                            path: anchor.path.clone(),
+                        });
+                        skipped_blob_changed += 1;
+                        new_anchors.push((id.clone(), anchor.clone()));
+                    } else {
+                        // Advance.
+                        let advanced_anchor = crate::types::Anchor {
+                            anchor_sha: new_sha.clone(),
+                            created_at: anchor.created_at.clone(),
+                            path: anchor.path.clone(),
+                            extent: anchor.extent,
+                            blob: anchor.blob.clone(),
+                        };
+                        anchor_records.push(AnchorRewriteRecord {
+                            anchor_id: id.clone(),
+                            outcome: AnchorRewriteOutcome::Advanced,
+                            old_sha: anchor.anchor_sha.clone(),
+                            new_sha: Some(new_sha.clone()),
+                            path: anchor.path.clone(),
+                        });
+                        advanced += 1;
+                        new_anchors.push((id.clone(), advanced_anchor));
+                    }
+                }
+                _ => {
+                    // Path missing at either old or new.
+                    anchor_records.push(AnchorRewriteRecord {
+                        anchor_id: id.clone(),
+                        outcome: AnchorRewriteOutcome::SkippedPathMissing,
+                        old_sha: anchor.anchor_sha.clone(),
+                        new_sha: Some(new_sha.clone()),
+                        path: anchor.path.clone(),
+                    });
+                    skipped_path_missing += 1;
+                    new_anchors.push((id.clone(), anchor.clone()));
+                }
+            }
+        }
+
+        if advanced == 0 {
+            return Ok(RewriteOutcome {
+                name: name.to_string(),
+                advanced: 0,
+                skipped_blob_changed,
+                skipped_path_missing,
+                errors: 0,
+                anchors: anchor_records,
+                hard_error: None,
+            });
+        }
+
+        // Sort by (path, extent) like compact does.
+        new_anchors.sort_by(|a, b| {
+            (a.1.path.as_str(), extent_sort_key(&a.1.extent))
+                .cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
+        });
+
+        // Catalog write path: insert updated mesh into catalog and CAS commit.
+        let catalog_ref_oid = resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+        let mut catalog = Catalog::load(repo)?;
+        let updated_mesh = catalog::build_mesh(name, &mesh.message, &new_anchors, &mesh.config);
+        catalog.insert(name, &updated_mesh)?;
+        match catalog::commit_catalog(
+            repo,
+            &catalog,
+            &mesh.message,
+            catalog_ref_oid.as_deref(),
+        ) {
+            Ok(new_commit) => {
+                // Update per-mesh convenience ref and path index.
+                if update_convenience_refs(repo, name, &new_commit).is_err() {
+                    // Non-fatal: convenience ref update failure does not
+                    // undo the catalog write.
+                }
+                return Ok(RewriteOutcome {
+                    name: name.to_string(),
+                    advanced,
+                    skipped_blob_changed,
+                    skipped_path_missing,
+                    errors: 0,
+                    anchors: anchor_records,
+                    hard_error: None,
+                });
+            }
+            Err(_) => {
+                attempt += 1;
+                if attempt >= max_retries {
+                    return Ok(RewriteOutcome {
+                        name: name.to_string(),
+                        advanced: 0,
+                        skipped_blob_changed,
+                        skipped_path_missing,
+                        errors: 1,
+                        anchors: anchor_records,
+                        hard_error: Some("CAS conflict exhausted retries".into()),
+                    });
+                }
+                // CAS conflict — reload catalog and retry.
+                continue;
+            }
+        }
+    }
+}
+
+/// Update per-mesh convenience ref and path index after a catalog write.
+fn update_convenience_refs(repo: &gix::Repository, name: &str, new_commit: &str) -> Result<()> {
+    let wd = work_dir(repo)?;
+    let mesh_ref_name = format!("refs/meshes/v1/{name}");
+    crate::git::ensure_log_all_ref_updates_always(repo)?;
+    match resolve_ref_oid_optional(wd, &mesh_ref_name)? {
+        Some(old_oid) => {
+            let _ = apply_ref_transaction(
+                wd,
+                &[RefUpdate::Update {
+                    name: mesh_ref_name,
+                    new_oid: new_commit.to_string(),
+                    expected_old_oid: old_oid,
+                }],
+            );
+        }
+        None => {
+            let _ = apply_ref_transaction(
+                wd,
+                &[RefUpdate::Create {
+                    name: mesh_ref_name,
+                    new_oid: new_commit.to_string(),
+                }],
+            );
+        }
+    }
+    Ok(())
 }
 
 enum AttemptResult {
@@ -151,7 +346,7 @@ enum AttemptResult {
     CasConflict,
 }
 
-fn apply_rewrite_attempt(
+fn apply_rewrite_attempt_pre_catalog(
     repo: &gix::Repository,
     name: &str,
     map: &HashMap<String, String>,
@@ -303,8 +498,8 @@ fn build_mesh_tree(
     anchors_v2_blob: &str,
     config_blob: &str,
 ) -> Result<String> {
-    use gix::objs::Tree;
     use gix::objs::tree::{Entry, EntryKind};
+    use gix::objs::Tree;
     let tree = Tree {
         entries: vec![
             Entry {

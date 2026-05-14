@@ -1,6 +1,7 @@
 //! Read-only mesh operations — §6.5, §6.6, §10.4.
 
 use crate::git::{self, resolve_ref_oid_optional, work_dir};
+use crate::mesh::catalog::Catalog;
 use crate::types::{CopyDetection, Mesh, MeshConfig};
 use crate::{Error, Result};
 
@@ -51,25 +52,93 @@ pub(crate) fn resolve_mesh_revision(
         })
 }
 
+const CATALOG_STRIPPED: &str = "catalog";
+
 pub fn list_mesh_names(repo: &gix::Repository) -> Result<Vec<String>> {
-    let mut names = git::list_refs_stripped(repo, "refs/meshes/v1")?;
+    let mut names: Vec<String> = git::list_refs_stripped(repo, "refs/meshes/v1")?
+        .into_iter()
+        .filter(|n| n != CATALOG_STRIPPED)
+        .collect();
+    // Also include catalog entries.
+    if let Ok(cat) = Catalog::load(repo) {
+        for name in cat.names() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
     names.sort();
     Ok(names)
 }
 
 pub(crate) fn list_mesh_refs(repo: &gix::Repository) -> Result<Vec<(String, String)>> {
-    let mut refs = git::list_refs_stripped_with_oids(repo, "refs/meshes/v1")?;
+    let mut refs: Vec<(String, String)> = git::list_refs_stripped_with_oids(repo, "refs/meshes/v1")?
+        .into_iter()
+        .filter(|(n, _)| n != CATALOG_STRIPPED)
+        .collect();
+    // Also include catalog entries for meshes not in per-mesh refs.
+    if let Ok(cat) = Catalog::load(repo) {
+        let existing: std::collections::HashSet<String> =
+            refs.iter().map(|(n, _)| n.clone()).collect();
+        for name in cat.names() {
+            if !existing.contains(&name) {
+                refs.push((name, String::new()));
+            }
+        }
+    }
     refs.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(refs)
 }
 
 pub fn read_mesh(repo: &gix::Repository, name: &str) -> Result<Mesh> {
+    // Try catalog first (fast path when catalog is established).
+    if let Ok(cat) = Catalog::load(repo)
+        && let Some(mesh) = cat.lookup(name)?
+    {
+        return Ok(mesh);
+    }
+    // Fall back to per-mesh ref (pre-catalog meshes).
     read_mesh_at(repo, name, None)
 }
 
 pub fn read_mesh_at(repo: &gix::Repository, name: &str, commit_ish: Option<&str>) -> Result<Mesh> {
     let commit_oid = resolve_mesh_revision(repo, name, commit_ish)?;
-    read_mesh_from_commit(repo, name, &commit_oid)
+
+    // Try pre-catalog format: anchors/config blobs in the commit tree.
+    let result = read_mesh_from_commit(repo, name, &commit_oid)?;
+    if !result.anchors_v2.is_empty() {
+        return Ok(result);
+    }
+
+    // Empty anchors might mean the commit is a catalog commit (tree has .mesh
+    // files instead of anchors/config blobs). Load the catalog at this commit
+    // and look up the mesh.
+    if let Ok(catalog) = load_catalog_at_commit(repo, &commit_oid)
+        && let Some(mesh) = catalog.lookup(name)?
+    {
+        return Ok(mesh);
+    }
+
+    // Neither format matched — return the pre-catalog result as-is.
+    Ok(result)
+}
+
+/// Load the mesh catalog as it appeared at a specific commit.
+fn load_catalog_at_commit<'repo>(
+    repo: &'repo gix::Repository,
+    commit_oid: &str,
+) -> Result<Catalog<'repo>> {
+    let oid = commit_oid
+        .parse::<gix::ObjectId>()
+        .map_err(|e| Error::Git(format!("parse catalog commit oid {commit_oid}: {e}")))?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| Error::Git(format!("find catalog commit {commit_oid}: {e}")))?;
+    let tree = commit
+        .tree()
+        .map_err(|e| Error::Git(format!("catalog commit tree {commit_oid}: {e}")))?;
+    let tree_oid = tree.id().detach().to_string();
+    Catalog::load_at(repo, &tree_oid)
 }
 
 const FOLLOW_SUBJECT_PREFIX: &str = "mesh: follow ";

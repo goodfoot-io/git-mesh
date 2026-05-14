@@ -147,9 +147,15 @@ impl<'repo> Catalog<'repo> {
     }
 
     /// Iterate over all `(name, Mesh)` pairs in the catalog.
+    ///
+    /// Returns entries sorted by name for deterministic iteration order
+    /// (stable cache keys across otherwise-identical resolutions).
     pub fn iter(&self) -> Result<Vec<(String, Mesh)>> {
+        let mut names: Vec<&String> = self.entries.keys().collect();
+        names.sort();
         let mut out = Vec::with_capacity(self.entries.len());
-        for (name, blob_oid) in &self.entries {
+        for name in names {
+            let blob_oid = &self.entries[name];
             let bytes = self.blobs.get(blob_oid).ok_or_else(|| {
                 Error::Git(format!("missing blob `{blob_oid}` for mesh `{name}`"))
             })?;
@@ -164,9 +170,12 @@ impl<'repo> Catalog<'repo> {
         self.entries.is_empty()
     }
 
-    /// Return all mesh names in the catalog.
+    /// Return all mesh names in the catalog, sorted for deterministic
+    /// iteration.
     pub fn names(&self) -> Vec<String> {
-        self.entries.keys().cloned().collect()
+        let mut names: Vec<String> = self.entries.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// Get the blob oid for a mesh entry.
@@ -245,6 +254,62 @@ impl<'repo> Catalog<'repo> {
 #[allow(dead_code)]
 pub(crate) fn open_catalog(repo: &gix::Repository) -> Result<Catalog<'_>> {
     Catalog::load(repo)
+}
+
+// ---------------------------------------------------------------------------
+// Catalog mutation helpers — used by commit, structural, and compact paths.
+// ---------------------------------------------------------------------------
+
+/// Write the catalog tree, create a commit, and CAS-update `refs/meshes/v1/catalog`.
+///
+/// `expected_ref_oid` is the commit that the catalog ref currently points to
+/// (obtained via `resolve_ref_oid_optional_repo` before loading the catalog).
+/// Pass `None` for the very first write (ref doesn't exist yet).
+///
+/// On success returns the new commit OID.
+pub(crate) fn commit_catalog(
+    repo: &gix::Repository,
+    catalog: &Catalog<'_>,
+    message: &str,
+    expected_ref_oid: Option<&str>,
+) -> Result<String> {
+    let tree_oid = catalog.write(repo)?;
+    let parents: Vec<String> = expected_ref_oid
+        .map(|o| vec![o.to_string()])
+        .unwrap_or_default();
+    let new_commit = crate::git::create_commit(repo, &tree_oid, message, &parents)?;
+
+    let update = match expected_ref_oid {
+        Some(old) => crate::git::RefUpdate::Update {
+            name: CATALOG_REF.to_string(),
+            new_oid: new_commit.clone(),
+            expected_old_oid: old.to_string(),
+        },
+        None => crate::git::RefUpdate::Create {
+            name: CATALOG_REF.to_string(),
+            new_oid: new_commit.clone(),
+        },
+    };
+    crate::git::ensure_log_all_ref_updates_always(repo)?;
+    crate::git::apply_ref_transaction_repo(repo, &[update])?;
+    Ok(new_commit)
+}
+
+/// Build a `Mesh` value from its components (used when writing via catalog).
+pub(crate) fn build_mesh(
+    name: &str,
+    message: &str,
+    anchors_v2: &[(String, crate::types::Anchor)],
+    config: &crate::types::MeshConfig,
+) -> crate::types::Mesh {
+    let anchors = anchors_v2.iter().map(|(id, _)| id.clone()).collect();
+    crate::types::Mesh {
+        name: name.to_string(),
+        anchors,
+        anchors_v2: anchors_v2.to_vec(),
+        message: message.to_string(),
+        config: *config,
+    }
 }
 
 #[cfg(test)]

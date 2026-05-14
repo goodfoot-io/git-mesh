@@ -262,7 +262,10 @@ impl SessionStore {
             catalog
                 .iter()?
                 .into_iter()
-                .map(|(name, _mesh)| (name, String::new()))
+                .map(|(name, _mesh)| {
+                    let oid = catalog.entry_oid(&name).unwrap_or_default();
+                    (name, oid)
+                })
                 .collect()
         };
         let json = serde_json::to_vec(&map)?;

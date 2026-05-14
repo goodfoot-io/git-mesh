@@ -1,17 +1,12 @@
 //! Mesh commit pipeline — §6.1, §6.2.
 
 use crate::anchor::create_anchor_with_extent_skipping_blob_bounds;
-use crate::git::{
-    self, RefUpdate, apply_ref_transaction, create_commit, resolve_ref_oid_optional, work_dir,
-};
-use crate::mesh::read::{parse_config_blob, serialize_config_blob};
+use crate::git::{self, resolve_ref_oid_optional, work_dir};
+use crate::mesh::catalog::{Catalog, CATALOG_REF};
 use crate::staging::{self, StagedConfig, Staging};
-use crate::types::{AnchorExtent, Mesh, MeshConfig};
+use crate::types::{AnchorExtent, MeshConfig};
 use crate::validation::validate_mesh_name;
 use crate::{Error, Result};
-use gix::objs::Tree;
-use gix::objs::tree::{Entry, EntryKind};
-use std::path::Path;
 
 fn mesh_ref(name: &str) -> String {
     format!("refs/meshes/v1/{name}")
@@ -29,24 +24,42 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     // surface a useful message.
     check_prefix_collision(repo, name)?;
 
-    let mesh_ref = mesh_ref(name);
-    let base_tip = resolve_ref_oid_optional(wd, &mesh_ref)?;
-
-    // Load current state (if any).
-    let (anchor_v2_records, base_config, base_message) = match base_tip.as_deref() {
-        Some(tip) => {
-            let m = super::read::read_mesh_at(repo, name, Some(tip))?;
-            (m.anchors_v2, m.config, Some(m.message))
+    // Load current state — try catalog first, fall back to per-mesh ref.
+    let (anchor_v2_records, base_config, base_message) = {
+        let cat = Catalog::load(repo)?;
+        if !cat.is_empty() {
+            match cat.lookup(name)? {
+                Some(m) => (m.anchors_v2, m.config, Some(m.message)),
+                None => (
+                    Vec::new(),
+                    MeshConfig {
+                        copy_detection: crate::types::DEFAULT_COPY_DETECTION,
+                        ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
+                        follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
+                    },
+                    None,
+                ),
+            }
+        } else {
+            // Pre-catalog path: read from per-mesh ref.
+            let mesh_ref_name = mesh_ref(name);
+            let base_tip = resolve_ref_oid_optional(wd, &mesh_ref_name)?;
+            match base_tip.as_deref() {
+                Some(tip) => {
+                    let m = super::read::read_mesh_at(repo, name, Some(tip))?;
+                    (m.anchors_v2, m.config, Some(m.message))
+                }
+                None => (
+                    Vec::new(),
+                    MeshConfig {
+                        copy_detection: crate::types::DEFAULT_COPY_DETECTION,
+                        ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
+                        follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
+                    },
+                    None,
+                ),
+            }
         }
-        None => (
-            Vec::new(),
-            MeshConfig {
-                copy_detection: crate::types::DEFAULT_COPY_DETECTION,
-                ignore_whitespace: crate::types::DEFAULT_IGNORE_WHITESPACE,
-                follow_moves: crate::types::DEFAULT_FOLLOW_MOVES,
-            },
-            None,
-        ),
     };
 
     // Dedup adds by `(path, extent)` last-write-wins (plan §D5). The
@@ -224,149 +237,96 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
         new_anchors.push((id, anchor_rec));
     }
 
-    // CAS retry loop (§6). Anchor blobs are content-addressed and already
-    // written; only the tree/commit/ref-update step needs retrying. On
-    // conflict, reload the mesh tip, re-validate post-remove collisions
-    // against the new snapshot, rebuild the tree/commit with the new
-    // parent, and retry.
-    let mut current_parent = base_tip.clone();
-    let mut current_tip_anchors = anchor_v2_records;
-    let mut current_snapshots = snapshots;
+    // Build the anchor list once (same for all retries).
+    let mut combined: Vec<(String, crate::types::Anchor)> = snapshots.clone();
+    for (id, r) in &new_anchors {
+        combined.push((id.clone(), r.clone()));
+    }
+    combined.sort_by(|a, b| {
+        (a.1.path.as_str(), extent_sort_key(&a.1.extent))
+            .cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
+    });
+
     const MAX_RETRIES: usize = 5;
     let new_commit: String;
     let mut attempt: usize = 0;
     loop {
-        // Combine anchors and canonicalize by (path, extent).
-        let mut combined: Vec<(String, crate::types::Anchor)> = current_snapshots.clone();
-        for (id, r) in &new_anchors {
-            combined.push((id.clone(), r.clone()));
-        }
-        combined.sort_by(|a, b| {
-            (a.1.path.as_str(), extent_sort_key(&a.1.extent))
-                .cmp(&(b.1.path.as_str(), extent_sort_key(&b.1.extent)))
-        });
+        let current_ref =
+            crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF)?;
+        let mut catalog = Catalog::load(repo)?;
 
-        // Build tree: `anchors` blob + `config` blob.
-        let config_text = serialize_config_blob(&new_config);
-        let config_blob = git::write_blob_bytes(repo, config_text.as_bytes())?;
+        let mesh = crate::mesh::catalog::build_mesh(
+            name, &message, &combined, &new_config,
+        );
+        catalog.insert(name, &mesh)?;
 
-        let anchors_v2_text: String = {
-            let mut s = String::new();
-            for (id, r) in &combined {
-                s.push_str("id ");
-                s.push_str(id);
-                s.push('\n');
-                s.push_str(&crate::anchor::serialize_anchor(r));
-                s.push('\n');
-            }
-            s
-        };
-        let anchors_v2_blob = git::write_blob_bytes(repo, anchors_v2_text.as_bytes())?;
-
-        // Build a tree with `anchors` and `config` entries.
-        let tree = Tree {
-            entries: vec![
-                Entry {
-                    mode: EntryKind::Blob.into(),
-                    filename: "anchors".into(),
-                    oid: anchors_v2_blob.parse().map_err(|e| {
-                        crate::Error::Git(format!("parse anchors_v2 blob oid: {e}"))
-                    })?,
-                },
-                Entry {
-                    mode: EntryKind::Blob.into(),
-                    filename: "config".into(),
-                    oid: config_blob
-                        .parse()
-                        .map_err(|e| crate::Error::Git(format!("parse config blob oid: {e}")))?,
-                },
-            ],
-        };
-        let tree_oid = repo
-            .write_object(&tree)
-            .map_err(|e| crate::Error::Git(format!("write tree: {e}")))?
-            .detach()
-            .to_string();
-
-        // Commit.
-        let parents: Vec<String> = current_parent
-            .as_deref()
-            .map(|p| vec![p.to_string()])
-            .unwrap_or_default();
-        let candidate = create_commit(repo, &tree_oid, &message, &parents)?;
-
-        // Atomic CAS update. The authoritative path index is updated in
-        // the same ref transaction as the mesh tip, so a successful mesh
-        // commit cannot leave filtered reads with stale candidates.
-        let mesh_update = match current_parent.as_deref() {
-            Some(prev) => RefUpdate::Update {
-                name: mesh_ref.clone(),
-                new_oid: candidate.clone(),
-                expected_old_oid: prev.to_string(),
-            },
-            None => RefUpdate::Create {
-                name: mesh_ref.clone(),
-                new_oid: candidate.clone(),
-            },
-        };
-        let mut updates =
-            super::path_index::ref_updates_for_mesh(repo, name, &current_tip_anchors, &combined)?;
-        updates.push(mesh_update);
-        // Slice 6d: lazily ensure `core.logAllRefUpdates = always` so
-        // refs under `refs/meshes/*` get reflog entries. Doctor reports
-        // an INFO finding when it would set this.
-        crate::git::ensure_log_all_ref_updates_always(repo)?;
-        match apply_ref_transaction(wd, &updates) {
-            Ok(()) => {
-                new_commit = candidate;
+        match crate::mesh::catalog::commit_catalog(
+            repo,
+            &catalog,
+            &message,
+            current_ref.as_deref(),
+        ) {
+            Ok(commit_oid) => {
+                new_commit = commit_oid;
                 break;
             }
             Err(_e) => {
                 attempt += 1;
                 if attempt >= MAX_RETRIES {
+                    let found =
+                        crate::git::resolve_ref_oid_optional_repo(repo, CATALOG_REF)?
+                            .unwrap_or_default();
                     return Err(Error::ConcurrentUpdate {
-                        expected: current_parent.clone().unwrap_or_default(),
-                        found: resolve_ref_oid_optional(wd, &mesh_ref)?.unwrap_or_default(),
+                        expected: current_ref.unwrap_or_default(),
+                        found,
                     });
                 }
-                // Re-read the mesh tip and path-index refs before retrying.
-                // The transaction can fail on either the mesh CAS or one of
-                // the affected path buckets.
-                let latest = resolve_ref_oid_optional(wd, &mesh_ref)?;
-                current_parent = latest;
-                // Re-materialize snapshot from new tip and re-run
-                // post-remove / add collision validation.
-                let new_snapshots = match current_parent.as_deref() {
-                    Some(tip) => {
-                        let m = super::read::read_mesh_at(repo, name, Some(tip))?;
-                        m.anchors_v2
-                    }
-                    None => Vec::new(),
-                };
-                current_tip_anchors = new_snapshots.clone();
-                let mut post = new_snapshots;
-                for rem in &staging.removes {
-                    let idx = post
-                        .iter()
-                        .position(|(_, a)| a.path == rem.path && a.extent == rem.extent)
-                        .ok_or_else(|| Error::AnchorNotInMesh {
-                            path: rem.path.clone(),
-                            start: rem.start(),
-                            end: rem.end(),
-                        })?;
-                    post.remove(idx);
-                }
-                // Adds at the same `(path, extent)` as an existing anchor
-                // are treated as last-write-wins overrides (plan §D5).
-                for a in &staging.adds {
-                    if let Some(idx) = post
-                        .iter()
-                        .position(|(_, a_old)| a_old.path == a.path && a_old.extent == a.extent)
-                    {
-                        post.remove(idx);
-                    }
-                }
-                current_snapshots = post;
+                // CAS conflict — reload catalog and retry.
+                continue;
+            }
+        }
+    }
+
+    // Update path index refs now that the catalog commit succeeded.
+    // These are independent CAS updates (not part of the catalog
+    // transaction), so failures here do not undo the catalog write.
+    let path_updates = super::path_index::ref_updates_for_mesh(
+        repo, name, &anchor_v2_records, &combined,
+    )?;
+    // `ref_updates_for_mesh` already elides no-op updates (same
+    // old and new blob content), so any remaining updates are real.
+    if !path_updates.is_empty() {
+        crate::git::ensure_log_all_ref_updates_always(repo)?;
+        let _ = crate::git::apply_ref_transaction_repo(repo, &path_updates);
+    }
+
+    // Update per-mesh convenience ref so `git log refs/meshes/v1/<name>` works.
+    // Use `apply_ref_transaction` (subprocess) rather than
+    // `apply_ref_transaction_repo` (gix) because gix caches the git config
+    // from repo-open time and won't see the `core.logAllRefUpdates = always`
+    // value written by `ensure_log_all_ref_updates_always`.
+    let mesh_ref_name = mesh_ref(name);
+    crate::git::ensure_log_all_ref_updates_always(repo)?;
+    {
+        match resolve_ref_oid_optional(wd, &mesh_ref_name)? {
+            Some(old_oid) => {
+                let _ = crate::git::apply_ref_transaction(
+                    wd,
+                    &[crate::git::RefUpdate::Update {
+                        name: mesh_ref_name,
+                        new_oid: new_commit.clone(),
+                        expected_old_oid: old_oid,
+                    }],
+                );
+            }
+            None => {
+                let _ = crate::git::apply_ref_transaction(
+                    wd,
+                    &[crate::git::RefUpdate::Create {
+                        name: mesh_ref_name,
+                        new_oid: new_commit.clone(),
+                    }],
+                );
             }
         }
     }
@@ -375,12 +335,6 @@ pub fn commit_mesh(repo: &gix::Repository, name: &str) -> Result<String> {
     let _ = staging::clear_staging(repo, name);
 
     Ok(new_commit)
-}
-
-// Silence unused-import warnings when the above is refactored.
-#[allow(dead_code)]
-fn _unused(_: &Mesh, _: &Path, _: &Staging, _: fn(&str) -> Result<MeshConfig>) {
-    let _ = parse_config_blob;
 }
 
 /// Last-write-wins dedup of `staging.adds` by `(path, extent)`. The
