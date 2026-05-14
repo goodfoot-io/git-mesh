@@ -93,6 +93,57 @@ pub(crate) struct GroupedWalk {
     pub(crate) closed_paths: Option<HashSet<String>>,
 }
 
+/// Maps each tracked path to the set of anchors that depend on it,
+/// enabling a single reverse-indexed walk to fan out per-commit
+/// path-change results to every affected anchor.
+#[derive(Debug, Clone)]
+pub(crate) struct AnchorReverseIndex {
+    /// Every (path, anchor_sha) pair that any mesh anchors against.
+    /// Keyed by path so a per-commit "did this commit touch P?" answer
+    /// can fan out to every (mesh, anchor_id) waiting on P.
+    pub(crate) by_path: HashMap<Vec<u8>, Vec<AnchorRef>>,
+    /// Union of all anchor_sha values — the walk's stop set.
+    /// A commit is "interesting" iff it touches some path in by_path
+    /// AND lies between HEAD and some anchor_sha still being resolved.
+    pub(crate) anchor_shas: HashSet<gix::ObjectId>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AnchorRef {
+    pub(crate) mesh_name: String,
+    pub(crate) anchor_id: String,
+    pub(crate) anchor_sha: gix::ObjectId,
+}
+
+impl AnchorReverseIndex {
+    /// Build the reverse index from all meshes' anchors in a single pass.
+    /// `meshes` is the list of (mesh_name, mesh) pairs being resolved.
+    pub(crate) fn from_meshes(meshes: &[(String, crate::types::Mesh)]) -> Self {
+        let mut by_path: HashMap<Vec<u8>, Vec<AnchorRef>> = HashMap::new();
+        let mut anchor_shas: HashSet<gix::ObjectId> = HashSet::new();
+
+        for (mesh_name, mesh) in meshes {
+            for (anchor_id, anchor) in &mesh.anchors_v2 {
+                let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
+                    Ok(oid) => oid,
+                    Err(_) => continue, // skip malformed SHAs
+                };
+                anchor_shas.insert(sha);
+                by_path
+                    .entry(anchor.path.as_bytes().to_vec())
+                    .or_default()
+                    .push(AnchorRef {
+                        mesh_name: mesh_name.clone(),
+                        anchor_id: anchor_id.clone(),
+                        anchor_sha: sha,
+                    });
+            }
+        }
+
+        Self { by_path, anchor_shas }
+    }
+}
+
 /// Engine-wide shared state: one entry per distinct anchor commit.
 pub(crate) struct ResolveSession {
     walks: HashMap<(String, CopyDetection), GroupedWalk>,
@@ -173,6 +224,10 @@ pub(crate) struct ResolveSession {
     /// When `Some`, accumulates one `TraceRow` per anchor for `--perf-trace` CSV
     /// output. Remains `None` unless `enable_trace()` is called before resolution.
     pub(crate) per_anchor_trace: Option<Vec<crate::perf::TraceRow>>,
+    /// Reverse index mapping tracked paths to the anchors that depend on them.
+    /// Constructed once per `stale_meshes` run by [`AnchorReverseIndex::from_meshes`];
+    /// `None` when no reverse-indexed walk is active.
+    pub(crate) reverse_index: Option<AnchorReverseIndex>,
 }
 
 impl ResolveSession {
@@ -213,6 +268,7 @@ impl ResolveSession {
             anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
+            reverse_index: None,
         }
     }
 
