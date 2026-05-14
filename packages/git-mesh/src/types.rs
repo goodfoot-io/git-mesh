@@ -183,6 +183,10 @@ pub struct MeshResolved {
     /// Pending mesh ops surfaced from `.git/mesh/staging/<name>` when
     /// `LayerSet.staged_mesh` is on. Empty otherwise.
     pub pending: Vec<PendingFinding>,
+    /// Committed `follow_moves` flag from the mesh config, carried through
+    /// so post-resolution code (e.g. `git mesh stale` auto-follow precheck)
+    /// does not have to reload the full catalog to read it.
+    pub follow_moves: bool,
 }
 
 /// Public error boundary for the `git-mesh` library.

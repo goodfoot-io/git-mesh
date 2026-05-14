@@ -291,6 +291,7 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
                         message: String::new(),
                         anchors: Vec::new(),
                         pending,
+                        follow_moves: false,
                     });
                 }
             }
@@ -1414,12 +1415,12 @@ pub(super) fn run_auto_follow_pass(
     meshes: &[MeshResolved],
 ) -> HashSet<String> {
     let mut followed_ids: HashSet<String> = HashSet::new();
-    if !(args.auto_follow || meshes.iter().any(|m| effective_follow_moves(repo, &m.name))) {
+    let _perf = crate::perf::span("stale.auto-follow");
+    if !(args.auto_follow || meshes.iter().any(|m| effective_follow_moves(repo, m))) {
         return followed_ids;
     }
-    let _perf = crate::perf::span("stale.auto-follow");
     for m in meshes {
-        if !args.auto_follow && !effective_follow_moves(repo, &m.name) {
+        if !args.auto_follow && !effective_follow_moves(repo, m) {
             continue;
         }
         // Guardrail: any Changed anchor in this mesh suppresses the entire mesh.
@@ -1486,11 +1487,9 @@ pub(super) fn run_auto_follow_pass(
 /// Reads the committed mesh config and overlays any staged config so that
 /// `git mesh config <name> follow-moves true` (which only stages the change)
 /// is honoured without a separate `git mesh commit` step.
-pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh_name: &str) -> bool {
-    let committed_fm = crate::mesh::read::read_mesh(repo, mesh_name)
-        .map(|m| m.config.follow_moves)
-        .unwrap_or(false);
-    let staging = crate::staging::read_staging(repo, mesh_name).unwrap_or_default();
+pub(super) fn effective_follow_moves(repo: &gix::Repository, mesh: &MeshResolved) -> bool {
+    let committed_fm = mesh.follow_moves;
+    let staging = crate::staging::read_staging(repo, &mesh.name).unwrap_or_default();
     let (_, _, fm) = crate::staging::resolve_staged_config(
         &staging,
         (

@@ -513,6 +513,7 @@ fn resolve_loaded_mesh_with_state(
         message: mesh.message,
         anchors,
         pending,
+        follow_moves: mesh.config.follow_moves,
     })
 }
 
@@ -1100,6 +1101,7 @@ mod tests {
                 })
                 .collect(),
             pending: vec![],
+            follow_moves: false,
         }
     }
 
