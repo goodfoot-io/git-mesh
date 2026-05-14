@@ -135,9 +135,14 @@ pub(crate) struct ResolveSession {
     pub(crate) anchors_orphaned: u64,
     pub(crate) anchors_merge_conflict: u64,
     pub(crate) anchors_unavailable: u64,
+    /// Counter: anchors skipped entirely via [`can_skip_clean_head_pinned_mesh`]
+    /// (the whole mesh was clean and pinned at HEAD). These anchors are not
+    /// resolved individually, but they are counted toward `anchors_total`.
+    pub(crate) anchors_skipped_clean_head: u64,
     /// Counter: anchors that returned via [`clean_head_fast_path`] (early
     /// return). The remainder went through the full layer-comparison path
-    /// (`anchors_total - anchors_fast_path_hits == anchors_full_resolution`).
+    /// (`anchors_total - anchors_fast_path_hits - anchors_skipped_clean_head
+    ///  == anchors_full_resolution`).
     pub(crate) anchors_fast_path_hits: u64,
     /// Counter: anchors that went through the full per-layer resolution
     /// (`resolve_anchor_inner` past the fast-path).
@@ -185,6 +190,7 @@ impl ResolveSession {
             anchors_orphaned: 0,
             anchors_merge_conflict: 0,
             anchors_unavailable: 0,
+            anchors_skipped_clean_head: 0,
             anchors_fast_path_hits: 0,
             anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
@@ -209,6 +215,7 @@ impl ResolveSession {
             + self.anchors_orphaned
             + self.anchors_merge_conflict
             + self.anchors_unavailable
+            + self.anchors_skipped_clean_head
     }
 
     /// Build the reverse-indexed walk: one pass from HEAD, Bloom-gated,

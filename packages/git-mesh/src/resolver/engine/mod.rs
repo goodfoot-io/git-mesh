@@ -668,6 +668,8 @@ fn stale_meshes_inner(
                     can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)?;
                 can_skip_clean_head_ns += t.elapsed().as_nanos();
                 if skip {
+                    state.session.anchors_skipped_clean_head +=
+                        mesh.anchors_v2.len() as u64;
                     continue;
                 }
             }
@@ -747,12 +749,18 @@ fn stale_meshes_inner(
         state.session.anchors_unavailable,
     );
     crate::perf::counter(
+        "session.anchors-skipped-clean-head",
+        state.session.anchors_skipped_clean_head,
+    );
+    crate::perf::counter(
         "session.anchors-fast-path-hits",
         state.session.anchors_fast_path_hits,
     );
     crate::perf::counter(
         "session.anchors-full-resolution",
-        anchors_total.saturating_sub(state.session.anchors_fast_path_hits),
+        anchors_total
+            .saturating_sub(state.session.anchors_fast_path_hits)
+            .saturating_sub(state.session.anchors_skipped_clean_head),
     );
     // Category 3: cache L1/L2 hit/miss counts, L2 wall-clock (microseconds),
     // L2 byte volume, and per-anchor resolution distribution.
