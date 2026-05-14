@@ -11,6 +11,7 @@
 use crate::cli::format;
 use crate::cli::{CliError, NextStep, StaleArgs, StaleFormat};
 use crate::git;
+use crate::mesh::catalog::Catalog;
 use crate::mesh::follow::{follow_moves, FollowDecision};
 use crate::resolver::{
     build_pending_findings, resolve_named_meshes, sort_meshes_by_anchor_path, stale_meshes,
@@ -138,20 +139,29 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
     // even when all are clean.
     let (total_committed_mesh_count, total_committed_anchor_count): (usize, usize) = {
         let _perf = crate::perf::span("stale.count-totals");
-        let mesh_count = crate::mesh::read::list_mesh_refs(repo)
-            .map(|refs| refs.len())
-            .unwrap_or(0);
-        let anchor_count = crate::mesh::read::list_mesh_refs(repo)
-            .map(|refs| {
-                refs.iter()
-                    .filter_map(|(name, oid)| {
-                        crate::mesh::read::read_mesh_from_commit(repo, name, oid).ok()
-                    })
-                    .map(|m| m.anchors.len())
-                    .sum()
-            })
-            .unwrap_or(0);
-        (mesh_count, anchor_count)
+        // TEMPORARY: try catalog first, fall back to per-mesh refs.
+        let catalog = Catalog::load(repo)?;
+        if !catalog.is_empty() {
+            let pairs = catalog.iter()?;
+            let mesh_count = pairs.len();
+            let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
+            (mesh_count, anchor_count)
+        } else {
+            let mesh_count = crate::mesh::read::list_mesh_refs(repo)
+                .map(|refs| refs.len())
+                .unwrap_or(0);
+            let anchor_count = crate::mesh::read::list_mesh_refs(repo)
+                .map(|refs| {
+                    refs.iter()
+                        .filter_map(|(name, oid)| {
+                            crate::mesh::read::read_mesh_from_commit(repo, name, oid).ok()
+                        })
+                        .map(|m| m.anchors.len())
+                        .sum()
+                })
+                .unwrap_or(0);
+            (mesh_count, anchor_count)
+        }
     };
 
     // --perf-trace conflicts with positional paths (requires a full scan).
@@ -188,30 +198,35 @@ pub fn run_stale(repo: &gix::Repository, args: StaleArgs) -> Result<i32> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut missing_files: Vec<String> = Vec::new();
 
+        // TEMPORARY: try catalog first, fall back to per-mesh refs.
+        let catalog = Catalog::load(repo)?;
+        let catalog_active = !catalog.is_empty();
+
         for arg in &args.paths {
             let mut found = false;
 
             // Step 1: try mesh name first when arg matches mesh-name shape.
             if validate_mesh_name_shape(arg).is_ok() {
-                let mesh_ref = format!("refs/meshes/v1/{arg}");
-                match crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)? {
-                    Some(_oid) => {
-                        // Committed mesh ref exists.
+                let is_committed = if catalog_active {
+                    catalog.lookup(arg)?.is_some()
+                } else {
+                    let mesh_ref = format!("refs/meshes/v1/{arg}");
+                    crate::git::resolve_ref_oid_optional_repo(repo, &mesh_ref)?.is_some()
+                };
+                if is_committed {
+                    if seen.insert(arg.clone()) {
+                        mesh_names.push(arg.clone());
+                    }
+                    found = true;
+                } else {
+                    // Not a committed mesh; check for staging-only mesh before
+                    // falling through to path-index lookup. Matches the original
+                    // single-mesh path's MeshNotFound → staging check.
+                    if layers.staged_mesh && !build_pending_findings(repo, arg).is_empty() {
                         if seen.insert(arg.clone()) {
                             mesh_names.push(arg.clone());
                         }
                         found = true;
-                    }
-                    None => {
-                        // Not a committed mesh; check for staging-only mesh before
-                        // falling through to path-index lookup. Matches the original
-                        // single-mesh path's MeshNotFound → staging check.
-                        if layers.staged_mesh && !build_pending_findings(repo, arg).is_empty() {
-                            if seen.insert(arg.clone()) {
-                                mesh_names.push(arg.clone());
-                            }
-                            found = true;
-                        }
                     }
                 }
             }

@@ -159,6 +159,11 @@ impl<'repo> Catalog<'repo> {
         Ok(out)
     }
 
+    /// Returns true if the catalog has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Return all mesh names in the catalog.
     pub fn names(&self) -> Vec<String> {
         self.entries.keys().cloned().collect()

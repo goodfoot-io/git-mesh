@@ -12,9 +12,10 @@ use super::layers::{
 };
 use super::session::ResolveSession;
 
+use crate::mesh::catalog::Catalog;
 use crate::mesh::read::{list_mesh_refs, read_mesh, read_mesh_from_commit};
 use crate::types::{
-    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet,
+    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet, Mesh,
     MeshResolved, PendingFinding,
 };
 use crate::{Error, Result};
@@ -249,7 +250,17 @@ pub fn resolve_anchor(
 ) -> Result<AnchorResolved> {
     let _perf = crate::perf::span("resolver.resolve-anchor");
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
-    let mesh = read_mesh(repo, mesh_name)?;
+
+    // TEMPORARY: try catalog first, fall back to old read_mesh.
+    let mesh = {
+        let _perf = crate::perf::span("resolver.read-catalog");
+        match Catalog::load(repo) {
+            Ok(catalog) if !catalog.is_empty() => catalog
+                .lookup(mesh_name)?
+                .ok_or_else(|| Error::MeshNotFound(mesh_name.to_string()))?,
+            _ => read_mesh(repo, mesh_name)?,
+        }
+    };
     let mut out = match mesh.anchors_v2.into_iter().find(|(id, _)| id == anchor_id) {
         Some((_, r)) => resolve_anchor_inner(repo, &mut state, &mesh.config, anchor_id, r)?,
         None => orphaned_placeholder(anchor_id),
@@ -298,9 +309,18 @@ fn resolve_mesh_with_state(
     name: &str,
     options: EngineOptions,
 ) -> Result<MeshResolved> {
+    // TEMPORARY: try catalog first, fall back to old read_mesh.
     let mesh = {
-        let _perf = crate::perf::span("resolver.read-mesh");
-        read_mesh(repo, name)?
+        let _perf = crate::perf::span("resolver.read-catalog");
+        match Catalog::load(repo) {
+            Ok(catalog) if !catalog.is_empty() => catalog
+                .lookup(name)?
+                .ok_or_else(|| Error::MeshNotFound(name.to_string()))?,
+            _ => {
+                let _perf = crate::perf::span("resolver.read-mesh");
+                read_mesh(repo, name)?
+            }
+        }
     };
     resolve_loaded_mesh_with_state(repo, state, mesh, options)
 }
@@ -585,9 +605,31 @@ fn stale_meshes_inner(
     enable_trace: bool,
 ) -> Result<(Vec<MeshResolved>, Vec<crate::perf::TraceRow>)> {
     crate::perf::reset_subroutine_counters();
-    let mesh_refs = {
-        let _perf = crate::perf::span("resolver.list-meshes");
-        list_mesh_refs(repo)?
+    // Load catalog — replaces list_mesh_refs + per-mesh read_mesh_from_commit.
+    // TEMPORARY: falls back to per-mesh refs when the catalog ref doesn't exist.
+    let mesh_pairs: Vec<(String, Mesh)> = {
+        let catalog = {
+            let _perf = crate::perf::span("resolver.read-catalog");
+            Catalog::load(repo)?
+        };
+        if catalog.is_empty() {
+            // Legacy fallback: catalog ref doesn't exist, use per-mesh refs.
+            let mesh_refs = {
+                let _perf = crate::perf::span("resolver.list-meshes");
+                list_mesh_refs(repo)?
+            };
+            mesh_refs
+                .into_iter()
+                .filter_map(|(name, commit_oid)| {
+                    let _perf = crate::perf::span("resolver.read-mesh");
+                    read_mesh_from_commit(repo, &name, &commit_oid)
+                        .ok()
+                        .map(|m| (name, m))
+                })
+                .collect()
+        } else {
+            catalog.iter()?
+        }
     };
     let mut out = Vec::new();
     let mut state = {
@@ -600,11 +642,7 @@ fn stale_meshes_inner(
     let mut can_skip_clean_head_ns: u128 = 0;
     {
         let _perf = crate::perf::span("resolver.resolve-stale-meshes");
-        for (name, commit_oid) in mesh_refs {
-            let mesh = {
-                let _perf = crate::perf::span("resolver.read-mesh");
-                read_mesh_from_commit(repo, &name, &commit_oid)?
-            };
+        for (name, mesh) in mesh_pairs {
             // When tracing is active we must resolve every mesh so every anchor
             // gets a TraceRow. Skipping here would silently drop clean meshes from
             // the CSV and break the documented invariant `wc -l == anchors-total + 1`.
@@ -756,17 +794,13 @@ pub(crate) fn resolve_meshes_in_order(
     names: &[String],
     options: EngineOptions,
 ) -> Result<Vec<(String, std::result::Result<MeshResolved, Error>)>> {
-    let committed_refs: HashMap<String, String> = list_mesh_refs(repo)?.into_iter().collect();
+    // resolve_mesh_with_state handles catalog/fallback internally.
     let mut out = Vec::with_capacity(names.len());
     let mut state = EngineState::new(repo, options.layers, options.needs_all_layers)?;
     {
         let _perf = crate::perf::span("resolver.resolve-meshes");
         for name in names {
-            let resolved = if let Some(commit_oid) = committed_refs.get(name) {
-                resolve_mesh_with_state_at(repo, &mut state, name, commit_oid, options)
-            } else {
-                resolve_mesh_with_state(repo, &mut state, name, options)
-            };
+            let resolved = resolve_mesh_with_state(repo, &mut state, name, options);
             out.push((name.clone(), resolved));
         }
     }
