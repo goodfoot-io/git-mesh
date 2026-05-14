@@ -23,6 +23,7 @@ pub(crate) mod cache;
 pub(crate) mod engine;
 pub(crate) mod layers;
 pub(crate) mod linemap;
+pub(crate) mod persist;
 pub(crate) mod session;
 pub(crate) mod timeline;
 pub(crate) mod walker;
