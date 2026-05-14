@@ -10,11 +10,13 @@
 
 use crate::Result;
 use crate::git;
+use crate::perf;
 use crate::resolver::bloom::CommitGraphBloom;
 use crate::resolver::cache::Cache;
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
 /// name_status_entries)`. Produced by the reverse-indexed walk once per
@@ -91,7 +93,124 @@ pub(crate) struct ReverseWalkOutput {
     /// Each vec contains only the commits that touch that anchor's path,
     /// including commits where the path was renamed (the entries include
     /// the `Renamed` NS variant so downstream consumers can follow the trail).
-    pub(crate) per_anchor_deltas: HashMap<(String, String), Vec<CommitDelta>>,
+    pub(crate) per_anchor_deltas: HashMap<(String, String), Vec<Arc<CommitDelta>>>,
+}
+
+/// Maps path bytes to the indexes of anchors currently tracking that path,
+/// and is mutated only when commits rename or copy a tracked path. Replaces
+/// the old "scan every active anchor for every commit" inner loop in
+/// [`ResolveSession::build_reverse_walk`].
+///
+/// Phase 0 of the three-phase plan: the previous walk had an anchor-quadratic
+/// `O(C * A)` bookkeeping loop. `PathIndex` reduces the per-commit cost to
+/// `O(P * B + E_c + matches)` (distinct active paths probed against the Bloom
+/// filter plus actual rename/copy fan-out work).
+pub(crate) struct PathIndex {
+    /// Path bytes -> indexes (into `per_anchor`) of anchors tracking that path.
+    by_path: HashMap<Arc<[u8]>, Vec<u32>>,
+    /// Distinct paths currently tracked by at least one active anchor. Used as
+    /// the Bloom probe set per commit. Maintained as a vector for cheap
+    /// iteration; `active_pos` is the parallel position map for `swap_remove`.
+    active_paths: Vec<Arc<[u8]>>,
+    active_pos: HashMap<Arc<[u8]>, usize>,
+    /// `path_of[i]` is the current tracked path for the anchor at `per_anchor[i]`.
+    path_of: Vec<Arc<[u8]>>,
+    /// Counter: number of rename/copy path updates applied. Reported via the
+    /// `resolver.build-walk.path-index-renames` perf span/counter.
+    pub(crate) rename_updates: u64,
+}
+
+impl PathIndex {
+    pub(crate) fn new(per_anchor: &[AnchorWalkState]) -> Self {
+        let mut by_path: HashMap<Arc<[u8]>, Vec<u32>> = HashMap::new();
+        let mut active_paths: Vec<Arc<[u8]>> = Vec::new();
+        let mut active_pos: HashMap<Arc<[u8]>, usize> = HashMap::new();
+        let mut path_of: Vec<Arc<[u8]>> = Vec::with_capacity(per_anchor.len());
+        for (i, state) in per_anchor.iter().enumerate() {
+            let key: Arc<[u8]> = state.current_path.clone();
+            let bucket = by_path.entry(key.clone()).or_default();
+            bucket.push(i as u32);
+            if !active_pos.contains_key(&key) {
+                active_pos.insert(key.clone(), active_paths.len());
+                active_paths.push(key.clone());
+            }
+            path_of.push(key);
+        }
+        Self {
+            by_path,
+            active_paths,
+            active_pos,
+            path_of,
+            rename_updates: 0,
+        }
+    }
+
+    pub(crate) fn active_paths(&self) -> &[Arc<[u8]>] {
+        &self.active_paths
+    }
+
+    pub(crate) fn anchors_for_path(&self, path: &[u8]) -> Option<&[u32]> {
+        self.by_path.get(path).map(|v| v.as_slice())
+    }
+
+    fn remove_path_if_empty(&mut self, path: &Arc<[u8]>) {
+        let still_present = self
+            .by_path
+            .get(path)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if still_present {
+            return;
+        }
+        self.by_path.remove(path);
+        if let Some(pos) = self.active_pos.remove(path) {
+            let last = self.active_paths.len() - 1;
+            self.active_paths.swap_remove(pos);
+            if pos != last {
+                let moved = self.active_paths[pos].clone();
+                self.active_pos.insert(moved, pos);
+            }
+        }
+    }
+
+    /// Move `anchor_idx` from its current tracked path to `new_path`. Called
+    /// when a commit renames or copies the tracked path. Maintains
+    /// `active_paths` via `swap_remove` so iteration order is unstable but
+    /// the set semantics are preserved.
+    pub(crate) fn rename(&mut self, anchor_idx: u32, new_path: Arc<[u8]>) {
+        let old_path = self.path_of[anchor_idx as usize].clone();
+        if old_path == new_path {
+            return;
+        }
+        self.rename_updates += 1;
+        if let Some(bucket) = self.by_path.get_mut(&old_path)
+            && let Some(pos) = bucket.iter().position(|&i| i == anchor_idx)
+        {
+            bucket.swap_remove(pos);
+        }
+        self.remove_path_if_empty(&old_path);
+
+        let bucket = self.by_path.entry(new_path.clone()).or_default();
+        bucket.push(anchor_idx);
+        if !self.active_pos.contains_key(&new_path) {
+            self.active_pos
+                .insert(new_path.clone(), self.active_paths.len());
+            self.active_paths.push(new_path.clone());
+        }
+        self.path_of[anchor_idx as usize] = new_path;
+    }
+
+    /// Drop an anchor entirely (used when its `anchor_sha` is observed in
+    /// the walk and the anchor should no longer accumulate deltas).
+    pub(crate) fn deactivate(&mut self, anchor_idx: u32) {
+        let path = self.path_of[anchor_idx as usize].clone();
+        if let Some(bucket) = self.by_path.get_mut(&path)
+            && let Some(pos) = bucket.iter().position(|&i| i == anchor_idx)
+        {
+            bucket.swap_remove(pos);
+        }
+        self.remove_path_if_empty(&path);
+    }
 }
 
 /// Engine-wide shared state: session-scoped caches and counters for one
@@ -241,229 +360,247 @@ impl ResolveSession {
         repo: &gix::Repository,
         meshes: &[(String, crate::types::Mesh)],
     ) -> Result<()> {
-        // 1. Build the reverse index.
+        let _span_total = perf::span("resolver.build-walk");
+
+        // 1. Build the reverse index and per-anchor state.
         let t0 = std::time::Instant::now();
-        let reverse_index = AnchorReverseIndex::from_meshes(meshes);
+        let reverse_index;
+        let mut per_anchor: Vec<AnchorWalkState>;
+        let mut path_index;
+        let max_copy;
+        let head_sha;
+        let head_oid;
+        {
+            let _span_index = perf::span("resolver.build-walk.index");
+            reverse_index = AnchorReverseIndex::from_meshes(meshes);
+
+            // Most permissive copy_detection across all meshes.
+            max_copy = meshes
+                .iter()
+                .map(|(_, m)| m.config.copy_detection)
+                .max()
+                .unwrap_or(CopyDetection::Off);
+
+            // Initialize per-anchor state.
+            per_anchor = Vec::new();
+            for (mesh_name, mesh) in meshes {
+                for (anchor_id, anchor) in &mesh.anchors_v2 {
+                    let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    per_anchor.push(AnchorWalkState {
+                        mesh_name: mesh_name.clone(),
+                        anchor_id: anchor_id.clone(),
+                        anchor_sha: sha,
+                        current_path: Arc::from(anchor.path.as_bytes()),
+                        deltas: Vec::new(),
+                        anchor_passed: false,
+                    });
+                }
+            }
+
+            path_index = PathIndex::new(&per_anchor);
+
+            head_sha = git::head_oid(repo)?;
+            head_oid = gix::ObjectId::from_hex(head_sha.as_bytes())
+                .map_err(|e| crate::Error::Git(format!("parse HEAD: {e}")))?;
+        }
         self.reverse_index_build_ms = t0.elapsed().as_millis() as u64;
 
-        // 2. Compute the most permissive copy_detection across all meshes.
-        //    The walk produces a single name_status per commit; using the max
-        //    ensures copies are detected when any mesh requires them, even
-        //    though walker::advance_with_entries later filters per-anchor path.
-        let max_copy = meshes
-            .iter()
-            .map(|(_, m)| m.config.copy_detection)
-            .max()
-            .unwrap_or(CopyDetection::Off);
+        // 2. Open the Bloom filter (fail-closed — no silent fallback).
+        let bloom = {
+            let _span_bloom = perf::span("resolver.build-walk.bloom-open");
+            CommitGraphBloom::open(repo).map_err(crate::Error::Git)?
+        };
 
-        // 3. Open the Bloom filter (fail-closed — no silent fallback).
-        let bloom = CommitGraphBloom::open(repo)
-            .map_err(crate::Error::Git)?;
-
-        // 3. Get HEAD oid.
-        let head_sha = git::head_oid(repo)?;
-        let head_oid = gix::ObjectId::from_hex(head_sha.as_bytes())
-            .map_err(|e| crate::Error::Git(format!("parse HEAD: {e}")))?;
-
-        // 4. Initialize per-anchor state.
-        let mut per_anchor: Vec<AnchorWalkState> = Vec::new();
-        for (mesh_name, mesh) in meshes {
-            for (anchor_id, anchor) in &mesh.anchors_v2 {
-                let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                per_anchor.push(AnchorWalkState {
-                    mesh_name: mesh_name.clone(),
-                    anchor_id: anchor_id.clone(),
-                    anchor_sha: sha,
-                    current_path: anchor.path.as_bytes().to_vec(),
-                    deltas: Vec::new(),
-                    anchor_passed: false,
-                });
-            }
-        }
-
-        // 5. Walk from HEAD reverse-chronologically.
+        // 3. Walk from HEAD reverse-chronologically.
         let mut stop_set: HashSet<gix::ObjectId> = reverse_index.anchor_shas;
 
-        let walk = repo
-            .rev_walk([head_oid])
-            .sorting(gix::revision::walk::Sorting::BreadthFirst)
-            .all()
-            .map_err(|e| crate::Error::Git(format!("rev walk: {e}")))?;
+        {
+            let _span_walk = perf::span("resolver.build-walk.walk");
+            let walk = repo
+                .rev_walk([head_oid])
+                .sorting(gix::revision::walk::Sorting::BreadthFirst)
+                .all()
+                .map_err(|e| crate::Error::Git(format!("rev walk: {e}")))?;
 
-        for info in walk {
-            let info = info.map_err(|e| crate::Error::Git(format!("rev walk commit: {e}")))?;
-            let commit_oid = info.id;
+            for info in walk {
+                let info =
+                    info.map_err(|e| crate::Error::Git(format!("rev walk commit: {e}")))?;
+                let commit_oid = info.id;
 
-            // Check stop condition: remove this commit from the set of
-            // anchor_shas not yet observed. Mark the matching anchor as
-            // passed so we stop recording new deltas for it.
-            if stop_set.remove(&commit_oid) {
-                for state in &mut per_anchor {
-                    if state.anchor_sha == commit_oid {
-                        state.anchor_passed = true;
+                // Stop-set handling: when a commit equals an anchor_sha, mark
+                // every anchor with that sha as passed and remove them from
+                // the path index so they no longer contribute to Bloom probes
+                // or fan-out.
+                if stop_set.remove(&commit_oid) {
+                    for (i, state) in per_anchor.iter_mut().enumerate() {
+                        if !state.anchor_passed && state.anchor_sha == commit_oid {
+                            state.anchor_passed = true;
+                            path_index.deactivate(i as u32);
+                        }
                     }
                 }
-            }
-            if stop_set.is_empty() {
-                break;
-            }
+                if stop_set.is_empty() {
+                    break;
+                }
 
-            self.walk_commits_visited += 1;
+                self.walk_commits_visited += 1;
 
-            // Collect unique tracked paths across all active (non-passed)
-            // anchors into a single set for Bloom querying.
-            let mut bloom_check_paths: Vec<Vec<u8>> = Vec::new();
-            let mut seen_paths: HashSet<Vec<u8>> = HashSet::new();
-            for state in &per_anchor {
-                if state.anchor_passed {
+                if path_index.active_paths().is_empty() {
                     continue;
                 }
-                if seen_paths.insert(state.current_path.clone()) {
-                    bloom_check_paths.push(state.current_path.clone());
-                }
-            }
 
-            if bloom_check_paths.is_empty() {
-                continue;
-            }
+                // Bloom filter gate: probe distinct active paths only.
+                // When the commit is not in the commit-graph, fall back to
+                // assuming all tracked paths may have changed (correctness:
+                // the Bloom filter is an optimization, not a gate).
+                let positives: Vec<Arc<[u8]>> =
+                    if let Some(commit_pos) = bloom.commit_position(&commit_oid) {
+                        let v: Vec<Arc<[u8]>> = path_index
+                            .active_paths()
+                            .iter()
+                            .filter(|p| bloom.maybe_contains(commit_pos, p))
+                            .cloned()
+                            .collect();
+                        if v.is_empty() {
+                            self.walk_bloom_skips += 1;
+                            continue;
+                        }
+                        v
+                    } else {
+                        path_index.active_paths().to_vec()
+                    };
 
-            // Bloom filter gate: paths that might have changed.
-            // When the commit is not in the commit-graph (no Bloom
-            // position), we cannot Bloom-check and must assume all
-            // tracked paths may have changed.  The Bloom filter is an
-            // optimization, not a correctness gate — skipping commits
-            // that might contain relevant changes would produce
-            // incorrect results.
-            let mut bloom_positives: Vec<Vec<u8>> = Vec::new();
-            if let Some(commit_pos) = bloom.commit_position(&commit_oid) {
-                for path in &bloom_check_paths {
-                    if bloom.maybe_contains(commit_pos, path) {
-                        bloom_positives.push(path.clone());
+                // Bloom says "maybe" for at least one path — run tree-diff.
+                self.walk_tree_diffs += 1;
+
+                let commit_sha_str = commit_oid.to_string();
+                let commit_obj = repo
+                    .find_commit(commit_oid)
+                    .map_err(|e| {
+                        crate::Error::Git(format!("find commit {commit_oid}: {e}"))
+                    })?;
+                let parent_oid = match commit_obj.parent_ids().next() {
+                    Some(p) => p.detach(),
+                    None => continue, // root commit — nothing older to diff against.
+                };
+                let parent_sha_str = parent_oid.to_string();
+
+                let entries = walker::name_status(
+                    repo,
+                    &parent_sha_str,
+                    &commit_sha_str,
+                    max_copy,
+                    &mut self.warnings,
+                )?;
+
+                // Count Bloom false positives: paths Bloom said "maybe" that
+                // do not appear in the actual tree-diff result. Built lazily
+                // (only when there were Bloom positives that mattered).
+                if !positives.is_empty() {
+                    let mut actual_paths: HashSet<&[u8]> = HashSet::new();
+                    for e in &entries {
+                        match e {
+                            NS::Added { path }
+                            | NS::Modified { path }
+                            | NS::Deleted { path } => {
+                                actual_paths.insert(path.as_bytes());
+                            }
+                            NS::Renamed { from, to }
+                            | NS::Copied { from, to } => {
+                                actual_paths.insert(from.as_bytes());
+                                actual_paths.insert(to.as_bytes());
+                            }
+                        }
+                    }
+                    for bp in &positives {
+                        if !actual_paths.contains(bp.as_ref()) {
+                            self.walk_bloom_false_positives += 1;
+                        }
                     }
                 }
-                if bloom_positives.is_empty() {
-                    self.walk_bloom_skips += 1;
-                    continue;
-                }
-            } else {
-                // Not in commit-graph: check all tracked paths.
-                bloom_positives = bloom_check_paths;
-            }
 
-            // Bloom says "maybe" for at least one path — run tree-diff.
-            self.walk_tree_diffs += 1;
+                // Fan out via the path index. Collect rename/copy follow-ups
+                // first so the path index can be mutated after the entry loop
+                // without invalidating its iterators.
+                let delta = Arc::new(CommitDelta {
+                    parent: parent_sha_str,
+                    commit: commit_sha_str,
+                    entries,
+                });
 
-            let commit_sha_str = commit_oid.to_string();
-            let commit_obj = repo
-                .find_commit(commit_oid)
-                .map_err(|e| crate::Error::Git(format!("find commit {commit_oid}: {e}")))?;
-            let parent_oid = match commit_obj.parent_ids().next() {
-                Some(p) => p.detach(),
-                None => {
-                    // Root commit — nothing older to diff against.
-                    continue;
-                }
-            };
-            let parent_sha_str = parent_oid.to_string();
-
-            // Run name_status with max copy detection across all meshes.
-            // Different meshes may have different copy_detection settings; using
-            // the most permissive ensures that copies are available for every
-            // mesh even though walker::advance_with_entries later filters per
-            // anchor. Warnings (rename budget notes, budget downgrade notes)
-            // are accumulated on the session for stderr output via
-            // EngineState::finish.
-            let entries = walker::name_status(
-                repo,
-                &parent_sha_str,
-                &commit_sha_str,
-                max_copy,
-                &mut self.warnings,
-            )?;
-
-            // Count false positives: paths Bloom said "maybe" but that
-            // don't appear in the actual tree-diff result.
-            let actual_paths: HashSet<Vec<u8>> = entries
-                .iter()
-                .flat_map(|e| {
-                    let mut paths: Vec<Vec<u8>> = Vec::new();
-                    match e {
+                // (affected_path, target_path_for_rename_or_copy_or_None)
+                let mut renames: Vec<(u32, Arc<[u8]>)> = Vec::new();
+                for entry in &delta.entries {
+                    let (source_bytes, target_bytes): (&[u8], Option<&[u8]>) = match entry {
                         NS::Added { path }
                         | NS::Modified { path }
-                        | NS::Deleted { path } => {
-                            paths.push(path.as_bytes().to_vec())
-                        }
+                        | NS::Deleted { path } => (path.as_bytes(), None),
                         NS::Renamed { from, to } | NS::Copied { from, to } => {
-                            paths.push(from.as_bytes().to_vec());
-                            paths.push(to.as_bytes().to_vec());
-                        }
-                    }
-                    paths
-                })
-                .collect();
-
-            for bp in &bloom_positives {
-                if !actual_paths.contains(bp) {
-                    self.walk_bloom_false_positives += 1;
-                }
-            }
-
-            // Fan out to anchors whose tracked path was affected.
-            let delta = CommitDelta {
-                parent: parent_sha_str,
-                commit: commit_sha_str,
-                entries: entries.clone(),
-            };
-
-            'anchor_loop: for state in &mut per_anchor {
-                if state.anchor_passed {
-                    continue;
-                }
-
-                // Check each entry against this anchor's current tracked path.
-                for entry in &entries {
-                    let affects = match entry {
-                        NS::Added { path }
-                        | NS::Modified { path }
-                        | NS::Deleted { path } => {
-                            path.as_bytes() == state.current_path.as_slice()
-                        }
-                        NS::Renamed { from, to: _ } | NS::Copied { from, to: _ } => {
-                            from.as_bytes() == state.current_path.as_slice()
+                            (from.as_bytes(), Some(to.as_bytes()))
                         }
                     };
 
-                    if affects {
-                        // Update tracked path for renames.
-                        if let NS::Renamed { from: _, to }
-                        | NS::Copied { from: _, to } = entry
-                        {
-                            state.current_path = to.as_bytes().to_vec();
-                        }
+                    // Snapshot anchor indexes for this path so the borrow on
+                    // `path_index.by_path` is released before we record renames.
+                    let anchor_idxs: Vec<u32> = match path_index.anchors_for_path(source_bytes) {
+                        Some(v) => v.to_vec(),
+                        None => continue,
+                    };
 
-                        state.deltas.push(delta.clone());
-                        continue 'anchor_loop;
+                    let new_path: Option<Arc<[u8]>> = target_bytes.map(Arc::from);
+
+                    for anchor_idx in anchor_idxs {
+                        let state = &mut per_anchor[anchor_idx as usize];
+                        if state.anchor_passed {
+                            continue;
+                        }
+                        state.deltas.push(Arc::clone(&delta));
+                        if let Some(new_path) = &new_path {
+                            renames.push((anchor_idx, Arc::clone(new_path)));
+                        }
                     }
+                }
+
+                for (anchor_idx, new_path) in renames {
+                    // Skip renames for anchors that became passed during this
+                    // commit's stop-set handling (defensive — `deactivate`
+                    // already removed them from by_path, but anchor_passed is
+                    // the authoritative gate).
+                    if per_anchor[anchor_idx as usize].anchor_passed {
+                        continue;
+                    }
+                    per_anchor[anchor_idx as usize].current_path = Arc::clone(&new_path);
+                    path_index.rename(anchor_idx, new_path);
                 }
             }
         }
 
-        // 6. Build the output. Reverse each anchor's deltas to oldest-first
-        // order (the walk produced newest-first).
-        let mut per_anchor_deltas: HashMap<(String, String), Vec<CommitDelta>> =
-            HashMap::new();
-        for state in per_anchor {
-            let mut deltas = state.deltas;
-            deltas.reverse();
-            per_anchor_deltas.insert((state.mesh_name, state.anchor_id), deltas);
+        // 4. Finalize: reverse each anchor's deltas to oldest-first.
+        let per_anchor_deltas;
+        {
+            let _span_finalize = perf::span("resolver.build-walk.finalize");
+            let mut map: HashMap<(String, String), Vec<Arc<CommitDelta>>> = HashMap::new();
+            for state in per_anchor {
+                let mut deltas = state.deltas;
+                deltas.reverse();
+                map.insert((state.mesh_name, state.anchor_id), deltas);
+            }
+            per_anchor_deltas = map;
         }
 
-        // Store in self so consumers (resolve_at_head_shared,
-        // follow_path_to_head_shared) can read the output without
-        // the caller having to thread it through every signature.
+        // Emit a perf counter for rename/copy fan-out updates in `PathIndex`.
+        // This is the `R` term in the post-Phase-0 walk complexity.
+        {
+            let _span_renames = perf::span("resolver.build-walk.path-index-renames");
+            perf::counter(
+                "resolver.build-walk.path-index-renames",
+                path_index.rename_updates,
+            );
+        }
+
         self.reverse_walk_output = Some(ReverseWalkOutput {
             head_sha,
             per_anchor_deltas,
@@ -477,16 +614,20 @@ impl ResolveSession {
 ///
 /// Tracks the current path (updated through renames) and whether the
 /// anchor_sha has been passed in the walk.
-struct AnchorWalkState {
+pub(crate) struct AnchorWalkState {
     mesh_name: String,
     anchor_id: String,
     anchor_sha: gix::ObjectId,
     /// The path we are currently tracking for this anchor. Updated when
-    /// a rename/copy entry matches.
-    current_path: Vec<u8>,
+    /// a rename/copy entry matches. Owned as `Arc<[u8]>` so the same
+    /// bytes can also live as a key in `PathIndex.active_paths`/`by_path`
+    /// without redundant allocations.
+    current_path: Arc<[u8]>,
     /// Accumulated commit deltas (newest-first during the walk; reversed
-    /// to oldest-first in the output).
-    deltas: Vec<CommitDelta>,
+    /// to oldest-first in the output). The walk fans the same
+    /// `Arc<CommitDelta>` to every affected anchor without cloning the
+    /// underlying `entries` vector.
+    deltas: Vec<Arc<CommitDelta>>,
     /// Set to true once the walk passes this anchor's anchor_sha. After
     /// that point, no more deltas are recorded for this anchor.
     anchor_passed: bool,
@@ -684,5 +825,139 @@ mod tests {
         assert_eq!(total, decomposed,
             "anchors-total == skipped-clean-head + fast-path-hits + full-resolution");
         assert_eq!(total, 46);
+    }
+
+    // ── PathIndex rename/copy fan-out tests ────────────────────────────────
+    //
+    // Phase 0 of the three-phase plan replaces the anchor-quadratic walk
+    // bookkeeping with `PathIndex`. These tests pin down its rename/copy
+    // fan-out semantics independently of any repository fixture.
+
+    fn aws(path: &[u8]) -> AnchorWalkState {
+        AnchorWalkState {
+            mesh_name: "m".to_string(),
+            anchor_id: "a".to_string(),
+            anchor_sha: gix::ObjectId::null(gix::hash::Kind::Sha1),
+            current_path: Arc::from(path),
+            deltas: Vec::new(),
+            anchor_passed: false,
+        }
+    }
+
+    fn arc_path(p: &[u8]) -> Arc<[u8]> {
+        Arc::from(p)
+    }
+
+    fn sorted<T: Ord + Clone>(v: &[T]) -> Vec<T> {
+        let mut out = v.to_vec();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn path_index_initial_layout_groups_anchors_by_path() {
+        let anchors = vec![aws(b"a.rs"), aws(b"b.rs"), aws(b"a.rs")];
+        let idx = PathIndex::new(&anchors);
+
+        assert_eq!(sorted(&idx.anchors_for_path(b"a.rs").unwrap()), vec![0, 2]);
+        assert_eq!(sorted(&idx.anchors_for_path(b"b.rs").unwrap()), vec![1]);
+        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
+        assert_eq!(active.len(), 2);
+        assert!(active.iter().any(|p| p == b"a.rs"));
+        assert!(active.iter().any(|p| p == b"b.rs"));
+        assert_eq!(idx.rename_updates, 0);
+    }
+
+    #[test]
+    fn path_index_rename_moves_single_anchor_and_keeps_old_bucket() {
+        // Two anchors share a path; renaming one must leave the other on the
+        // old path. Old bucket stays active because anchor 1 still tracks it.
+        let anchors = vec![aws(b"src/a.rs"), aws(b"src/a.rs")];
+        let mut idx = PathIndex::new(&anchors);
+
+        idx.rename(0, arc_path(b"src/a_renamed.rs"));
+
+        assert_eq!(idx.rename_updates, 1);
+        assert_eq!(idx.anchors_for_path(b"src/a.rs").unwrap(), &[1]);
+        assert_eq!(idx.anchors_for_path(b"src/a_renamed.rs").unwrap(), &[0]);
+
+        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
+        assert_eq!(active.len(), 2);
+        assert!(active.iter().any(|p| p == b"src/a.rs"));
+        assert!(active.iter().any(|p| p == b"src/a_renamed.rs"));
+    }
+
+    #[test]
+    fn path_index_rename_last_anchor_drops_old_path_from_active() {
+        let anchors = vec![aws(b"only.rs")];
+        let mut idx = PathIndex::new(&anchors);
+
+        idx.rename(0, arc_path(b"renamed.rs"));
+
+        assert!(idx.anchors_for_path(b"only.rs").is_none());
+        assert_eq!(idx.anchors_for_path(b"renamed.rs").unwrap(), &[0]);
+        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
+        assert_eq!(active, vec![b"renamed.rs".to_vec()]);
+    }
+
+    #[test]
+    fn path_index_rename_to_same_path_is_noop() {
+        let anchors = vec![aws(b"x.rs")];
+        let mut idx = PathIndex::new(&anchors);
+
+        idx.rename(0, arc_path(b"x.rs"));
+
+        assert_eq!(idx.rename_updates, 0);
+        assert_eq!(idx.anchors_for_path(b"x.rs").unwrap(), &[0]);
+    }
+
+    #[test]
+    fn path_index_rename_into_existing_active_path_merges_buckets() {
+        // Models a copy that pulls anchor 0 into the bucket already
+        // occupied by anchor 1 (e.g. both anchors now track the same
+        // post-rename path).
+        let anchors = vec![aws(b"a.rs"), aws(b"b.rs")];
+        let mut idx = PathIndex::new(&anchors);
+
+        idx.rename(0, arc_path(b"b.rs"));
+
+        assert!(idx.anchors_for_path(b"a.rs").is_none());
+        assert_eq!(
+            sorted(&idx.anchors_for_path(b"b.rs").unwrap()),
+            vec![0, 1]
+        );
+        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
+        assert_eq!(active, vec![b"b.rs".to_vec()]);
+    }
+
+    #[test]
+    fn path_index_deactivate_drops_anchor_and_path_when_last() {
+        let anchors = vec![aws(b"a.rs"), aws(b"a.rs")];
+        let mut idx = PathIndex::new(&anchors);
+
+        idx.deactivate(0);
+        assert_eq!(idx.anchors_for_path(b"a.rs").unwrap(), &[1]);
+
+        idx.deactivate(1);
+        assert!(idx.anchors_for_path(b"a.rs").is_none());
+        assert!(idx.active_paths().is_empty());
+    }
+
+    #[test]
+    fn path_index_chained_renames_track_through_history() {
+        // a.rs -> b.rs -> c.rs. Each step moves the anchor and keeps
+        // active_paths in sync.
+        let anchors = vec![aws(b"a.rs")];
+        let mut idx = PathIndex::new(&anchors);
+
+        idx.rename(0, arc_path(b"b.rs"));
+        idx.rename(0, arc_path(b"c.rs"));
+
+        assert_eq!(idx.rename_updates, 2);
+        assert!(idx.anchors_for_path(b"a.rs").is_none());
+        assert!(idx.anchors_for_path(b"b.rs").is_none());
+        assert_eq!(idx.anchors_for_path(b"c.rs").unwrap(), &[0]);
+        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
+        assert_eq!(active, vec![b"c.rs".to_vec()]);
     }
 }
