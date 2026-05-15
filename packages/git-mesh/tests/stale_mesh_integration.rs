@@ -67,6 +67,42 @@ fn seed_lfs_cache(repo: &TestRepo, oid_hex_64: &str, bytes: &[u8]) -> Result<()>
     Ok(())
 }
 
+#[test]
+fn timeline_cache_distinguishes_same_path_head_blob_different_anchor_sha() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("same.txt", "a\ntarget\nc\n")?;
+    let anchor_one_sha = repo.commit_all("anchor one")?;
+
+    repo.write_file("same.txt", "intro\na\ntarget\nc\n")?;
+    let anchor_two_sha = repo.commit_all("anchor two")?;
+
+    // Keep `same.txt`'s HEAD blob identical to anchor_two_sha while making
+    // HEAD a distinct commit. Both anchors now share `(path, HEAD blob)` but
+    // have different replay windows.
+    repo.write_file("other.txt", "unrelated\n")?;
+    repo.commit_all("unrelated head")?;
+    repo.write_commit_graph()?;
+
+    let gix = repo.gix_repo()?;
+    append_add(&gix, "timeline-key", "same.txt", 2, 2, Some(&anchor_one_sha))?;
+    append_add(&gix, "timeline-key", "same.txt", 3, 3, Some(&anchor_two_sha))?;
+    set_why(&gix, "timeline-key", "timeline cache key regression")?;
+    commit_mesh(&gix, "timeline-key")?;
+
+    let resolved = resolve_mesh(&gix, "timeline-key", EngineOptions::committed_only())?;
+    let statuses: Vec<AnchorStatus> = resolved
+        .anchors
+        .iter()
+        .map(|anchor| anchor.status.clone())
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![AnchorStatus::Moved, AnchorStatus::Fresh],
+        "same path/head blob anchors with different anchor SHAs must not share timeline replay"
+    );
+    Ok(())
+}
+
 /// Make a submodule gitlink at `sub/` pointing at a second scratch repo.
 /// Returns the bare-like path of the inner repo so the caller can advance
 /// its tip and re-stage the gitlink.

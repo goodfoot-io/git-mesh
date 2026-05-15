@@ -12,18 +12,23 @@ use super::layers::{
 };
 use super::session::ResolveSession;
 
-use crate::mesh::catalog::Catalog;
+use crate::mesh::catalog::{CATALOG_REF, Catalog};
 // use crate::mesh::read::read_mesh;
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet, Mesh,
     MeshResolved, PendingFinding,
 };
 use crate::{Error, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use anchor::resolve_anchor_inner;
 use pending::{apply_acknowledgment, build_pending_findings};
+
+enum Phase3Attempt {
+    Resolved(Vec<MeshResolved>),
+    Fallback(String),
+}
 
 /// Engine-level state cached for one `stale` run.
 pub(crate) struct EngineState {
@@ -199,11 +204,8 @@ impl EngineState {
         // Fail-closed: any plumbing error caches `None` so subsequent
         // reads of the same path return the same answer (matches the
         // un-memoed behavior in `path_filter_attribute_with_repo`).
-        let value = crate::types::path_filter_attribute_with_repo(
-            repo,
-            std::path::Path::new(path),
-        )
-        .unwrap_or(None);
+        let value = crate::types::path_filter_attribute_with_repo(repo, std::path::Path::new(path))
+            .unwrap_or(None);
         self.filter_attrs.insert(path.to_string(), value.clone());
         Ok(value)
     }
@@ -228,8 +230,7 @@ impl EngineState {
     fn finish(mut self, repo: &gix::Repository) {
         // Forward session warnings (rename budget, budget downgrade, etc.)
         // from the reverse-indexed walk into the engine's warning buffer.
-        self.warnings
-            .append(&mut self.session.warnings);
+        self.warnings.append(&mut self.session.warnings);
         if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
@@ -266,9 +267,13 @@ pub fn resolve_anchor(
     // per-anchor deltas from the shared session.  resolve_anchor_inner
     // delegates to resolve_at_head_shared / follow_path_to_head_shared,
     // both of which read from session.reverse_walk_output.
-    state.session.build_reverse_walk(repo, &[(mesh_name.to_string(), mesh.clone())])?;
+    state
+        .session
+        .build_reverse_walk(repo, &[(mesh_name.to_string(), mesh.clone())])?;
     let mut out = match mesh.anchors_v2.into_iter().find(|(id, _)| id == anchor_id) {
-        Some((_, r)) => resolve_anchor_inner(repo, &mut state, &mesh.config, mesh_name, anchor_id, r)?,
+        Some((_, r)) => {
+            resolve_anchor_inner(repo, &mut state, &mesh.config, mesh_name, anchor_id, r)?
+        }
         None => orphaned_placeholder(anchor_id),
     };
     if state.layers.staged_mesh {
@@ -336,9 +341,9 @@ fn resolve_mesh_with_state_at(
         let _perf = crate::perf::span("resolver.read-catalog");
         let commit_obj = repo
             .find_commit(
-                commit_oid.parse::<gix::ObjectId>().map_err(|e| {
-                    Error::Git(format!("parse commit oid {commit_oid}: {e}"))
-                })?,
+                commit_oid
+                    .parse::<gix::ObjectId>()
+                    .map_err(|e| Error::Git(format!("parse commit oid {commit_oid}: {e}")))?,
             )
             .map_err(|e| Error::Git(format!("find commit {commit_oid}: {e}")))?;
         let tree = commit_obj
@@ -450,14 +455,8 @@ fn resolve_loaded_mesh_with_state(
             let trace_anchor_sha = r.anchor_sha.clone();
             let trace_path = r.path.clone();
             let fast_path_before = state.session.anchors_fast_path_hits;
-            let mut resolved = resolve_anchor_inner(
-                repo,
-                &mut *state,
-                &mesh.config,
-                &mesh.name,
-                &id,
-                r,
-            )?;
+            let mut resolved =
+                resolve_anchor_inner(repo, &mut *state, &mesh.config, &mesh.name, &id, r)?;
             let wall_us = anchor_t0.elapsed().as_micros();
             state.session.per_anchor_us.push(wall_us);
             tally_anchor_status(&mut state.session, &resolved.status);
@@ -472,7 +471,12 @@ fn resolve_loaded_mesh_with_state(
                     status: status_label(&resolved.status),
                 });
             }
-            populate_drift_locus(repo, &mut resolved, &mut state.session, mesh.config.copy_detection);
+            populate_drift_locus(
+                repo,
+                &mut resolved,
+                &mut state.session,
+                mesh.config.copy_detection,
+            );
             anchors.push(resolved);
         }
     }
@@ -529,7 +533,9 @@ fn populate_drift_locus(
     use crate::types::{DriftLocus, DriftSource};
     match resolved.status {
         AnchorStatus::Changed if resolved.source == Some(DriftSource::Head) => {
-            if let Ok(locus) = super::attribution::drift_locus(repo, resolved, session, copy_detection) {
+            if let Ok(locus) =
+                super::attribution::drift_locus(repo, resolved, session, copy_detection)
+            {
                 resolved.locus = locus;
             }
         }
@@ -568,6 +574,12 @@ fn status_label(s: &AnchorStatus) -> &'static str {
         AnchorStatus::Submodule => "Submodule",
         AnchorStatus::ContentUnavailable(_) => "ContentUnavailable",
     }
+}
+
+fn emit_timeline_cache_counters(session: &super::session::ResolveSession) {
+    crate::perf::counter("timeline.cache-hits", session.timeline_cache_hits);
+    crate::perf::counter("timeline.cache-misses", session.timeline_cache_misses);
+    crate::perf::counter("timeline.cache-entries", session.timelines.len() as u64);
 }
 
 fn mesh_is_reportable_in_stale_discovery(m: &MeshResolved) -> bool {
@@ -623,12 +635,16 @@ pub(crate) fn resolve_named_meshes(
         state.session.walk_bloom_false_positives,
     );
     crate::perf::counter("session.walk-tree-diffs", state.session.walk_tree_diffs);
-    crate::perf::counter("session.walk-commits-visited", state.session.walk_commits_visited);
+    crate::perf::counter(
+        "session.walk-commits-visited",
+        state.session.walk_commits_visited,
+    );
     crate::perf::counter(
         "session.reverse-index-build-ms",
         state.session.reverse_index_build_ms,
     );
     crate::resolver::timeline::emit_counters();
+    emit_timeline_cache_counters(&state.session);
     crate::resolver::linemap::emit_counters();
     state.finish(repo);
     Ok(out)
@@ -673,8 +689,7 @@ fn stale_meshes_inner(
                     can_skip_clean_head_pinned_mesh(repo, &mut state, &name, &mesh, options)?;
                 can_skip_clean_head_ns += t.elapsed().as_nanos();
                 if skip {
-                    state.session.anchors_skipped_clean_head +=
-                        mesh.anchors_v2.len() as u64;
+                    state.session.anchors_skipped_clean_head += mesh.anchors_v2.len() as u64;
                     continue;
                 }
             }
@@ -694,17 +709,27 @@ fn stale_meshes_inner(
         state.session.walk_bloom_false_positives,
     );
     crate::perf::counter("session.walk-tree-diffs", state.session.walk_tree_diffs);
-    crate::perf::counter("session.walk-commits-visited", state.session.walk_commits_visited);
+    crate::perf::counter(
+        "session.walk-commits-visited",
+        state.session.walk_commits_visited,
+    );
     crate::perf::counter(
         "session.reverse-index-build-ms",
         state.session.reverse_index_build_ms,
     );
     crate::perf::counter("session.drift-locus-hits", state.session.drift_locus_hits);
-    crate::perf::counter("session.drift-locus-misses", state.session.drift_locus_misses);
+    crate::perf::counter(
+        "session.drift-locus-misses",
+        state.session.drift_locus_misses,
+    );
     crate::resolver::timeline::emit_counters();
+    emit_timeline_cache_counters(&state.session);
     crate::resolver::linemap::emit_counters();
     crate::perf::counter("session.filter-attr-hits", state.session.filter_attr_hits);
-    crate::perf::counter("session.filter-attr-misses", state.session.filter_attr_misses);
+    crate::perf::counter(
+        "session.filter-attr-misses",
+        state.session.filter_attr_misses,
+    );
     // Category 1: hot-path subroutine counters. `filter-attr-*` come from
     // the engine-state memo (one increment per `filter_short_circuit` call,
     // misses count distinct paths); the remaining counters are process-global
@@ -809,7 +834,361 @@ fn stale_meshes_inner(
     Ok((out, trace_rows))
 }
 
+fn stale_meshes_phase3(repo: &gix::Repository, options: EngineOptions) -> Result<Phase3Attempt> {
+    let _perf = crate::perf::span("resolver.phase3");
+    if let Some(reason) = phase3_ineligible_reason(options) {
+        return Ok(Phase3Attempt::Fallback(reason.to_string()));
+    }
+
+    crate::perf::reset_subroutine_counters();
+    crate::resolver::timeline::reset_counters();
+    crate::resolver::linemap::reset_counters();
+
+    let Some(catalog_tree_oid) = current_catalog_tree_oid(repo)? else {
+        return Ok(Phase3Attempt::Resolved(Vec::new()));
+    };
+    let head_oid = crate::git::head_oid(repo)?;
+    let filter_hash = crate::resolver::persist::filter_config_hash(repo);
+
+    let store = match crate::resolver::persist::open_store(repo) {
+        Ok(store) => store,
+        Err(e) => return Ok(Phase3Attempt::Fallback(format!("open-store: {e}"))),
+    };
+
+    let catalog = Catalog::load(repo)?;
+    let mesh_pairs = catalog.iter()?;
+    let catalog_names: Vec<String> = mesh_pairs.iter().map(|(name, _)| name.clone()).collect();
+    let catalog_name_set: HashSet<String> = catalog_names.iter().cloned().collect();
+
+    let baseline = {
+        let _perf = crate::perf::span("resolver.phase3.baseline");
+        match crate::resolver::persist::load_baseline(
+            &store,
+            &catalog_tree_oid,
+            &head_oid,
+            &filter_hash,
+        ) {
+            Ok(Some(baseline)) => {
+                crate::perf::counter("phase3.baseline-hit", 1);
+                crate::perf::counter("phase3.baseline-miss", 0);
+                baseline
+            }
+            Ok(None) => {
+                crate::perf::counter("phase3.baseline-hit", 0);
+                crate::perf::counter("phase3.baseline-miss", 1);
+                let meshes = build_phase3_baseline(repo, &catalog_tree_oid, &catalog_names)?;
+                let baseline = crate::resolver::persist::CommittedBaseline {
+                    catalog_tree_oid: catalog_tree_oid.clone(),
+                    head_oid: head_oid.clone(),
+                    counts: crate::resolver::persist::CommittedBaseline::counts_from_meshes(
+                        &meshes,
+                    ),
+                    meshes,
+                };
+                if let Err(e) =
+                    crate::resolver::persist::store_baseline(&store, &filter_hash, &baseline)
+                {
+                    crate::perf::note(&format!("phase3.store-baseline-failed: {e}"));
+                }
+                baseline
+            }
+            Err(e) => return Ok(Phase3Attempt::Fallback(format!("load-baseline: {e}"))),
+        }
+    };
+
+    let layer_status = match read_layer_status(repo) {
+        Ok(status) => status,
+        Err(e) => return Ok(Phase3Attempt::Fallback(format!("read-layer-status: {e}"))),
+    };
+    if layer_status.requires_full_scan {
+        return Ok(Phase3Attempt::Fallback(
+            "dirty-path-set-requires-full-scan".into(),
+        ));
+    }
+    let index_trailer_start = read_index_trailer(repo).ok();
+    let conflicted_paths = if layer_status.has_unmerged {
+        match read_conflicted_paths(repo) {
+            Ok(paths) => paths,
+            Err(e) => return Ok(Phase3Attempt::Fallback(format!("read-conflicts: {e}"))),
+        }
+    } else {
+        HashSet::new()
+    };
+    let staging_dir = crate::git::mesh_dir(repo).join("staging");
+    let (mut dirty_paths, mut overlay_inputs) = crate::resolver::persist::collect_dirty_paths(
+        &catalog_tree_oid,
+        &head_oid,
+        filter_hash,
+        index_trailer_start,
+        layer_status.index_dirty,
+        &layer_status.worktree_paths,
+        &conflicted_paths,
+        Some(&staging_dir),
+        layer_status.requires_full_scan,
+    );
+    overlay_inputs.worktree_dirty_fingerprint =
+        phase3_worktree_content_fingerprint(repo, &layer_status.worktree_paths, &conflicted_paths)
+            .map_err(|e| Error::Git(format!("phase3 worktree dirty fingerprint: {e}")))?;
+    if dirty_paths.requires_full_scan {
+        return Ok(Phase3Attempt::Fallback(
+            "dirty-path-set-requires-full-scan".into(),
+        ));
+    }
+
+    let mut index_warnings = Vec::new();
+    if layer_status.index_dirty {
+        let index_diffs = match read_index_layer(repo, &mut index_warnings) {
+            Ok(diffs) => diffs,
+            Err(e) => return Ok(Phase3Attempt::Fallback(format!("read-index-layer: {e}"))),
+        };
+        dirty_paths.paths.extend(index_diffs.map.keys().cloned());
+    }
+    if dirty_paths.paths.iter().any(|p| is_gitattributes_path(p)) {
+        return Ok(Phase3Attempt::Fallback(
+            "dirty-gitattributes-can-change-filtering".into(),
+        ));
+    }
+
+    let staged_meshes = match crate::staging::list_staged_mesh_names(repo) {
+        Ok(names) => names,
+        Err(e) => return Ok(Phase3Attempt::Fallback(format!("list-staged-meshes: {e}"))),
+    };
+
+    crate::perf::counter("phase3.dirty-paths", dirty_paths.paths.len() as u64);
+
+    let mut affected_meshes: BTreeSet<String> = staged_meshes
+        .into_iter()
+        .filter(|name| catalog_name_set.contains(name))
+        .collect();
+    let mut affected_anchor_count = 0usize;
+    if !dirty_paths.paths.is_empty() {
+        let path_index = {
+            let _perf = crate::perf::span("resolver.phase3.path-anchor-index");
+            match crate::resolver::persist::load_path_anchor_index(&store, &catalog_tree_oid) {
+                Ok(Some(index)) => index,
+                Ok(None) => {
+                    let index = crate::resolver::persist::build_path_anchor_index(
+                        &catalog_tree_oid,
+                        mesh_pairs.clone(),
+                    );
+                    if let Err(e) =
+                        crate::resolver::persist::store_path_anchor_index(&store, &index)
+                    {
+                        crate::perf::note(&format!("phase3.store-path-anchor-index-failed: {e}"));
+                    }
+                    index
+                }
+                Err(e) => {
+                    return Ok(Phase3Attempt::Fallback(format!(
+                        "load-path-anchor-index: {e}"
+                    )));
+                }
+            }
+        };
+        let affected_entries =
+            path_index.lookup_many(dirty_paths.paths.iter().map(|p| p.as_bytes()));
+        affected_anchor_count = affected_entries.len();
+        affected_meshes.extend(affected_entries.iter().map(|entry| entry.mesh_name.clone()));
+    }
+    crate::perf::counter("phase3.affected-anchors", affected_anchor_count as u64);
+    crate::perf::counter("phase3.affected-meshes", affected_meshes.len() as u64);
+
+    let overlay = {
+        let _perf = crate::perf::span("resolver.phase3.overlay");
+        match crate::resolver::persist::load_overlay(&store, &overlay_inputs) {
+            Ok(Some(overlay)) => {
+                crate::perf::counter("phase3.overlay-hit", 1);
+                crate::perf::counter("phase3.overlay-miss", 0);
+                if !index_warnings.is_empty() {
+                    for warning in index_warnings {
+                        eprintln!("{warning}");
+                    }
+                }
+                overlay
+            }
+            Ok(None) => {
+                crate::perf::counter("phase3.overlay-hit", 0);
+                crate::perf::counter("phase3.overlay-miss", 1);
+                let affected_names: Vec<String> = affected_meshes.iter().cloned().collect();
+                let mut meshes = Vec::new();
+                if !affected_names.is_empty() {
+                    let resolved = resolve_named_meshes(repo, &affected_names, options)?;
+                    for (_name, result) in resolved {
+                        match result {
+                            Ok(mesh) => meshes.push(mesh),
+                            Err(Error::MeshNotFound(_)) => {}
+                            Err(e) => {
+                                return Ok(Phase3Attempt::Fallback(format!(
+                                    "resolve-overlay-mesh: {e}"
+                                )));
+                            }
+                        }
+                    }
+                } else if !index_warnings.is_empty() {
+                    for warning in index_warnings {
+                        eprintln!("{warning}");
+                    }
+                }
+                let overlay = crate::resolver::persist::DirtyOverlay {
+                    affected_meshes: affected_names,
+                    meshes,
+                };
+                if let Err(e) =
+                    crate::resolver::persist::store_overlay(&store, &overlay_inputs, &overlay)
+                {
+                    crate::perf::note(&format!("phase3.store-overlay-failed: {e}"));
+                }
+                overlay
+            }
+            Err(e) => return Ok(Phase3Attempt::Fallback(format!("load-overlay: {e}"))),
+        }
+    };
+
+    if let Some(start) = index_trailer_start
+        && let Ok(end) = read_index_trailer(repo)
+        && end != start
+    {
+        return Ok(Phase3Attempt::Fallback(
+            "index-changed-during-phase3".into(),
+        ));
+    }
+
+    let mut out = crate::resolver::persist::apply_overlay(&baseline, &overlay)
+        .into_iter()
+        .filter(mesh_is_reportable_in_stale_discovery)
+        .collect::<Vec<_>>();
+    if out.len() > 1 {
+        sort_meshes_by_anchor_path(&mut out);
+    }
+    crate::perf::counter("phase3.fallback", 0);
+    Ok(Phase3Attempt::Resolved(out))
+}
+
+fn phase3_ineligible_reason(options: EngineOptions) -> Option<&'static str> {
+    if options.since.is_some() {
+        return Some("since-option");
+    }
+    if options.layers != LayerSet::full() {
+        return Some("non-full-layer-set");
+    }
+    None
+}
+
+fn build_phase3_baseline(
+    repo: &gix::Repository,
+    catalog_tree_oid: &str,
+    catalog_names: &[String],
+) -> Result<Vec<MeshResolved>> {
+    let resolved = {
+        let _perf = crate::perf::span("resolver.phase3.build-baseline");
+        resolve_named_meshes(
+            repo,
+            catalog_names,
+            EngineOptions {
+                layers: LayerSet::committed_only(),
+                ignore_unavailable: false,
+                since: None,
+                needs_all_layers: true,
+            },
+        )?
+    };
+    let mut meshes = Vec::with_capacity(resolved.len());
+    for (name, result) in resolved {
+        match result {
+            Ok(mesh) => meshes.push(mesh),
+            Err(Error::MeshNotFound(_)) => {
+                return Err(Error::Git(format!(
+                    "phase3 baseline catalog `{catalog_tree_oid}` listed missing mesh `{name}`"
+                )));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(meshes)
+}
+
+fn current_catalog_tree_oid(repo: &gix::Repository) -> Result<Option<String>> {
+    let Some(mut reference) = repo
+        .try_find_reference(CATALOG_REF)
+        .map_err(|e| Error::Git(format!("find catalog ref `{CATALOG_REF}`: {e}")))?
+    else {
+        return Ok(None);
+    };
+    let commit_id = reference
+        .peel_to_id()
+        .map_err(|e| Error::Git(format!("peel catalog ref: {e}")))?;
+    let commit = repo
+        .find_commit(commit_id)
+        .map_err(|e| Error::Git(format!("find catalog commit: {e}")))?;
+    let tree = commit
+        .tree()
+        .map_err(|e| Error::Git(format!("catalog commit tree: {e}")))?;
+    Ok(Some(tree.id().detach().to_string()))
+}
+
+fn is_gitattributes_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .any(|component| component.as_os_str() == std::ffi::OsStr::new(".gitattributes"))
+}
+
+fn phase3_worktree_content_fingerprint(
+    repo: &gix::Repository,
+    worktree_paths: &HashSet<String>,
+    conflicted_paths: &HashSet<String>,
+) -> Result<[u8; 32]> {
+    let workdir = crate::git::work_dir(repo)?;
+    let mut paths: Vec<&str> = worktree_paths
+        .iter()
+        .map(|s| s.as_str())
+        .chain(conflicted_paths.iter().map(|s| s.as_str()))
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let mut h = blake3::Hasher::new();
+    h.update(b"gm.v1.phase3.worktree-content\0");
+    for path in paths {
+        h.update(&(path.len() as u64).to_le_bytes());
+        h.update(path.as_bytes());
+        let abs = workdir.join(path);
+        match std::fs::symlink_metadata(&abs) {
+            Ok(metadata) => {
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    h.update(&[1u8]);
+                    let target = std::fs::read_link(&abs)?;
+                    let target = target.to_string_lossy();
+                    h.update(&(target.len() as u64).to_le_bytes());
+                    h.update(target.as_bytes());
+                } else if file_type.is_file() {
+                    h.update(&[2u8]);
+                    let bytes = std::fs::read(&abs)?;
+                    h.update(&(bytes.len() as u64).to_le_bytes());
+                    h.update(&bytes);
+                } else if file_type.is_dir() {
+                    h.update(&[3u8]);
+                } else {
+                    h.update(&[4u8]);
+                    h.update(&metadata.len().to_le_bytes());
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                h.update(&[0u8]);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(*h.finalize().as_bytes())
+}
+
 pub fn stale_meshes(repo: &gix::Repository, options: EngineOptions) -> Result<Vec<MeshResolved>> {
+    match stale_meshes_phase3(repo, options)? {
+        Phase3Attempt::Resolved(meshes) => return Ok(meshes),
+        Phase3Attempt::Fallback(reason) => {
+            crate::perf::counter("phase3.fallback", 1);
+            crate::perf::note(&format!("phase3.fallback-reason: {reason}"));
+        }
+    }
     let (meshes, _) = stale_meshes_inner(repo, options, false)?;
     Ok(meshes)
 }
@@ -883,7 +1262,10 @@ pub(crate) fn sort_meshes_by_anchor_path(meshes: &mut [MeshResolved]) {
     let has_overlap: Vec<bool> = (0..meshes.len())
         .map(|i| {
             for j in 0..meshes.len() {
-                if i != j && keys[i] == keys[j] && meshes_share_extent_overlap(&meshes[i], &meshes[j], &keys[i]) {
+                if i != j
+                    && keys[i] == keys[j]
+                    && meshes_share_extent_overlap(&meshes[i], &meshes[j], &keys[i])
+                {
                     return true;
                 }
             }
@@ -938,23 +1320,13 @@ fn extents_overlap(a: &AnchorExtent, b: &AnchorExtent) -> bool {
     match (a, b) {
         (AnchorExtent::WholeFile, _) | (_, AnchorExtent::WholeFile) => true,
         (
-            AnchorExtent::LineRange {
-                start: sa,
-                end: ea,
-            },
-            AnchorExtent::LineRange {
-                start: sb,
-                end: eb,
-            },
+            AnchorExtent::LineRange { start: sa, end: ea },
+            AnchorExtent::LineRange { start: sb, end: eb },
         ) => *sa <= *eb && *sb <= *ea,
     }
 }
 
-fn meshes_share_extent_overlap(
-    a: &MeshResolved,
-    b: &MeshResolved,
-    paths: &[PathBuf],
-) -> bool {
+fn meshes_share_extent_overlap(a: &MeshResolved, b: &MeshResolved, paths: &[PathBuf]) -> bool {
     for path in paths {
         for anc_a in &a.anchors {
             if anc_a.anchored.path != *path {
@@ -1180,10 +1552,13 @@ mod tests {
         );
         let m3 = make_mesh(
             "m3",
-            &[("a.ts", AnchorExtent::LineRange {
-                start: 50,
-                end: 100,
-            })],
+            &[(
+                "a.ts",
+                AnchorExtent::LineRange {
+                    start: 50,
+                    end: 100,
+                },
+            )],
         );
         let mut meshes = vec![m1, m2, m3];
         sort_meshes_by_anchor_path(&mut meshes);
@@ -1237,7 +1612,11 @@ mod tests {
         let repo = gix::open(dir).unwrap();
         let mut state = EngineState::new(
             &repo,
-            LayerSet { index: false, worktree: false, staged_mesh: false },
+            LayerSet {
+                index: false,
+                worktree: false,
+                staged_mesh: false,
+            },
             true,
         )
         .unwrap();
@@ -1300,26 +1679,32 @@ mod tests {
         state.clean_layers = clean_layers;
         let mut idx = LayerDiffs::empty();
         for p in index_paths {
-            idx.map.insert((*p).to_string(), crate::resolver::layers::diff::DiffEntry {
-                new_path: (*p).to_string(),
-                old_path: (*p).to_string(),
-                hunks: vec![],
-                new_blob: None,
-                deleted: false,
-                intent_to_add: false,
-            });
+            idx.map.insert(
+                (*p).to_string(),
+                crate::resolver::layers::diff::DiffEntry {
+                    new_path: (*p).to_string(),
+                    old_path: (*p).to_string(),
+                    hunks: vec![],
+                    new_blob: None,
+                    deleted: false,
+                    intent_to_add: false,
+                },
+            );
         }
         state.index_diffs = Some(idx);
         let mut wt = LayerDiffs::empty();
         for p in worktree_paths {
-            wt.map.insert((*p).to_string(), crate::resolver::layers::diff::DiffEntry {
-                new_path: (*p).to_string(),
-                old_path: (*p).to_string(),
-                hunks: vec![],
-                new_blob: None,
-                deleted: false,
-                intent_to_add: false,
-            });
+            wt.map.insert(
+                (*p).to_string(),
+                crate::resolver::layers::diff::DiffEntry {
+                    new_path: (*p).to_string(),
+                    old_path: (*p).to_string(),
+                    hunks: vec![],
+                    new_blob: None,
+                    deleted: false,
+                    intent_to_add: false,
+                },
+            );
         }
         state.worktree_diffs = Some(wt);
         for p in conflicted {
@@ -1330,35 +1715,55 @@ mod tests {
 
     #[test]
     fn anchor_path_predicate_clean_path() {
-        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let layers = LayerSet {
+            index: true,
+            worktree: true,
+            staged_mesh: false,
+        };
         let state = state_for_predicate(layers, false, &["other.rs"], &["wiki/x.md"], &[]);
         assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
     }
 
     #[test]
     fn anchor_path_predicate_index_dirty() {
-        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let layers = LayerSet {
+            index: true,
+            worktree: true,
+            staged_mesh: false,
+        };
         let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
         assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
     }
 
     #[test]
     fn anchor_path_predicate_worktree_dirty() {
-        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let layers = LayerSet {
+            index: true,
+            worktree: true,
+            staged_mesh: false,
+        };
         let state = state_for_predicate(layers, false, &[], &["packages/anchor.rs"], &[]);
         assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
     }
 
     #[test]
     fn anchor_path_predicate_conflicted() {
-        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let layers = LayerSet {
+            index: true,
+            worktree: true,
+            staged_mesh: false,
+        };
         let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
         assert!(!anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
     }
 
     #[test]
     fn anchor_path_predicate_layers_disabled() {
-        let layers = LayerSet { index: false, worktree: false, staged_mesh: false };
+        let layers = LayerSet {
+            index: false,
+            worktree: false,
+            staged_mesh: false,
+        };
         let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
         // With no content layers enabled, every path is trivially clean.
         assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
@@ -1366,7 +1771,11 @@ mod tests {
 
     #[test]
     fn anchor_path_predicate_index_dirty_but_index_layer_off() {
-        let layers = LayerSet { index: false, worktree: true, staged_mesh: false };
+        let layers = LayerSet {
+            index: false,
+            worktree: true,
+            staged_mesh: false,
+        };
         let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
         // Index layer disabled → index diffs don't disqualify.
         assert!(anchor_path_is_layer_clean(&state, "packages/anchor.rs"));
@@ -1374,7 +1783,11 @@ mod tests {
 
     #[test]
     fn anchor_path_predicate_clean_layers_shortcut() {
-        let layers = LayerSet { index: true, worktree: true, staged_mesh: false };
+        let layers = LayerSet {
+            index: true,
+            worktree: true,
+            staged_mesh: false,
+        };
         // clean_layers=true should trivially-true every path regardless
         // of conflicted_paths (which is logically empty under
         // clean_layers=true; the shortcut is what makes the genuinely

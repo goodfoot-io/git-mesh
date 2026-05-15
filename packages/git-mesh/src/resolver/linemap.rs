@@ -162,11 +162,9 @@ impl LineMap {
 
         let mut s = start as i64;
         let mut e = end as i64;
-        // We need to visit segments in old-order. Binary search for the
-        // first segment that could affect `s` (its `old_end >= 1`).
-        // For correctness we walk all replacement segments; identity
-        // segments don't change `s`/`e` directly, but we use them to
-        // verify ordering.
+        // We need to visit replacement segments in old-order. This is a
+        // linear O(S) fold over map segments; there is no indexed search in
+        // the current implementation.
         for seg in &self.segments {
             if seg.identity {
                 continue;

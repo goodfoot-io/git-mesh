@@ -2,9 +2,9 @@
 //! projection.
 //!
 //! Re-routes per-anchor delta replay through a structured, allocation-light
-//! representation keyed by `(path, head_blob_oid, copy_detection)`. The key
-//! is path-history identity — *not* the anchor commit — so timelines can be
-//! shared across anchors that observe the same path history.
+//! representation keyed by `(path, head_blob_oid, copy_detection, anchor_sha)`.
+//! The current timeline is built from one anchor's reverse-walk delta slice, so
+//! the key includes anchor identity to keep replay windows separate.
 //!
 //! Phase 1 is a parity-preserving structural refactor: `project_by_hunk_replay`
 //! produces the same `Tracked` location as the previous per-anchor delta
@@ -29,14 +29,15 @@ pub(crate) type Hunk = (u32, u32, u32, u32);
 
 /// Cache key for a `PathTimeline`.
 ///
-/// Identifies a path history — *not* an anchor. Two anchors that start
-/// at the same `path`, end at the same `head_blob_oid`, and use the same
-/// `copy_detection` setting project through the same timeline.
+/// Identifies one anchor-scoped path history. `build_timeline` consumes a
+/// single anchor's delta slice, so two anchors with the same path and HEAD blob
+/// still need distinct entries when their `anchor_sha` values differ.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct PathTimelineKey {
     pub(crate) path: Arc<[u8]>,
     pub(crate) head_blob_oid: Option<gix::ObjectId>,
     pub(crate) copy_detection: CopyDetection,
+    pub(crate) anchor_sha: String,
 }
 
 /// One step in a `PathTimeline`. Pre-computes the hunks against the parent

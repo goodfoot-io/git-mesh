@@ -81,6 +81,12 @@ fn discovery_clean_head_pinned_mesh_uses_fast_path() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "fresh")?;
 
+    let warm = Command::new(env!("CARGO_BIN_EXE_git-mesh"))
+        .current_dir(repo.path())
+        .arg("stale")
+        .output()?;
+    assert_eq!(warm.status.code(), Some(0));
+
     let out = Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(repo.path())
         .env("GIT_MESH_PERF", "1")
@@ -90,14 +96,25 @@ fn discovery_clean_head_pinned_mesh_uses_fast_path() -> Result<()> {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout)?;
     let stderr = String::from_utf8(out.stderr)?;
-    assert!(!stdout.trim().is_empty(), "stdout should have summary line when clean, got: stdout={stdout}");
     assert!(
-        stderr.contains("git-mesh perf: resolver.resolve-stale-meshes"),
-        "expected discovery resolver span: {stderr}"
+        !stdout.trim().is_empty(),
+        "stdout should have summary line when clean, got: stdout={stdout}"
+    );
+    assert!(
+        stderr.contains("git-mesh perf: phase3.baseline-hit 1"),
+        "expected phase3 baseline hit: {stderr}"
+    );
+    assert!(
+        stderr.contains("git-mesh perf: phase3.overlay-hit 1"),
+        "expected phase3 overlay hit: {stderr}"
+    );
+    assert!(
+        !stderr.contains("git-mesh perf: resolver.resolve-stale-meshes"),
+        "warm phase3 discovery should skip full resolver: {stderr}"
     );
     assert!(
         !stderr.contains("git-mesh perf: resolver.resolve-anchors"),
-        "clean HEAD-pinned discovery should skip per-anchor resolution: {stderr}"
+        "warm phase3 discovery should skip per-anchor resolution: {stderr}"
     );
     Ok(())
 }

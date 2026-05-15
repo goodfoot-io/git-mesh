@@ -290,9 +290,12 @@ pub(crate) struct ResolveSession {
     /// notes, etc.). Forwarded to `EngineState::finish` for stderr output.
     pub(crate) warnings: Vec<String>,
     /// Phase 1: per-session `PathTimeline` cache keyed by
-    /// `(path, head_blob_oid, copy_detection)`. Multiple anchors that share
-    /// the same path history reuse the same timeline.
+    /// `(path, head_blob_oid, copy_detection, anchor_sha)`. Timelines are
+    /// currently anchor-scoped because they are built from per-anchor delta
+    /// slices.
     pub(crate) timelines: HashMap<PathTimelineKey, Arc<PathTimeline>>,
+    pub(crate) timeline_cache_hits: u64,
+    pub(crate) timeline_cache_misses: u64,
     /// Phase 1: shared path-byte interner used while building timelines.
     pub(crate) timeline_paths: PathInterner,
 }
@@ -330,6 +333,8 @@ impl ResolveSession {
             reverse_index_build_ms: 0,
             warnings: Vec::new(),
             timelines: HashMap::new(),
+            timeline_cache_hits: 0,
+            timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
         }
     }
@@ -680,10 +685,10 @@ pub(crate) fn resolve_at_head_shared(
         (head_sha, deltas)
     };
 
-    // Phase 1: route projection through a `PathTimeline`. The cache key is
-    // path-history identity — `(path, head_blob_oid, copy_detection)` — not
-    // the anchor commit. Anchors that observe the same history share one
-    // timeline.
+    // Phase 1: route projection through a `PathTimeline`. The timeline is
+    // built from this anchor's delta slice, so the cache key includes
+    // `anchor_sha`; anchors with the same current path/HEAD blob but different
+    // replay windows must not share an entry.
     //
     // Copy detection is keyed off the anchor's mesh config when available;
     // when it isn't threaded through, we fall back to the most permissive
@@ -704,11 +709,14 @@ pub(crate) fn resolve_at_head_shared(
         path: Arc::from(r.path.as_bytes()),
         head_blob_oid,
         copy_detection,
+        anchor_sha: r.anchor_sha.clone(),
     };
 
     let timeline_arc: Arc<PathTimeline> = if let Some(existing) = session.timelines.get(&key) {
+        session.timeline_cache_hits += 1;
         Arc::clone(existing)
     } else {
+        session.timeline_cache_misses += 1;
         let tl = build_timeline(
             repo,
             r.path.as_bytes(),
@@ -796,6 +804,8 @@ mod tests {
             warnings: Vec::new(),
             anchors_skipped_clean_head: 50,
             timelines: HashMap::new(),
+            timeline_cache_hits: 0,
+            timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
         };
 
@@ -842,6 +852,8 @@ mod tests {
             warnings: Vec::new(),
             anchors_skipped_clean_head: 40,
             timelines: HashMap::new(),
+            timeline_cache_hits: 0,
+            timeline_cache_misses: 0,
             timeline_paths: PathInterner::new(),
         };
 
