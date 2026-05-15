@@ -2,7 +2,7 @@
   "name": "git-mesh",
   "displayName": "Git Mesh",
   "description": "Exposes the Git Mesh CLI in VS Code.",
-  "version": "1.0.71",
+  "version": "1.0.72",
   "publisher": "goodfoot",
   "type": "module",
   "engines": {
