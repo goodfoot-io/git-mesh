@@ -11,7 +11,24 @@
  */
 
 import { type ExecFileSyncOptions, execFileSync } from "node:child_process";
-import { isAbsolute, join } from "node:path";
+
+/**
+ * Normalize OS path separators to POSIX forward slashes.
+ *
+ * The advice contract is POSIX-canonical: `git rev-parse --show-toplevel`
+ * emits forward slashes even on Windows, `relativeToRepo` does `/`-prefix
+ * matching, and `git mesh` consumes POSIX repo-relative anchors. Windows
+ * callers (Claude Code passes native `cwd`/`file_path`) may use backslashes,
+ * so every path crossing this module's boundary is normalized here.
+ */
+export function toPosix(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+/** POSIX-absolute (`/x`) or Windows drive-absolute (`C:/x`) after toPosix. */
+function isAbsolutePosix(p: string): boolean {
+  return p.startsWith("/") || /^[A-Za-z]:\//.test(p);
+}
 
 /**
  * Captures one invocation of `git mesh advice <sid> <verb> [args...]` against
@@ -79,7 +96,7 @@ export function resolveRepoRoot(dir: string | undefined | null): string | null {
       encoding: "utf8",
     });
     const trimmed = out.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    return trimmed.length > 0 ? toPosix(trimmed) : null;
   } catch {
     return null;
   }
@@ -89,7 +106,10 @@ export function resolveRepoRoot(dir: string | undefined | null): string | null {
  * Resolve `target` against `base` if relative, pass through if absolute.
  */
 export function abspathAgainst(base: string, target: string): string {
-  return isAbsolute(target) ? target : join(base, target);
+  const t = toPosix(target);
+  if (isAbsolutePosix(t)) return t;
+  const b = toPosix(base).replace(/\/+$/, "");
+  return `${b}/${t}`;
 }
 
 /**
@@ -97,6 +117,8 @@ export function abspathAgainst(base: string, target: string): string {
  * `absPath` unchanged if it does not start with `repoRoot/`.
  */
 export function relativeToRepo(repoRoot: string, absPath: string): string {
-  const prefix = repoRoot.endsWith("/") ? repoRoot : `${repoRoot}/`;
-  return absPath.startsWith(prefix) ? absPath.slice(prefix.length) : absPath;
+  const root = toPosix(repoRoot);
+  const abs = toPosix(absPath);
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
 }

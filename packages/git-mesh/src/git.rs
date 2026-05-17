@@ -438,7 +438,16 @@ pub fn git_log_name_only_for_paths(
 
     let mut out: Vec<CommitChanges> = Vec::with_capacity(n.min(512));
     let budget_start = std::time::Instant::now();
-    let budget = std::time::Duration::from_millis(800);
+    // Safety valve for pathological histories only. The walk normally
+    // terminates by exhausting the (small) qualifying-commit set or hitting
+    // the `n` cap long before this fires. The budget must stay well clear of
+    // the worst-case cost of a *small* history so a complete walk is never
+    // truncated to `walk_complete = false` merely because the host is busy:
+    // `gix` tree-diff on Windows under parallel test load is ~10-25x slower
+    // than the Linux baseline this was originally tuned against, and a
+    // spuriously incomplete walk silently disables the history cache and
+    // degrades suggestions. 8s still bounds genuinely huge repos.
+    let budget = std::time::Duration::from_secs(8);
 
     for info in walk {
         if out.len() >= n {

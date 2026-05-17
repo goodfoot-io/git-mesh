@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve to a path the platform's `node` can consume. On Git Bash/MSYS,
+# plain `pwd` yields `/c/...` which Windows Node mis-resolves in `require()`;
+# `pwd -W` yields `C:/...` which Node handles on every platform.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -W)" ;;
+  *)                    REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" ;;
+esac
 CLI_PKG="$REPO_ROOT/packages/git-mesh/package.json"
 EXT_PKG="$REPO_ROOT/packages/extension/package.json"
 

@@ -28,11 +28,12 @@ fn open_creates_dir_mode_0700_acquires_lock_releases_on_drop() {
     let store_dir = store.dir().to_path_buf();
     assert!(store_dir.exists(), "session dir must exist");
 
+    // POSIX mode 0700 is the security guarantee here; the Windows
+    // equivalent would be an ACL assertion, which is out of scope.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(&store_dir).expect("metadata");
-        assert_eq!(meta.mode() & 0o777, 0o700, "dir must be mode 0700");
+        let m = support::mode(&store_dir).expect("POSIX mode on unix");
+        assert_eq!(m, 0o700, "dir must be mode 0700");
     }
 
     drop(store);

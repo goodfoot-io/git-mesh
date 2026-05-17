@@ -847,38 +847,38 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@goodfoot/claude-code-hooks@npm:^1.0.9":
-  version: 1.3.2
-  resolution: "@goodfoot/claude-code-hooks@npm:1.3.2"
+"@goodfoot/claude-code-hooks@npm:^1.3.3":
+  version: 1.3.3
+  resolution: "@goodfoot/claude-code-hooks@npm:1.3.3"
   dependencies:
     esbuild: "npm:^0.24.0"
     glob: "npm:^11.0.0"
     typescript: "npm:^5.9.3"
   bin:
     claude-code-hooks: dist/cli.js
-  checksum: 10c0/4dd28621a1ad776d0ce8e20a2dd199233a6789a6563784b31b43d50b08391f7dc2fbcb714835107b3c5adf0c31949e8e41ffe6f4cb68d88a0ad2bda2b9b0ba6c
+  checksum: 10c0/2437fae2bfcc02547b560752edd0e7aceea944859089caf4a51a3fead1daf744aae13d564d324065b5b8e5627991926b2fbf6502ed666484ce9563f76d7c9c30
   languageName: node
   linkType: hard
 
-"@goodfoot/git-mesh-darwin-arm64@npm:1.0.73, @goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64":
+"@goodfoot/git-mesh-darwin-arm64@npm:1.0.76, @goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-darwin-arm64@workspace:npm/git-mesh-darwin-arm64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-darwin-x64@npm:1.0.73, @goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64":
+"@goodfoot/git-mesh-darwin-x64@npm:1.0.76, @goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-darwin-x64@workspace:npm/git-mesh-darwin-x64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-linux-arm64@npm:1.0.73, @goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64":
+"@goodfoot/git-mesh-linux-arm64@npm:1.0.76, @goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-linux-arm64@workspace:npm/git-mesh-linux-arm64"
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-linux-x64@npm:1.0.73, @goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64":
+"@goodfoot/git-mesh-linux-x64@npm:1.0.76, @goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-linux-x64@workspace:npm/git-mesh-linux-x64"
   languageName: unknown
@@ -896,7 +896,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@goodfoot/git-mesh-win32-x64@npm:1.0.73, @goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64":
+"@goodfoot/git-mesh-win32-x64@npm:1.0.76, @goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64":
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh-win32-x64@workspace:npm/git-mesh-win32-x64"
   languageName: unknown
@@ -906,11 +906,11 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@goodfoot/git-mesh@workspace:packages/git-mesh"
   dependencies:
-    "@goodfoot/git-mesh-darwin-arm64": "npm:1.0.73"
-    "@goodfoot/git-mesh-darwin-x64": "npm:1.0.73"
-    "@goodfoot/git-mesh-linux-arm64": "npm:1.0.73"
-    "@goodfoot/git-mesh-linux-x64": "npm:1.0.73"
-    "@goodfoot/git-mesh-win32-x64": "npm:1.0.73"
+    "@goodfoot/git-mesh-darwin-arm64": "npm:1.0.76"
+    "@goodfoot/git-mesh-darwin-x64": "npm:1.0.76"
+    "@goodfoot/git-mesh-linux-arm64": "npm:1.0.76"
+    "@goodfoot/git-mesh-linux-x64": "npm:1.0.76"
+    "@goodfoot/git-mesh-win32-x64": "npm:1.0.76"
   dependenciesMeta:
     "@goodfoot/git-mesh-darwin-arm64":
       optional: true
@@ -2141,7 +2141,7 @@ __metadata:
   resolution: "agent-hooks@workspace:packages/agent-hooks"
   dependencies:
     "@biomejs/biome": "npm:2.4.12"
-    "@goodfoot/claude-code-hooks": "npm:^1.0.9"
+    "@goodfoot/claude-code-hooks": "npm:^1.3.3"
     "@types/node": "npm:^22.0.0"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.0.16"

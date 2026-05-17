@@ -377,11 +377,7 @@ fn test_doctor_post_rewrite_hook_present() -> Result<()> {
     fs::create_dir_all(&hooks_dir)?;
     let hook_path = hooks_dir.join("post-rewrite");
     fs::write(&hook_path, "#!/bin/sh\ngit mesh hooks git post-rewrite\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
-    }
+    support::make_executable(&hook_path)?;
 
     let out = repo.run_mesh(["doctor"])?;
     let stdout = String::from_utf8(out.stdout)?;

@@ -19,7 +19,9 @@
  * @see ./advice-common.ts
  */
 
-import { dirname } from "node:path";
+// `fp` is POSIX-canonical (see `abspathAgainst`); use the POSIX variant so
+// `dirname` never reintroduces native separators on Windows.
+import { dirname } from "node:path/posix";
 import { type PostToolUseInput, postToolUseHook } from "@goodfoot/claude-code-hooks";
 import {
   type AdviceExecutor,

@@ -298,8 +298,25 @@ impl Cache {
             use std::io::Write;
             tmp.write_all(&bytes)
                 .map_err(|e| Error::Git(format!("write cache tempfile: {e}")))?;
-            tmp.persist(&path)
-                .map_err(|e| Error::Git(format!("persist cache entry {:?}: {}", path, e.error)))?;
+            if let Err(persist_err) = tmp.persist(&path) {
+                // The cache is content-addressed: `path` is a hash of the
+                // key and the value is deterministic, so any concurrent
+                // writer that already populated `path` produced equivalent
+                // bytes. On Windows a racing rename onto an open/just-created
+                // destination fails with ERROR_ACCESS_DENIED (os error 5)
+                // rather than silently winning as POSIX `rename(2)` does.
+                // Treat "the destination now exists and is non-empty" as a
+                // benign lost-race success; propagate anything else.
+                let settled = std::fs::metadata(&path)
+                    .map(|m| m.is_file() && m.len() > 0)
+                    .unwrap_or(false);
+                if !settled {
+                    return Err(Error::Git(format!(
+                        "persist cache entry {:?}: {}",
+                        path, persist_err.error
+                    )));
+                }
+            }
             Ok(())
         })?;
         perf::record_l2_bytes_written(bytes.len() as u64);

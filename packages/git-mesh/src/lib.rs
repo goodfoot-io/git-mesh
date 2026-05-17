@@ -39,8 +39,8 @@ pub use mesh::{
 };
 pub use resolver::{resolve_anchor, resolve_mesh, stale_meshes};
 pub use staging::{
-    StagedAdd, StagedConfig, StagedRemove, Staging, append_add, append_config, append_remove,
-    clear_staging, list_staged_mesh_names, read_staging, set_why,
+    StagedAdd, StagedConfig, StagedRemove, Staging, append_add, append_add_whole, append_config,
+    append_remove, clear_staging, list_staged_mesh_names, read_staging, set_why,
 };
 pub use sync::{default_remote, ensure_refspec_configured, fetch_mesh_refs, push_mesh_refs};
 pub use types::*;

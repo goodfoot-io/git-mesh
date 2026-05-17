@@ -198,6 +198,102 @@ impl TestRepo {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cross-platform filesystem helpers. Integration tests must never reference
+// `std::os::unix` directly (see scripts/validate.sh guardrail); they go
+// through these instead so the suite compiles and runs on Windows too.
+// ---------------------------------------------------------------------------
+
+/// Create a symlink whose target is a regular file.
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn symlink_file(original: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(original, link)
+}
+
+/// Create a symlink whose target is a regular file.
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn symlink_file(original: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(original, link)
+}
+
+/// Create a symlink whose target is a directory.
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(original, link)
+}
+
+/// Create a symlink whose target is a directory.
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(original, link)
+}
+
+/// Whether the host can create symlinks. On Unix this is always true. On
+/// Windows it depends on Developer Mode / `SeCreateSymbolicLinkPrivilege`,
+/// so probe once and cache the result.
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn symlinks_supported() -> bool {
+    true
+}
+
+/// Whether the host can create symlinks. On Windows, probe once by creating
+/// then removing a temp symlink, and cache the outcome.
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn symlinks_supported() -> bool {
+    use std::sync::OnceLock;
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let base = std::env::temp_dir();
+        let target = base.join(format!("git-mesh-symlink-probe-target-{}", std::process::id()));
+        let link = base.join(format!("git-mesh-symlink-probe-link-{}", std::process::id()));
+        let _ = std::fs::write(&target, b"probe");
+        let ok = std::os::windows::fs::symlink_file(&target, &link).is_ok();
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&target);
+        ok
+    })
+}
+
+/// Make `path` executable. POSIX-only; a no-op on Windows where execute
+/// permission is not a file-mode bit.
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn make_executable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms)
+}
+
+/// Make `path` executable. No-op on Windows.
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn make_executable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The POSIX permission bits (`mode & 0o777`) of `path`, or `None` on
+/// platforms with no POSIX mode (Windows).
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.mode() & 0o777)
+}
+
+/// The POSIX permission bits of `path`. Always `None` on Windows.
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn mode(_path: &Path) -> Option<u32> {
+    None
+}
+
 /// Stage an `add` line via the library directly (skips CLI parsing).
 #[allow(dead_code)]
 pub fn add_range(

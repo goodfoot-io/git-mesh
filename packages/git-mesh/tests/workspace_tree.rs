@@ -128,10 +128,10 @@ fn binary_blob_round_trips_through_temp_object_dir() -> Result<()> {
 
 #[test]
 fn exec_bit_change_yields_mode_change() -> Result<()> {
+    // Unix-only: the exec bit is a POSIX mode bit; Git-for-Windows always
+    // reports 100644 for regular files, so there is no honest Windows assertion.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-
         let repo = TestRepo::new()?;
         repo.write_file("script.sh", "#!/bin/sh\n")?;
         repo.commit_all("add script")?;
@@ -142,9 +142,7 @@ fn exec_bit_change_yields_mode_change() -> Result<()> {
 
         // Toggle exec bit.
         let path = repo.path().join("script.sh");
-        let mut perms = std::fs::metadata(&path)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms)?;
+        support::make_executable(&path)?;
 
         let objects_b = tempfile::tempdir()?;
         let tree_b = capture(&gix, objects_b.path())?;
@@ -228,22 +226,23 @@ fn submodule_gitlink_captured_not_recursed() -> Result<()> {
 
 #[test]
 fn symlink_mode_round_trips() -> Result<()> {
-    #[cfg(unix)]
-    {
-        let repo = TestRepo::new()?;
-        repo.write_file("target.txt", "target\n")?;
-        std::os::unix::fs::symlink("target.txt", repo.path().join("link.txt"))?;
-        repo.commit_all("add symlink")?;
-
-        let gix = repo.gix_repo()?;
-        let objects = tempfile::tempdir()?;
-        let tree = capture(&gix, objects.path())?;
-
-        assert!(
-            !tree.tree_sha.is_empty(),
-            "symlink must be captured in tree"
-        );
+    if !support::symlinks_supported() {
+        eprintln!("SKIP: symlinks unavailable on this host");
+        return Ok(());
     }
+    let repo = TestRepo::new()?;
+    repo.write_file("target.txt", "target\n")?;
+    support::symlink_file("target.txt".as_ref(), &repo.path().join("link.txt"))?;
+    repo.commit_all("add symlink")?;
+
+    let gix = repo.gix_repo()?;
+    let objects = tempfile::tempdir()?;
+    let tree = capture(&gix, objects.path())?;
+
+    assert!(
+        !tree.tree_sha.is_empty(),
+        "symlink must be captured in tree"
+    );
     Ok(())
 }
 

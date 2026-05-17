@@ -13,6 +13,40 @@ use super::{
     TouchKindArg,
 };
 
+// In-crate cross-platform symlink helper (this is a unit-test module
+// compiled inside the library crate, so it cannot use tests/support).
+#[cfg(unix)]
+fn symlink_dir(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(original, link)
+}
+
+#[cfg(windows)]
+fn symlink_dir(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(original, link)
+}
+
+/// Whether the host can create symlinks (Windows needs the privilege).
+#[cfg(unix)]
+fn symlinks_supported() -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn symlinks_supported() -> bool {
+    use std::sync::OnceLock;
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let base = std::env::temp_dir();
+        let target = base.join(format!("gm-advice-symlink-target-{}", std::process::id()));
+        let link = base.join(format!("gm-advice-symlink-link-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&target);
+        let ok = std::os::windows::fs::symlink_dir(&target, &link).is_ok();
+        let _ = std::fs::remove_dir_all(&link);
+        let _ = std::fs::remove_dir_all(&target);
+        ok
+    })
+}
+
 struct FixtureRepo {
     dir: tempfile::TempDir,
 }
@@ -583,10 +617,14 @@ fn canonicalize_escape_returns_err() {
 
 /// On a symlinked workspace root both existing and non-existing paths under
 /// that root must canonicalize to the same repo-relative form.
-#[cfg(unix)]
 #[test]
 fn canonicalize_symmetric_under_symlinked_wd() -> Result<()> {
     use super::canonicalize_repo_relative_path;
+
+    if !symlinks_supported() {
+        eprintln!("SKIP: symlinks unavailable on this host");
+        return Ok(());
+    }
 
     let real_dir = tempfile::tempdir()?;
     let real_path = real_dir.path();
@@ -597,7 +635,7 @@ fn canonicalize_symmetric_under_symlinked_wd() -> Result<()> {
     // Create a symlinked alias of the tempdir.
     let link_dir = tempfile::tempdir()?;
     let link_path = link_dir.path().join("symlinked-wd");
-    std::os::unix::fs::symlink(real_path, &link_path)?;
+    symlink_dir(real_path, &link_path)?;
 
     // Use the symlinked alias as the working directory.
     let wd = &link_path;

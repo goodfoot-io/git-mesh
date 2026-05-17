@@ -522,6 +522,19 @@ fn append_line(repo: &gix::Repository, name: &str, line: &str) -> Result<u32> {
     Ok(new_add_count)
 }
 
+/// Normalize a user-supplied anchor path to the POSIX, forward-slash,
+/// repo-relative form git and gix store and resolve against.
+///
+/// Anchor paths are matched against the git tree/index, which is always
+/// forward-slash on every platform. A Windows user typing `src\foo.rs`
+/// must persist `src/foo.rs` or the anchor fails to resolve on every
+/// platform and breaks cross-OS mesh portability. Forward-slash input
+/// (the Linux case, and the canonical stored form) is unchanged, so this
+/// is idempotent and a no-op on POSIX-authored anchors.
+pub(crate) fn normalize_anchor_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 fn validate_staging_path(path: &str) -> Result<()> {
     if path.is_empty() {
         return Err(Error::Parse("anchor path must not be empty".into()));
@@ -598,6 +611,8 @@ pub(crate) fn prepare_add(
     extent: AnchorExtent,
     anchor: Option<&str>,
 ) -> Result<PreparedAdd> {
+    let path = normalize_anchor_path(path);
+    let path = path.as_str();
     let bytes = validate_add_target(repo, path, extent, anchor)?;
     let line_count = count_lines(&bytes);
     Ok(PreparedAdd {
@@ -778,6 +793,8 @@ pub fn append_remove(
     start: u32,
     end: u32,
 ) -> Result<()> {
+    let path = normalize_anchor_path(path);
+    let path = path.as_str();
     validate_staging_path(path)?;
     if start < 1 || end < start {
         return Err(Error::InvalidAnchor { start, end });
@@ -788,6 +805,8 @@ pub fn append_remove(
 }
 
 pub fn append_remove_whole(repo: &gix::Repository, name: &str, path: &str) -> Result<()> {
+    let path = normalize_anchor_path(path);
+    let path = path.as_str();
     validate_staging_path(path)?;
     let _lock = staging_lock(repo, name)?;
     append_line(repo, name, &format!("remove {path}"))?;

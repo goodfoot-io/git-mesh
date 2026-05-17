@@ -499,8 +499,12 @@ fn whole_file_pin_submodule_gitlink_index_sha_change_changed() -> Result<()> {
 #[test]
 
 fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<()> {
+    if !support::symlinks_supported() {
+        eprintln!("SKIP: symlinks unavailable on this host");
+        return Ok(());
+    }
     let repo = TestRepo::seeded()?;
-    std::os::unix::fs::symlink("file1.txt", repo.path().join("link"))?;
+    support::symlink_file("file1.txt".as_ref(), &repo.path().join("link"))?;
     repo.commit_all("add symlink")?;
     // Whole-file pin allowed.
     let _ = repo.run_mesh(["add", "m", "link"])?;
@@ -508,7 +512,7 @@ fn whole_file_pin_symlink_retarget_changed_and_line_range_rejected() -> Result<(
     repo.run_mesh(["commit", "m"])?;
     // Retarget the symlink.
     std::fs::remove_file(repo.path().join("link"))?;
-    std::os::unix::fs::symlink("file2.txt", repo.path().join("link"))?;
+    support::symlink_file("file2.txt".as_ref(), &repo.path().join("link"))?;
     repo.commit_all("retarget")?;
     let mr = resolve_mesh(&repo.gix_repo()?, "m", EngineOptions::full())?;
     assert_eq!(mr.anchors[0].status, AnchorStatus::Changed);
@@ -602,12 +606,21 @@ fn lfs_repo_without_binary_content_unavailable_lfs_not_installed() -> Result<()>
     // git for many things) but excludes `git-lfs`, so the filter-process
     // spawn fails with ENOENT.
     let sandbox = tempfile::tempdir()?;
-    let git_src = std::process::Command::new("which").arg("git").output()?;
-    let git_path = String::from_utf8_lossy(&git_src.stdout).trim().to_string();
-    std::os::unix::fs::symlink(&git_path, sandbox.path().join("git"))?;
+    let git_path = which::which("git")?;
+    // A `git` trampoline that re-execs the real git. Built from the
+    // dependency-free test-helper binary so this works on Windows too,
+    // where symlinking an exe onto PATH is not portable.
+    let trampoline = if cfg!(windows) {
+        sandbox.path().join("git.exe")
+    } else {
+        sandbox.path().join("git")
+    };
+    std::fs::copy(env!("CARGO_BIN_EXE_git-mesh-test-helper"), &trampoline)?;
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"))
         .current_dir(repo.path())
         .env("PATH", sandbox.path())
+        .env("HELPER_MODE", "exec")
+        .env("HELPER_TARGET", &git_path)
         .args(["stale", "m", "--format=porcelain"])
         .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);

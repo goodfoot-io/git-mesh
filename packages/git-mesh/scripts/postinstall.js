@@ -99,6 +99,11 @@ function main() {
     buildFromSource(sourceBinary, sourceBinaryName);
   }
 
+  // Install the native binary at the single `bin` path npm wrapped. The
+  // committed placeholder has no shebang, so npm/yarn/pnpm generated
+  // direct-exec wrappers pointing here; replacing it in place makes them run
+  // the real binary. Extensionless on every platform — Windows CreateProcess
+  // executes a valid PE by explicit path regardless of extension.
   const binGitMesh = path.join(__dirname, '..', 'bin', 'git-mesh');
 
   try {

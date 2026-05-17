@@ -120,8 +120,23 @@ pub fn acquire_lock(dir: &Path, timeout: LockTimeout) -> Result<LockGuard> {
     Ok(LockGuard { _fd: f })
 }
 
-/// Write `contents` to `dest` atomically via a `.tmp` sibling and `rename`.
+/// Write `contents` to `dest` atomically via a unique temp sibling and `rename`.
+///
+/// The temp name is process- and call-unique so concurrent writers targeting
+/// the same `dest` (repeated `try_write` within a flush, or parallel advice
+/// commands) never clobber each other's in-flight temp file — a fixed `.tmp`
+/// sibling is not safe under concurrency.
+///
+/// On Windows, `rename` can transiently fail with `ERROR_ACCESS_DENIED` (5)
+/// or `ERROR_SHARING_VIOLATION` (32) when the source or destination is briefly
+/// held by another handle (e.g. a virus scanner touching the just-closed
+/// temp). POSIX `rename(2)` has no such window. Retry a bounded number of
+/// times with linear backoff before surfacing the error; on POSIX these codes
+/// never match so the loop runs exactly once.
 pub fn atomic_write(dest: &Path, contents: &[u8]) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
     let parent = dest
         .parent()
         .ok_or_else(|| anyhow::anyhow!("atomic_write: dest `{}` has no parent", dest.display()))?;
@@ -129,7 +144,11 @@ pub fn atomic_write(dest: &Path, contents: &[u8]) -> Result<()> {
         anyhow::anyhow!("atomic_write: dest `{}` has no filename", dest.display())
     })?;
     let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = parent.join(&tmp_name);
     {
         let mut f = with_mode(
@@ -142,9 +161,26 @@ pub fn atomic_write(dest: &Path, contents: &[u8]) -> Result<()> {
             .with_context(|| format!("write tmp `{}`", tmp.display()))?;
         f.sync_all().ok();
     }
-    std::fs::rename(&tmp, dest)
-        .with_context(|| format!("rename `{}` -> `{}`", tmp.display(), dest.display()))?;
-    Ok(())
+
+    let mut attempt: u32 = 0;
+    loop {
+        match std::fs::rename(&tmp, dest) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let transient = matches!(e.raw_os_error(), Some(5) | Some(32));
+                if transient && attempt < 10 {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(u64::from(10 * attempt)));
+                    continue;
+                }
+                // Best-effort cleanup so a failed write doesn't litter temps.
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e).with_context(|| {
+                    format!("rename `{}` -> `{}`", tmp.display(), dest.display())
+                });
+            }
+        }
+    }
 }
 
 /// Append a single JSONL line under an already-held lock guard.

@@ -2,7 +2,12 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AdviceExecutor, AdviceInvocation, CapturingAdviceExecutor } from "../src/advice-common.js";
+import {
+  type AdviceExecutor,
+  type AdviceInvocation,
+  type CapturingAdviceExecutor,
+  toPosix,
+} from "../src/advice-common.js";
 
 /**
  * Recording fake `AdviceExecutor`. Tests inspect `invocations` to assert the
@@ -61,7 +66,10 @@ export function createCapturingExecutor(stdout: string = ""): {
  * absolute path. Caller invokes `cleanup()` to remove it.
  */
 export function makeTempRepo(): { root: string; cleanup: () => void } {
-  const root = mkdtempSync(join(tmpdir(), "agent-hooks-"));
+  // Canonical POSIX form: matches what `git rev-parse --show-toplevel`
+  // (via resolveRepoRoot) returns even on Windows, so fixture expectations
+  // mirror real-world values rather than native backslash paths.
+  const root = toPosix(mkdtempSync(join(tmpdir(), "agent-hooks-")));
   execFileSync("git", ["init", "-q", root], { stdio: "ignore" });
   return {
     root,

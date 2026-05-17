@@ -17,14 +17,14 @@ fn script_path() -> PathBuf {
     manifest.join("scripts/migrate-ranges-to-anchors.mjs")
 }
 
-/// Locate `node` on PATH at runtime.
+/// Locate `node` on PATH at runtime. Uses the cross-platform `which`
+/// crate rather than shelling out to a `which` binary, which does not
+/// exist on a default Windows PATH.
 fn node_bin() -> String {
-    let out = Command::new("which")
-        .arg("node")
-        .output()
-        .expect("which node failed");
-    assert!(out.status.success(), "node not found on PATH");
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
+    which::which("node")
+        .expect("node not found on PATH")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Write a mesh commit with a "ranges" tree entry listing the given uuids.

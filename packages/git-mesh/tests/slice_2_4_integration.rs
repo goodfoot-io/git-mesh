@@ -62,7 +62,7 @@ fn whole_file_binary_re_anchor_acks_with_high_bytes() -> Result<()> {
 #[cfg(unix)]
 fn whole_file_symlink_re_anchor_acks() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    std::os::unix::fs::symlink("file1.txt", repo.path().join("link"))?;
+    support::symlink_file("file1.txt".as_ref(), &repo.path().join("link"))?;
     repo.commit_all("add symlink")?;
     repo.run_mesh(["add", "m", "link"])?;
     repo.run_mesh(["why", "m", "-m", "seed"])?;
@@ -70,7 +70,7 @@ fn whole_file_symlink_re_anchor_acks() -> Result<()> {
 
     // Retarget the symlink and stage the change.
     std::fs::remove_file(repo.path().join("link"))?;
-    std::os::unix::fs::symlink("file2.txt", repo.path().join("link"))?;
+    support::symlink_file("file2.txt".as_ref(), &repo.path().join("link"))?;
     repo.run_git(["add", "link"])?;
 
     repo.run_mesh(["add", "m", "link"])?;

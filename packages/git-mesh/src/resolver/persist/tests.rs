@@ -63,6 +63,13 @@ fn make_repo() -> Fixture {
     git(&p, &["config", "user.email", "t@t"]);
     git(&p, &["config", "user.name", "t"]);
     git(&p, &["config", "commit.gpgsign", "false"]);
+    // Pin the CRLF filter inputs to a known local baseline. Git-for-Windows
+    // ships `core.autocrlf=true` in its *system* config, so without an
+    // explicit local override `filter_config_hash` would inherit that value
+    // and the `filter_config_change_misses_baseline` flip-to-`true` would be
+    // a no-op on Windows. A local value overrides system/global on every
+    // platform, making the filter-config drift tests deterministic.
+    git(&p, &["config", "core.autocrlf", "false"]);
     Fixture { _dir: td, path: p }
 }
 

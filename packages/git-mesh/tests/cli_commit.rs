@@ -319,32 +319,38 @@ fn cli_config_follow_moves_unset_stages_default() -> Result<()> {
     Ok(())
 }
 
-/// Build a POSIX-shell editor script that replaces the EDITMSG file
-/// with `content`. Returns the path to the script.
-fn make_editor_script(repo: &TestRepo, content: &str) -> Result<std::path::PathBuf> {
-    let p = repo.path().join("fake-editor.sh");
-    let body = format!("#!/bin/sh\ncat >\"$1\" <<'__MESH_EOF__'\n{content}\n__MESH_EOF__\n");
-    std::fs::write(&p, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perm = std::fs::metadata(&p)?.permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&p, perm)?;
+/// The cross-platform test-helper binary used as `$EDITOR`. Its behavior
+/// is selected via `HELPER_MODE`/`HELPER_CONTENT` env passed by the caller.
+///
+/// `git mesh why --edit` launches the editor through `sh -c '<editor> "$@"'`
+/// (mirroring Git's own `core.editor` contract). On Windows the bundled
+/// `sh` treats backslashes as escape characters, so a raw
+/// `C:\…\git-mesh-test-helper.exe` is mangled to `C:…git-mesh-test-helper.exe`
+/// and fails with exit 127. Forward slashes are accepted verbatim by the
+/// Win32 path layer *and* survive the shell, so normalize separators here.
+fn helper_editor() -> String {
+    let raw = env!("CARGO_BIN_EXE_git-mesh-test-helper");
+    if cfg!(windows) {
+        raw.replace('\\', "/")
+    } else {
+        raw.to_string()
     }
-    Ok(p)
 }
 
 fn run_mesh_with_editor(
     repo: &TestRepo,
     editor: &std::path::Path,
     args: &[&str],
+    env: &[(&str, &str)],
 ) -> Result<std::process::Output> {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_git-mesh"));
     cmd.current_dir(repo.path());
     cmd.env("EDITOR", editor);
     cmd.env_remove("VISUAL");
     cmd.env_remove("GIT_EDITOR");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     for a in args {
         cmd.arg(a);
     }
@@ -354,8 +360,12 @@ fn run_mesh_with_editor(
 #[test]
 fn cli_message_edit_blank_template_new_mesh() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let editor = make_editor_script(&repo, "Hello from editor")?;
-    let out = run_mesh_with_editor(&repo, &editor, &["why", "m", "--edit"])?;
+    let out = run_mesh_with_editor(
+        &repo,
+        helper_editor().as_ref(),
+        &["why", "m", "--edit"],
+        &[("HELPER_MODE", "editor-replace"), ("HELPER_CONTENT", "Hello from editor")],
+    )?;
     assert!(
         out.status.success(),
         "stderr={}",
@@ -371,17 +381,12 @@ fn cli_message_edit_prepopulated_from_existing() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.mesh_stdout(["why", "m", "-m", "Pre-existing text"])?;
     // Editor appends a suffix to whatever the template was.
-    let editor_path = repo.path().join("fake-editor.sh");
-    let body = "#!/bin/sh\nprintf '%s\\n-edited' \"$(cat \"$1\")\" >\"$1\"\n";
-    std::fs::write(&editor_path, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perm = std::fs::metadata(&editor_path)?.permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&editor_path, perm)?;
-    }
-    let out = run_mesh_with_editor(&repo, &editor_path, &["why", "m", "--edit"])?;
+    let out = run_mesh_with_editor(
+        &repo,
+        helper_editor().as_ref(),
+        &["why", "m", "--edit"],
+        &[("HELPER_MODE", "editor-append"), ("HELPER_CONTENT", "-edited")],
+    )?;
     assert!(out.status.success());
     let status = staging_dump(&repo, "m");
     assert!(status.contains("Pre-existing text"), "status={status}");
@@ -396,17 +401,12 @@ fn cli_message_edit_inherits_from_parent_commit() -> Result<()> {
     repo.mesh_stdout(["why", "m", "-m", "Parent commit message"])?;
     repo.mesh_stdout(["commit", "m"])?;
     // No staged .why exists; editor should see the parent's message.
-    let editor_path = repo.path().join("fake-editor.sh");
-    let body = "#!/bin/sh\ncp \"$1\" \"$1.seen\"\ncat >\"$1\" <<'__EOF__'\nNew body\n__EOF__\n";
-    std::fs::write(&editor_path, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perm = std::fs::metadata(&editor_path)?.permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&editor_path, perm)?;
-    }
-    let out = run_mesh_with_editor(&repo, &editor_path, &["why", "m", "--edit"])?;
+    let out = run_mesh_with_editor(
+        &repo,
+        helper_editor().as_ref(),
+        &["why", "m", "--edit"],
+        &[("HELPER_MODE", "editor-capture"), ("HELPER_CONTENT", "New body")],
+    )?;
     assert!(out.status.success());
     // Collect the snapshot of what the editor saw.
     let seen_path = repo
@@ -427,8 +427,15 @@ fn cli_message_edit_inherits_from_parent_commit() -> Result<()> {
 fn cli_message_edit_empty_buffer_aborts() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Editor produces only comment lines — stripped => empty => abort.
-    let editor = make_editor_script(&repo, "# only a comment\n# another")?;
-    let out = run_mesh_with_editor(&repo, &editor, &["why", "m", "--edit"])?;
+    let out = run_mesh_with_editor(
+        &repo,
+        helper_editor().as_ref(),
+        &["why", "m", "--edit"],
+        &[
+            ("HELPER_MODE", "editor-replace"),
+            ("HELPER_CONTENT", "# only a comment\n# another"),
+        ],
+    )?;
     assert!(!out.status.success(), "abort should fail");
     let msg_path = repo
         .path()
@@ -445,8 +452,12 @@ fn cli_why_edit_flag_triggers_editor() -> Result<()> {
     // Per `docs/why-plan.md` §B1, the editor flow is opted into with
     // `--edit`. Bare `git mesh why <name>` is the reader form.
     let repo = TestRepo::seeded()?;
-    let editor = make_editor_script(&repo, "edit flow worked")?;
-    let out = run_mesh_with_editor(&repo, &editor, &["why", "m", "--edit"])?;
+    let out = run_mesh_with_editor(
+        &repo,
+        helper_editor().as_ref(),
+        &["why", "m", "--edit"],
+        &[("HELPER_MODE", "editor-replace"), ("HELPER_CONTENT", "edit flow worked")],
+    )?;
     assert!(
         out.status.success(),
         "stderr={}",

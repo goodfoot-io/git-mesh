@@ -5,7 +5,6 @@
 mod support;
 
 use anyhow::Result;
-use std::os::unix::fs::PermissionsExt;
 use support::TestRepo;
 
 // ---------------------------------------------------------------------------
@@ -13,9 +12,7 @@ use support::TestRepo;
 // ---------------------------------------------------------------------------
 
 fn make_executable(path: &std::path::Path) -> Result<()> {
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)?;
+    support::make_executable(path)?;
     Ok(())
 }
 
