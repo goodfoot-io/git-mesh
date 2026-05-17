@@ -99,34 +99,43 @@ function main() {
     buildFromSource(sourceBinary, sourceBinaryName);
   }
 
-  // Install the native binary at the single `bin` path npm wrapped. The
-  // committed placeholder has no shebang, so npm/yarn/pnpm generated
-  // direct-exec wrappers pointing here; replacing it in place makes them run
-  // the real binary. Extensionless on every platform — Windows CreateProcess
-  // executes a valid PE by explicit path regardless of extension.
-  const binGitMesh = path.join(__dirname, '..', 'bin', 'git-mesh');
+  // Always write to bin/git-mesh.exe — the package.json `bin` field points
+  // here on every platform. The `.exe` extension plus a no-shebang stub makes
+  // npm's cmd-shim (generated at install time, before this postinstall) emit
+  // a direct exec on Windows; Unix executes by mode bit + ELF/Mach-O header
+  // and ignores the `.exe` suffix entirely. No resident Node process — the
+  // `git-mesh` command execs the native binary directly. Same pattern as
+  // Bun's and Claude Code's npm packages.
+  const binGitMesh = path.join(__dirname, '..', 'bin', 'git-mesh.exe');
 
+  // Hardlink first (instant, zero extra disk for the ~16MB binary; src and
+  // dest are both under node_modules so same-filesystem is the common case),
+  // then fall back to copy across devices / on link-permission errors.
   try {
-    fs.unlinkSync(binGitMesh);
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      fail(`@goodfoot/git-mesh: Could not remove existing binary at ${binGitMesh}.`, error);
+    fs.linkSync(sourceBinary, binGitMesh);
+  } catch (linkError) {
+    if (linkError.code === 'EEXIST') {
+      try {
+        fs.unlinkSync(binGitMesh);
+        fs.linkSync(sourceBinary, binGitMesh);
+      } catch {
+        fs.copyFileSync(sourceBinary, binGitMesh);
+      }
+    } else if (linkError.code === 'EXDEV' || linkError.code === 'EPERM') {
+      fs.copyFileSync(sourceBinary, binGitMesh);
+    } else {
+      try {
+        fs.copyFileSync(sourceBinary, binGitMesh);
+      } catch (copyError) {
+        fail(
+          `@goodfoot/git-mesh: Could not install binary from ${sourceBinary} to ${binGitMesh}.`,
+          new Error(`link failed: ${linkError.message}\ncopy failed: ${copyError.message}`)
+        );
+      }
     }
   }
-
-  // Try symlink first, fall back to copy
-  try {
-    fs.symlinkSync(sourceBinary, binGitMesh);
-  } catch (symlinkError) {
-    try {
-      fs.copyFileSync(sourceBinary, binGitMesh);
-      fs.chmodSync(binGitMesh, 0o755);
-    } catch (copyError) {
-      fail(
-        `@goodfoot/git-mesh: Could not install binary from ${sourceBinary} to ${binGitMesh}.`,
-        new Error(`symlink failed: ${symlinkError.message}\ncopy failed: ${copyError.message}`)
-      );
-    }
+  if (process.platform !== 'win32') {
+    fs.chmodSync(binGitMesh, 0o755);
   }
 
   console.log(`@goodfoot/git-mesh: Installed git-mesh from ${packageName}`);

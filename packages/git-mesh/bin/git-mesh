@@ -1,5 +1,0 @@
-@goodfoot/git-mesh placeholder. This file is replaced by scripts/postinstall.js
-with the native binary for your platform. Its first line intentionally has NO
-"#!" shebang so npm/yarn/pnpm cmd-shim generates direct-exec .cmd/.ps1/sh
-wrappers (no /bin/sh, no node) that run the native binary installed here.
-If you are seeing this text executed, the postinstall step did not run.

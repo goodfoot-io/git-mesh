@@ -1,7 +1,7 @@
 {
   "name": "@goodfoot/git-mesh",
-  "version": "1.0.77",
-  "bin": "bin/git-mesh",
+  "version": "1.0.78",
+  "bin": "bin/git-mesh.exe",
   "man": [
     "man/git-mesh.1"
   ],
@@ -18,16 +18,16 @@
     "udeps": "bash scripts/cleanup-stale-target.sh && env CARGO_TARGET_DIR=\"${GIT_MESH_CARGO_TARGET_ROOT:-./target-cache}/udeps\" cargo +nightly udeps"
   },
   "files": [
-    "bin/",
+    "bin/git-mesh.exe",
     "man/",
     "scripts/postinstall.js"
   ],
   "optionalDependencies": {
-    "@goodfoot/git-mesh-darwin-arm64": "1.0.77",
-    "@goodfoot/git-mesh-darwin-x64": "1.0.77",
-    "@goodfoot/git-mesh-linux-arm64": "1.0.77",
-    "@goodfoot/git-mesh-linux-x64": "1.0.77",
-    "@goodfoot/git-mesh-win32-x64": "1.0.77"
+    "@goodfoot/git-mesh-darwin-arm64": "1.0.78",
+    "@goodfoot/git-mesh-darwin-x64": "1.0.78",
+    "@goodfoot/git-mesh-linux-arm64": "1.0.78",
+    "@goodfoot/git-mesh-linux-x64": "1.0.78",
+    "@goodfoot/git-mesh-win32-x64": "1.0.78"
   },
   "repository": {
     "type": "git",
